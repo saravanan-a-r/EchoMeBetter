@@ -1,0 +1,62 @@
+# ---------------------------------------------------------------------------
+# Markdown. Only the root README is committed -- everything else (design
+# docs, module READMEs, research notes) stays local, untracked.
+# ---------------------------------------------------------------------------
+*.md
+*.MD
+!/README.md
+
+# ---------------------------------------------------------------------------
+# Corpora and generated data. These are rebuildable from the downloaders in
+# tokenizer/training_corpus/ and are far too large to version. The *.manifest
+# sidecars ARE tracked, so provenance travels with the code.
+# ---------------------------------------------------------------------------
+tokenizer/training_corpus/output/*
+!tokenizer/training_corpus/output/*.manifest.json
+
+# The sampled fitting corpus and the replayed eval slice. Both are derived
+# artifacts, reproducible from the manifest + seed.
+tokenizer/training/output/corpus.txt
+tokenizer/training/output/tokenizer_evals_set.jsonl
+
+# ---------------------------------------------------------------------------
+# Training runs and checkpoints
+# ---------------------------------------------------------------------------
+runs/
+*/runs/
+*.safetensors
+*.pt
+*.bin
+*.ckpt
+checkpoint-*/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# ---------------------------------------------------------------------------
+# Tooling caches
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------------------
+# OS / editor
+# ---------------------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp
