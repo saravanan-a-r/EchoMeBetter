@@ -1,0 +1,20 @@
+{
+  "dataset_name": "Gutenberg / PG-19",
+  "source_id": "gutenberg_pg19",
+  "requested_mb": 4000.0,
+  "seed": 42,
+  "strip_markup": false,
+  "elapsed_seconds": 446.5,
+  "output_file": "/Users/apple/projects/echomebetter/tokenizer/training_corpus/output/gutenberg_pg19_4000mb.jsonl",
+  "bytes_written": 4194306886,
+  "mb_written": 4000.003,
+  "records_written": 1425981,
+  "records_seen_from_source": 10575,
+  "records_dropped_empty_after_clean": 0,
+  "records_dropped_dedup": 9931,
+  "sha256": "328f80a16ed7d46b5bc8a3bb0b65c113d198f43934525e61b9016e95a53b6c19",
+  "hf_dataset": "emozilla/pg19",
+  "hf_dataset_origin": "Parquet mirror of deepmind/pg19 (legacy loading-script version no longer loadable)",
+  "license": "Public domain (pre-1919 US works)",
+  "blend_role": "20% -- long-form literary English, balances short StackExchange text"
+}

@@ -1,0 +1,20 @@
+{
+  "dataset_name": "StackExchange (local, cleaned)",
+  "source_id": "stackexchange",
+  "requested_mb": 3000.0,
+  "seed": 42,
+  "strip_markup": false,
+  "elapsed_seconds": 151.3,
+  "output_file": "/Users/apple/projects/echomebetter/tokenizer/training_corpus/output/stackexchange_3000mb.jsonl",
+  "bytes_written": 3145728136,
+  "mb_written": 3000.0,
+  "records_written": 7063861,
+  "records_seen_from_source": 6982183,
+  "records_dropped_empty_after_clean": 32646,
+  "records_dropped_dedup": 879,
+  "sha256": "466e63160bba15fc9bdbda7bd7ef69621e32b867282228a1aed3e535f84f9abf",
+  "source": "local: /Users/apple/projects/dataset_downloaded/stack_exchanger/DATASET",
+  "license": "CC BY-SA 4.0 (StackExchange dump license)",
+  "blend_role": "15% -- over-weighted vs pretraining share; matches inference-time input distribution",
+  "already_pii_masked": true
+}

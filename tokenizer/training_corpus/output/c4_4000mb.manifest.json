@@ -1,0 +1,20 @@
+{
+  "dataset_name": "C4 (en)",
+  "source_id": "c4",
+  "requested_mb": 4000.0,
+  "seed": 42,
+  "strip_markup": false,
+  "elapsed_seconds": 623.4,
+  "output_file": "/Users/apple/projects/echomebetter/tokenizer/training_corpus/output/c4_4000mb.jsonl",
+  "bytes_written": 4194306421,
+  "mb_written": 4000.002,
+  "records_written": 2603450,
+  "records_seen_from_source": 1915478,
+  "records_dropped_empty_after_clean": 14,
+  "records_dropped_dedup": 285,
+  "sha256": "68c3fa553dca0641830f17ce95785dfd58ffe94c34aea32dfa9d9b6530e9be1e",
+  "hf_dataset": "allenai/c4",
+  "hf_config": "en",
+  "license": "ODC-By 1.0",
+  "blend_role": "20% -- broad web register diversity"
+}
