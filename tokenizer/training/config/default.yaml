@@ -1,0 +1,116 @@
+# Tokenization training configuration -- single control point for
+# train_tokenization.py. See ../../DESIGN.md for the rationale behind every
+# value here; do not change a value without updating that document.
+
+corpus:
+  # Reservoir-sampled sentence cap actually fed to SentencePieceTrainer.
+  # This is the RAM lever, NOT the amount of downloaded corpus used as the
+  # sampling pool -- the loader streams through the full corpus on disk
+  # (however large) and keeps a uniform random sample of this many lines.
+  # Sized for a 128GB-RAM training machine; on a 16GB laptop use ~6-8M
+  # (see config/laptop_16gb.yaml).
+  input_sentence_size: 20000000
+
+  # Lines longer than this (characters) are dropped defensively rather than
+  # silently truncated. Records should already be chunked to <=3000 chars
+  # by training_corpus/transform.py upstream -- this is a safety net against
+  # DESIGN.md Risk R1 (SentencePiece silently discarding long records), not
+  # the primary chunking mechanism.
+  max_sentence_length: 8192
+
+  # If more than this fraction of encountered lines are dropped (oversized,
+  # empty, malformed JSON, missing "text" field), the run fails loudly
+  # instead of silently training on a degraded sample (Design Principle 4).
+  max_drop_fraction: 0.01
+
+sampling:
+  seed: 42
+
+blend:
+  # How the sample is distributed across corpus sources (DESIGN.md 4.3).
+  #
+  #   weighted -- each source contributes the BYTE share below. Required for
+  #               a correct blend: average line length varies ~6x between
+  #               sources (PG-19 books are newline-wrapped at ~69 bytes/line,
+  #               C4 documents average ~447), so drawing lines uniformly
+  #               would hand the tokenizer ~55% Gutenberg and ~8% C4 instead
+  #               of 20%/20% -- fitting the vocabulary to the wrong corpus
+  #               mix (risk R4) while every download share looked correct.
+  #   uniform  -- draw lines uniformly, ignore shares. For ad-hoc corpora.
+  #
+  # Source names come from corpus filenames: fineweb_edu_7000mb.jsonl ->
+  # fineweb_edu. Shares are renormalized over the sources actually present,
+  # so a partial corpus still produces a correctly proportioned sample.
+  mode: weighted
+  shares:
+    fineweb_edu: 0.35
+    c4: 0.20
+    stackexchange: 0.15
+    cosmopedia: 0.10
+    gutenberg_pg19: 0.20
+
+trainer:
+  model_type: unigram
+  vocab_size: 32768
+
+  # -- fidelity-critical (NF1), do not change casually --
+  byte_fallback: true
+  character_coverage: 1.0
+  normalization_rule_name: identity
+  remove_extra_whitespaces: false
+  allow_whitespace_only_pieces: true
+  add_dummy_prefix: false
+  split_digits: true
+
+  # -- scale / memory --
+  train_extremely_large_corpus: true
+  num_threads: 0 # 0 = auto-detect (os.cpu_count())
+
+  # -- ids --
+  pad_id: 0
+  eos_id: 1
+  unk_id: 2
+  bos_id: -1
+
+output:
+  dir: output
+  model_prefix: spm
+
+validation:
+  run_after_training: true
+
+  # How many lines to evaluate the 11 gates against.
+  #   0  = ALL remaining corpus, i.e. every eligible line the sampler did not
+  #        select for training. This is the default and the honest one: the
+  #        vocabulary is measured against every byte it will actually meet.
+  #   N  = a uniform random subsample of N lines from that same remaining
+  #        pool, for a faster estimate of the same numbers.
+  # Override for a single run with --eval-corpus N.
+  #
+  # The eval set is never written to disk in full (it is ~18 GB on the real
+  # corpus); it is replayed from the seeded split. See corpus_reader.py.
+  eval_sentence_size: 0
+
+  # How many evaluated lines to persist to tokenizer_evals_set.jsonl, as a
+  # reproducible sample for export_hf.py and for human inspection. Reservoir-
+  # sampled from the evaluated stream, so it is representative regardless of
+  # how large the evaluation was.
+  eval_sample_save: 20000
+
+  # Sequence-length percentiles (gate 9) are estimated from a reservoir
+  # sample of this many sentences. The mean and the maximum are always exact.
+  length_reservoir_size: 200000
+
+  # A vocabulary piece used this many times or fewer is reported as "rare"
+  # by gate 11 -- a diagnostic, not a threshold.
+  rare_token_max_count: 10
+
+  # Hard gates (1/2/3/6) fail the run (non-zero exit). Soft gates
+  # (4/5/8/10) print a warning and are recorded in the report but do not
+  # fail the run. Gates 7/9/11 are report-only.
+  fertility_target_min: 1.25
+  fertility_target_max: 1.40
+  fertility_code_warn_above: 2.5
+  byte_fallback_rate_warn_above: 0.005
+  chars_per_token_warn_below: 3.0
+  vocab_utilization_warn_below: 0.90

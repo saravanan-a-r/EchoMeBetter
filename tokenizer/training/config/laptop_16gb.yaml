@@ -1,0 +1,89 @@
+# Full-fidelity production config sized for a 16 GB machine (e.g. the M4
+# MacBook Air). Identical to default.yaml except for input_sentence_size.
+#
+# The corpus on disk can still be 20 GB or larger: corpus_reader.py streams
+# it in O(1) memory and samples down to the budget below. This number is
+# what SentencePiece actually holds while fitting, and it is the RAM lever.
+#
+# Measured peak RSS on an M4 / 16 GB, vocab_size 32768 (README has the table):
+#     200k sentences ( 39 MB text)  ->  4.0 GB,   45 s
+#     600k sentences (116 MB text)  ->  6.8 GB,   82 s
+#   1,200k sentences (232 MB text)  ->  7.8 GB,  120 s
+#   5,000k sentences (970 MB text)  ->  swap-thrashed, aborted after 18 min
+#
+# 2M is chosen as the largest budget with real headroom once macOS and a
+# browser are resident. It is not a quality compromise: at 1.2M sentences
+# measured fertility is already 1.396 (NF2 target 1.25-1.40) and the
+# byte-fallback rate 0.00067 (NF3 target <0.005) -- both met, because
+# Unigram's piece statistics saturate long before this point.
+
+corpus:
+  input_sentence_size: 2000000
+  max_sentence_length: 8192
+  max_drop_fraction: 0.01
+
+sampling:
+  seed: 42
+
+blend:
+  # How the sample is distributed across corpus sources (DESIGN.md 4.3).
+  #
+  #   weighted -- each source contributes the BYTE share below. Required for
+  #               a correct blend: average line length varies ~6x between
+  #               sources (PG-19 books are newline-wrapped at ~69 bytes/line,
+  #               C4 documents average ~447), so drawing lines uniformly
+  #               would hand the tokenizer ~55% Gutenberg and ~8% C4 instead
+  #               of 20%/20% -- fitting the vocabulary to the wrong corpus
+  #               mix (risk R4) while every download share looked correct.
+  #   uniform  -- draw lines uniformly, ignore shares. For ad-hoc corpora.
+  #
+  # Source names come from corpus filenames: fineweb_edu_7000mb.jsonl ->
+  # fineweb_edu. Shares are renormalized over the sources actually present,
+  # so a partial corpus still produces a correctly proportioned sample.
+  mode: weighted
+  shares:
+    fineweb_edu: 0.35
+    c4: 0.20
+    stackexchange: 0.15
+    cosmopedia: 0.10
+    gutenberg_pg19: 0.20
+
+trainer:
+  model_type: unigram
+  vocab_size: 32768
+
+  byte_fallback: true
+  character_coverage: 1.0
+  normalization_rule_name: identity
+  remove_extra_whitespaces: false
+  allow_whitespace_only_pieces: true
+  add_dummy_prefix: false
+  split_digits: true
+
+  train_extremely_large_corpus: true
+  num_threads: 0
+
+  pad_id: 0
+  eos_id: 1
+  unk_id: 2
+  bos_id: -1
+
+output:
+  dir: output
+  model_prefix: spm
+
+validation:
+  run_after_training: true
+  # 0 = evaluate on ALL remaining corpus (every line not used for training).
+  # Streaming, so this is memory-safe on 16 GB; it costs wall-clock time
+  # rather than RAM. Use --eval-corpus 200000 for a fast estimate.
+  eval_sentence_size: 0
+  eval_sample_save: 20000
+  length_reservoir_size: 200000
+  rare_token_max_count: 10
+  fertility_target_min: 1.25
+  fertility_target_max: 1.40
+  fertility_code_warn_above: 2.5
+  byte_fallback_rate_warn_above: 0.005
+  chars_per_token_warn_below: 3.0
+  vocab_utilization_warn_below: 0.90
