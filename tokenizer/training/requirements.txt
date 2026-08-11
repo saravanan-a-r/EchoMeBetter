@@ -1,0 +1,5 @@
+sentencepiece>=0.2.0
+protobuf>=4.0        # reads the SentencePiece model proto for HF export
+tokenizers>=0.20     # builds the HuggingFace tokenizer.json (export_hf.py)
+PyYAML>=6.0
+pytest>=7.0
