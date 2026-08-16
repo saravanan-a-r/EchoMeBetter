@@ -1,0 +1,394 @@
+{
+  "timestamp": "2026-08-19T05:29:48.912620+00:00",
+  "elapsed_seconds": 366.17,
+  "corpus": {
+    "scan": {
+      "files": 10,
+      "records_seen": 15329461,
+      "records_bad_json": 100,
+      "records_missing_text": 0,
+      "lines_eligible": 105678540,
+      "lines_empty": 245,
+      "lines_oversized": 2,
+      "bytes_eligible": 20562396697,
+      "drop_fraction": 1e-06,
+      "per_source_lines": {
+        "c4": 8957739,
+        "cosmopedia": 3274600,
+        "fineweb_edu": 19023929,
+        "gutenberg_pg19": 58251013,
+        "stackexchange": 16171259
+      },
+      "per_source_bytes": {
+        "c4": 4145406158,
+        "cosmopedia": 2078974760,
+        "fineweb_edu": 7262075452,
+        "gutenberg_pg19": 4049577628,
+        "stackexchange": 3026362699
+      }
+    },
+    "eligible_lines": 105678540,
+    "train_lines": 1000000,
+    "eval_lines_available": 104678540,
+    "blend_mode": "weighted",
+    "blend_target": {
+      "c4": 0.2,
+      "cosmopedia": 0.1,
+      "fineweb_edu": 0.35,
+      "gutenberg_pg19": 0.2,
+      "stackexchange": 0.15
+    },
+    "blend_achieved_bytes": {
+      "c4": 0.2007,
+      "cosmopedia": 0.1012,
+      "fineweb_edu": 0.3482,
+      "gutenberg_pg19": 0.2,
+      "stackexchange": 0.15
+    },
+    "blend_notes": [],
+    "train_lines_per_source": {
+      "c4": 83352,
+      "cosmopedia": 30378,
+      "fineweb_edu": 176832,
+      "gutenberg_pg19": 554853,
+      "stackexchange": 154585
+    },
+    "train_bytes_per_source": {
+      "c4": 38693107,
+      "cosmopedia": 19508576,
+      "fineweb_edu": 67133812,
+      "gutenberg_pg19": 38556995,
+      "stackexchange": 28916446
+    },
+    "eval_lines_per_source": {
+      "c4": 8874387,
+      "cosmopedia": 3244222,
+      "fineweb_edu": 18847097,
+      "gutenberg_pg19": 57696160,
+      "stackexchange": 16016674
+    },
+    "sampled_fraction": 0.009463,
+    "seed": 42,
+    "plan": {
+      "capacities": {
+        "c4": 8957739,
+        "cosmopedia": 3274600,
+        "fineweb_edu": 19023929,
+        "gutenberg_pg19": 58251013,
+        "stackexchange": 16171259
+      },
+      "train_per_source": {
+        "c4": 83352,
+        "cosmopedia": 30378,
+        "fineweb_edu": 176832,
+        "gutenberg_pg19": 554853,
+        "stackexchange": 154585
+      },
+      "seed": 42,
+      "max_sentence_length": 8192
+    },
+    "corpus_path": "/Users/apple/projects/echomebetter/tokenizer/training/output/corpus.txt",
+    "corpus_bytes": 193808936,
+    "corpus_sha256": "1b1b4a148623406ad6342b003b1c87ff810990335f4b99e090715a3a686cece0",
+    "source_files": [
+      "../training_corpus/output/c4_4000mb.jsonl",
+      "../training_corpus/output/c4_4000mb.manifest.json",
+      "../training_corpus/output/cosmopedia_2000mb.jsonl",
+      "../training_corpus/output/cosmopedia_2000mb.manifest.json",
+      "../training_corpus/output/fineweb_edu_7000mb.jsonl",
+      "../training_corpus/output/fineweb_edu_7000mb.manifest.json",
+      "../training_corpus/output/gutenberg_pg19_4000mb.jsonl",
+      "../training_corpus/output/gutenberg_pg19_4000mb.manifest.json",
+      "../training_corpus/output/stackexchange_3000mb.jsonl",
+      "../training_corpus/output/stackexchange_3000mb.manifest.json"
+    ]
+  },
+  "training": {
+    "trainer_kwargs": {
+      "input": "/Users/apple/projects/echomebetter/tokenizer/training/output/corpus.txt",
+      "model_prefix": "/Users/apple/projects/echomebetter/tokenizer/training/output/spm",
+      "model_type": "unigram",
+      "vocab_size": 32768,
+      "byte_fallback": true,
+      "character_coverage": 1.0,
+      "normalization_rule_name": "identity",
+      "remove_extra_whitespaces": false,
+      "allow_whitespace_only_pieces": true,
+      "add_dummy_prefix": false,
+      "split_digits": true,
+      "max_sentence_length": 8192,
+      "train_extremely_large_corpus": true,
+      "num_threads": 10,
+      "pad_id": 0,
+      "eos_id": 1,
+      "unk_id": 2,
+      "bos_id": -1,
+      "minloglevel": 2,
+      "input_sentence_size": 0,
+      "shuffle_input_sentence": false
+    },
+    "user_defined_symbols_count": 309,
+    "model_path": "/Users/apple/projects/echomebetter/tokenizer/training/output/spm.model",
+    "vocab_path": "/Users/apple/projects/echomebetter/tokenizer/training/output/spm.vocab",
+    "elapsed_seconds": 64.22,
+    "sentencepiece_version": "0.2.1",
+    "model_sha256": "160c86858b3ce3c0bcef4e6a3e7dd512a6ff29c6d80a1eb3af83ce1e32fe5c19"
+  },
+  "evaluation": {
+    "ran": true,
+    "scope": "3,000,000-line sample of remaining",
+    "lines_available": 104678540,
+    "lines_evaluated": 3000000,
+    "eval_sentence_size": 3000000,
+    "tokens_evaluated": 134183957,
+    "elapsed_seconds": 131.5,
+    "sample_saved": 20000,
+    "sample_path": "/Users/apple/projects/echomebetter/tokenizer/training/output/tokenizer_evals_set.jsonl"
+  },
+  "config": {
+    "corpus": {
+      "input_sentence_size": 1000000,
+      "max_sentence_length": 8192,
+      "max_drop_fraction": 0.01
+    },
+    "sampling": {
+      "seed": 42
+    },
+    "blend": {
+      "mode": "weighted",
+      "shares": {
+        "fineweb_edu": 0.35,
+        "c4": 0.2,
+        "stackexchange": 0.15,
+        "cosmopedia": 0.1,
+        "gutenberg_pg19": 0.2
+      }
+    },
+    "trainer": {
+      "model_type": "unigram",
+      "vocab_size": 32768,
+      "byte_fallback": true,
+      "character_coverage": 1.0,
+      "normalization_rule_name": "identity",
+      "remove_extra_whitespaces": false,
+      "allow_whitespace_only_pieces": true,
+      "add_dummy_prefix": false,
+      "split_digits": true,
+      "train_extremely_large_corpus": true,
+      "num_threads": 0,
+      "pad_id": 0,
+      "eos_id": 1,
+      "unk_id": 2,
+      "bos_id": -1
+    },
+    "output": {
+      "dir": "output",
+      "model_prefix": "spm"
+    },
+    "validation": {
+      "run_after_training": true,
+      "eval_sentence_size": 3000000,
+      "eval_sample_save": 20000,
+      "length_reservoir_size": 200000,
+      "rare_token_max_count": 10,
+      "fertility_target_min": 1.25,
+      "fertility_target_max": 1.4,
+      "fertility_code_warn_above": 2.5,
+      "byte_fallback_rate_warn_above": 0.005,
+      "chars_per_token_warn_below": 3.0,
+      "vocab_utilization_warn_below": 0.9
+    }
+  },
+  "config_path": "config/laptop_16gb.yaml",
+  "gates": [
+    {
+      "gate": 1,
+      "name": "Byte-exact round-trip",
+      "hard": true,
+      "passed": true,
+      "detail": "3,000,000/3,000,000 records satisfy decode(encode(x)) == x",
+      "metrics": {
+        "records": 3000000,
+        "passed": 3000000,
+        "failed": 0
+      },
+      "examples": []
+    },
+    {
+      "gate": 2,
+      "name": "No <unk> emitted",
+      "hard": true,
+      "passed": true,
+      "detail": "0 <unk> token(s) across 3,000,000 records (rate 0.00000000)",
+      "metrics": {
+        "unk_tokens": 0,
+        "rate": 0.0,
+        "per_slice": {
+          "c4": 0.0,
+          "cosmopedia": 0.0,
+          "fineweb_edu": 0.0,
+          "gutenberg_pg19": 0.0,
+          "stackexchange": 0.0
+        }
+      },
+      "examples": []
+    },
+    {
+      "gate": 3,
+      "name": "Reserved tokens are atomic and resolvable",
+      "hard": true,
+      "passed": true,
+      "detail": "312/312 reserved names OK",
+      "metrics": {
+        "checked": 312,
+        "failed": 0
+      },
+      "examples": []
+    },
+    {
+      "gate": 4,
+      "name": "Fertility per slice",
+      "hard": false,
+      "passed": false,
+      "detail": "overall 1.3976 tokens/word; target [1.25, 1.4]",
+      "metrics": {
+        "overall": 1.3976,
+        "per_slice": {
+          "c4": 1.3713,
+          "cosmopedia": 1.304,
+          "fineweb_edu": 1.3823,
+          "gutenberg_pg19": 1.4166,
+          "stackexchange": 1.4958
+        },
+        "target": [
+          1.25,
+          1.4
+        ]
+      },
+      "examples": [
+        "gutenberg_pg19 fertility 1.4166 outside target [1.25, 1.4]",
+        "stackexchange fertility 1.4958 outside target [1.25, 1.4]"
+      ]
+    },
+    {
+      "gate": 5,
+      "name": "Byte-fallback rate",
+      "hard": false,
+      "passed": true,
+      "detail": "0.000218 of emitted tokens are byte pieces (warn above 0.005)",
+      "metrics": {
+        "rate": 0.00021769,
+        "threshold": 0.005,
+        "per_slice": {
+          "c4": 0.000449,
+          "cosmopedia": 5e-05,
+          "fineweb_edu": 0.000242,
+          "gutenberg_pg19": 2.5e-05,
+          "stackexchange": 0.000219
+        }
+      },
+      "examples": []
+    },
+    {
+      "gate": 6,
+      "name": "URL and markdown-link survival",
+      "hard": true,
+      "passed": true,
+      "detail": "111,349/111,349 unique URL/link fragments round-trip",
+      "metrics": {
+        "fragments": 111349,
+        "failed": 0,
+        "capped": false
+      },
+      "examples": []
+    },
+    {
+      "gate": 7,
+      "name": "Vocabulary sanity (manual review)",
+      "hard": false,
+      "passed": true,
+      "detail": "vocab_size=32,768; see report for top-500 and random-500 pieces",
+      "metrics": {
+        "vocab_size": 32768
+      },
+      "examples": []
+    },
+    {
+      "gate": 8,
+      "name": "Characters per token",
+      "hard": false,
+      "passed": true,
+      "detail": "overall 4.33 chars/token (warn below 3.0)",
+      "metrics": {
+        "overall": 4.33,
+        "per_slice": {
+          "c4": 4.3355,
+          "cosmopedia": 5.4513,
+          "fineweb_edu": 4.4401,
+          "gutenberg_pg19": 3.9953,
+          "stackexchange": 3.9716
+        },
+        "warn_below": 3.0
+      },
+      "examples": []
+    },
+    {
+      "gate": 9,
+      "name": "Sequence length distribution",
+      "hard": false,
+      "passed": true,
+      "detail": "mean 44.728, P50 18, P90 88, P99 595, max 2717 tokens/sentence",
+      "metrics": {
+        "mean": 44.728,
+        "p50": 18,
+        "p90": 88,
+        "p95": 154,
+        "p99": 595,
+        "max": 2717,
+        "reservoir_size": 200000,
+        "estimated": true
+      },
+      "examples": []
+    },
+    {
+      "gate": 10,
+      "name": "Vocabulary utilization",
+      "hard": false,
+      "passed": true,
+      "detail": "96.68% of 32,768 pieces used (warn below 90.00%)",
+      "metrics": {
+        "vocab_size": 32768,
+        "used": 31681,
+        "dead": 1087,
+        "utilization": 0.9668,
+        "warn_below": 0.9,
+        "meaningful": true,
+        "tokens_scanned": 134183957
+      },
+      "examples": []
+    },
+    {
+      "gate": 11,
+      "name": "Token frequency distribution",
+      "hard": false,
+      "passed": true,
+      "detail": "top 1% of vocab carries 57.5% of tokens; 1,823 piece(s) used <= 10 times",
+      "metrics": {
+        "rare_pieces": 1823,
+        "rare_threshold": 10,
+        "concentration": {
+          "top_1pct": 0.5753,
+          "top_5pct": 0.7305,
+          "top_10pct": 0.8027,
+          "top_25pct": 0.8976,
+          "top_50pct": 0.9622
+        }
+      },
+      "examples": []
+    }
+  ],
+  "environment": {
+    "python": "3.13.13",
+    "platform": "macOS-26.2-arm64-arm-64bit-Mach-O"
+  }
+}

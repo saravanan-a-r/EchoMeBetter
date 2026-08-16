@@ -1,0 +1,15 @@
+{
+  "frozen_at": "2026-08-19T05:35:16.997939+00:00",
+  "vocab_size": 32768,
+  "model_sha256": "160c86858b3ce3c0bcef4e6a3e7dd512a6ff29c6d80a1eb3af83ce1e32fe5c19",
+  "token_map_sha256": "a1fc6a2bf6b33fe8f8e3da13cc450dd95d33ec30988448b4cf189f2f3ab8dc4d",
+  "corpus_sha256": "1b1b4a148623406ad6342b003b1c87ff810990335f4b99e090715a3a686cece0",
+  "manifest_sha256": "51a18ddd7e0dd6cd7b69e51a4f0211c6a1beec7e66066661f5dea782e8b34564",
+  "hard_gates_passed": [
+    1,
+    2,
+    3,
+    6
+  ],
+  "note": "This tokenizer is immutable. Every embedding row of every model trained on it is bound to these token IDs. Any change requires a new version and a full retrain \u2014 never an edit."
+}
