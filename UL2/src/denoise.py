@@ -1,0 +1,254 @@
+"""
+Turning sampled spans into encoder/decoder sequences.
+
+Sequence formats (architecture.md 7.2)
+--------------------------------------
+[R] and [X] -- sentinel-based span corruption:
+
+    encoder: [MODE] kept... <extra_id_0> kept... <extra_id_1> kept... </s>
+    decoder: <extra_id_0> span0... <extra_id_1> span1... </s>
+
+Sentinels are numbered from 0 in left-to-right order of the spans they
+replace. The target lists them in that same order, each followed by the
+tokens it stands for. There is no trailing sentinel on the target -- it ends
+with the last span's content, then EOS, exactly as the worked examples in
+architecture.md 7.2 show.
+
+[S] -- sequential denoising, no sentinels at all:
+
+    encoder: [S] prefix... </s>
+    decoder: continuation... </s>
+
+The lossless-reconstruction invariant
+-------------------------------------
+For every mode, `reconstruct_source(example)` returns the original token
+sequence exactly. This is not a convenience function: it is the property
+that makes the objective *verifiable*. Almost every way of getting span
+corruption wrong -- an off-by-one on a span boundary, spans emitted out of
+order, a dropped final segment, a reused sentinel -- breaks reconstruction,
+so a single round-trip check catches a whole family of silent corruptions
+that a loss curve would never reveal.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Sequence
+
+from .errors import UL2Error
+from .special_tokens import SpecialTokens
+
+
+@dataclass(frozen=True)
+class Example:
+    """
+    One training example, as plain integer IDs.
+
+    Deliberately framework-free: tuples of ints, no tensors. The trainer
+    converts to whatever it needs. That keeps this module free of a torch
+    dependency and makes every example trivially serializable for the frozen
+    evaluation set.
+    """
+
+    mode: str
+    encoder_input_ids: tuple[int, ...]
+    decoder_target_ids: tuple[int, ...]
+    decoder_input_ids: tuple[int, ...]
+    source_length: int
+    num_spans: int
+    num_corrupted_tokens: int
+    truncated: bool = False
+
+    @property
+    def realized_corruption_rate(self) -> float:
+        """
+        Fraction of source tokens actually corrupted.
+
+        architecture.md 7.3 requires reporting this rather than the configured
+        rate: rounding to whole tokens and whole spans means the achieved
+        value differs from the setting, especially on short sequences.
+        """
+        if self.source_length == 0:
+            return 0.0
+        return self.num_corrupted_tokens / self.source_length
+
+    @property
+    def encoder_length(self) -> int:
+        return len(self.encoder_input_ids)
+
+    @property
+    def target_length(self) -> int:
+        return len(self.decoder_target_ids)
+
+
+def build_span_corruption(
+    tokens: Sequence[int],
+    spans: Sequence[tuple[int, int]],
+    mode: str,
+    specials: SpecialTokens,
+    *,
+    append_eos_to_source: bool = True,
+    append_eos_to_target: bool = True,
+    truncated: bool = False,
+) -> Example:
+    """Build an [R]/[X] example from a token sequence and its masked spans."""
+    _check_spans(spans, len(tokens))
+
+    if len(spans) > specials.num_sentinels:
+        # Defence in depth: `sample_spans` already enforces the budget, but
+        # this constructor is public and must never be the path that lets a
+        # sentinel get reused.
+        raise UL2Error(
+            f"{len(spans)} spans exceed the {specials.num_sentinels} available sentinels"
+        )
+
+    encoder: list[int] = [specials.mode_token(mode)]
+    target: list[int] = []
+
+    cursor = 0
+    corrupted_count = 0
+    for index, (start, end) in enumerate(spans):
+        sentinel = specials.sentinel(index)
+        encoder.extend(tokens[cursor:start])
+        encoder.append(sentinel)
+        target.append(sentinel)
+        target.extend(tokens[start:end])
+        corrupted_count += end - start
+        cursor = end
+    encoder.extend(tokens[cursor:])
+
+    if append_eos_to_source:
+        encoder.append(specials.eos_id)
+    if append_eos_to_target:
+        target.append(specials.eos_id)
+
+    return Example(
+        mode=mode,
+        encoder_input_ids=tuple(encoder),
+        decoder_target_ids=tuple(target),
+        decoder_input_ids=_shift_right(target, specials),
+        source_length=len(tokens),
+        num_spans=len(spans),
+        num_corrupted_tokens=corrupted_count,
+        truncated=truncated,
+    )
+
+
+def build_prefix_denoising(
+    tokens: Sequence[int],
+    prefix_length: int,
+    specials: SpecialTokens,
+    *,
+    mode: str = "S",
+    append_eos_to_source: bool = True,
+    append_eos_to_target: bool = True,
+    truncated: bool = False,
+) -> Example:
+    """Build an [S] example: encoder holds the prefix, decoder continues it."""
+    if not 1 <= prefix_length <= len(tokens) - 1:
+        raise UL2Error(
+            f"prefix_length {prefix_length} must leave at least one token on each "
+            f"side of a {len(tokens)}-token sequence"
+        )
+
+    encoder: list[int] = [specials.mode_token(mode), *tokens[:prefix_length]]
+    target: list[int] = list(tokens[prefix_length:])
+
+    if append_eos_to_source:
+        encoder.append(specials.eos_id)
+    if append_eos_to_target:
+        target.append(specials.eos_id)
+
+    return Example(
+        mode=mode,
+        encoder_input_ids=tuple(encoder),
+        decoder_target_ids=tuple(target),
+        decoder_input_ids=_shift_right(target, specials),
+        source_length=len(tokens),
+        num_spans=0,
+        # [S] withholds the continuation, so that is what "corrupted" means
+        # here. Reporting 0 would make the realized corruption telemetry in
+        # architecture.md 7.3 meaningless for a quarter of all examples.
+        num_corrupted_tokens=len(tokens) - prefix_length,
+        truncated=truncated,
+    )
+
+
+def reconstruct_source(example: Example, specials: SpecialTokens) -> tuple[int, ...]:
+    """
+    Rebuild the original token sequence from an example.
+
+    Used by tests as the correctness oracle, and available for debugging a
+    suspicious batch. Raises if the example is internally inconsistent.
+    """
+    encoder_body = list(example.encoder_input_ids[1:])  # drop the mode token
+    if encoder_body and encoder_body[-1] == specials.eos_id:
+        encoder_body.pop()
+
+    target_body = list(example.decoder_target_ids)
+    if target_body and target_body[-1] == specials.eos_id:
+        target_body.pop()
+
+    if example.mode == "S":
+        return tuple(encoder_body + target_body)
+
+    sentinel_set = set(specials.sentinel_ids)
+    contents: dict[int, list[int]] = {}
+    current: list[int] | None = None
+    for token in target_body:
+        if token in sentinel_set:
+            if token in contents:
+                raise UL2Error(f"sentinel {token} appears twice in the decoder target")
+            current = []
+            contents[token] = current
+            continue
+        if current is None:
+            raise UL2Error("decoder target begins with content before any sentinel")
+        current.append(token)
+
+    rebuilt: list[int] = []
+    for token in encoder_body:
+        if token in sentinel_set:
+            if token not in contents:
+                raise UL2Error(f"sentinel {token} in the encoder input has no target content")
+            rebuilt.extend(contents.pop(token))
+        else:
+            rebuilt.append(token)
+
+    if contents:
+        raise UL2Error(
+            f"decoder target contains sentinels absent from the encoder input: "
+            f"{sorted(contents)}"
+        )
+
+    return tuple(rebuilt)
+
+
+def _shift_right(target: Sequence[int], specials: SpecialTokens) -> tuple[int, ...]:
+    """
+    Teacher-forcing decoder input: start token, then the target minus its last.
+
+    T5 has no BOS (`bos_id=-1`, architecture.md 6.1) and uses `<pad>` as the
+    decoder start token, which is what `SpecialTokens.decoder_start_id`
+    resolves to.
+    """
+    return (specials.decoder_start_id, *target[:-1])
+
+
+def _check_spans(spans: Sequence[tuple[int, int]], length: int) -> None:
+    """
+    Reject malformed span lists.
+
+    Overlapping or unsorted spans would produce an encoder input where the
+    same source token appears both kept and masked, which reconstruction
+    could not resolve.
+    """
+    previous_end = 0
+    for start, end in spans:
+        if start < previous_end:
+            raise UL2Error(f"spans must be sorted and non-overlapping; got {(start, end)}")
+        if start >= end:
+            raise UL2Error(f"empty or inverted span {(start, end)}")
+        if end > length:
+            raise UL2Error(f"span {(start, end)} runs past the {length}-token sequence")
+        previous_end = end
