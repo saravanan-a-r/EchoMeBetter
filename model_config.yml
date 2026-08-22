@@ -1,0 +1,239 @@
+# =============================================================================
+# Model configuration — the single place to change the model's shape.
+#
+# Every architectural hyperparameter lives here. `model/` reads this file and
+# builds itself from it; no dimension is hardcoded in Python. To reconfigure
+# the model, edit this file — do not edit code.
+#
+# The values below are the frozen decisions from architecture.md §4. Entries
+# marked FROZEN cannot be changed after pretraining begins without a full
+# retrain: they are welded into every checkpoint's weight shapes.
+#
+# HUGGINGFACE NAMING
+# ------------------
+# Every field that exists in `transformers.T5Config` uses that field's exact
+# name and value convention, so anyone fine-tuning a released checkpoint reads
+# the same vocabulary they already know:
+#
+#   d_model  d_kv  d_ff  num_layers  num_decoder_layers  num_heads
+#   relative_attention_num_buckets  relative_attention_max_distance
+#   dropout_rate  layer_norm_epsilon  initializer_factor  feed_forward_proj
+#   tie_word_embeddings  vocab_size  pad_token_id  eos_token_id
+#   decoder_start_token_id
+#
+# Note `num_layers` means the ENCODER depth — that is what HuggingFace means
+# by it — and `num_decoder_layers` the decoder depth.
+#
+# The remaining fields have no T5Config counterpart, either because
+# HuggingFace hardcodes the behaviour (scale_attention_scores,
+# scale_output_for_tied_embeddings), because it belongs to training rather
+# than to the network (label_smoothing, label_pad_token_id), or because it is
+# ours (max_encoder_length, max_decoder_length, expected_parameters). Each is
+# marked below. `ModelConfig.to_huggingface_config()` emits a real config.json
+# and refuses if any of them is set to a value HuggingFace cannot reproduce.
+# =============================================================================
+
+# Which profile the pipeline builds unless it is told otherwise.
+#   large -> the target model  (architecture.md §4.2, "Decision: train Large")
+#   base  -> the 223M proxy used for the §7.8 full-pipeline rehearsal
+active_profile: large
+
+
+# -----------------------------------------------------------------------------
+# Shared by every profile.
+# -----------------------------------------------------------------------------
+defaults:
+
+  # --- vocabulary -------------------------------------------------------------
+  # FROZEN (architecture.md §6.1). Must match the trained tokenizer exactly.
+  # 32,768 total = 32,200 learned pieces + 568 reserved (256 sentinels,
+  # 3 mode tokens, 12 styles, 2 structural, 36 spare, 3 built-in, 256 byte
+  # fallback). Changing this invalidates the tokenizer and every checkpoint.
+  vocab_size: 32768
+
+  # --- attention geometry -----------------------------------------------------
+  # architecture.md §4.7: 64 is the stability/quality sweet spot across scales.
+  # The attention inner dimension is num_heads x d_kv, which equals d_model in
+  # both profiles below.
+  #
+  # `d_kv` is HuggingFace's name for the per-head width (T5Config.d_kv).
+  d_kv: 64
+
+  # --- context lengths --------------------------------------------------------
+  # NOT a T5Config field — HuggingFace's T5 has no context cap in its config,
+  # because relative position bias imposes none. Ours is a deliberate refusal
+  # to truncate silently (architecture.md §4.5): a rephrase of a silently
+  # truncated source looks valid and is not. Carried into the exported
+  # config.json so the limit travels with the weights.
+  #
+  # FROZEN (architecture.md §4.4). Encoder and decoder are deliberately equal.
+  #   - a 1024 decoder cannot express <style:elaborate> on a long input
+  #   - a 1024 decoder overflows on X-denoising targets (~1,057 tokens),
+  #     which would corrupt the pretraining objective itself
+  # Note: these do NOT affect the parameter count. T5 relative position bias
+  # has no per-position parameters, so 2048 and 4096 produce byte-identical
+  # model files. The entire cost of a larger context is memory and time.
+  max_encoder_length: 2048
+  max_decoder_length: 2048
+
+  # --- relative position bias -------------------------------------------------
+  # architecture.md §4.6: keep T5's proven defaults rather than scaling them
+  # with context on speculation. Distances are bucketed logarithmically —
+  # fine near, deliberately coarse far — which is what lets the model
+  # generalize to unseen lengths. Everything beyond max_distance shares one
+  # bucket. Evaluation is bucketed by input length (§7.7) so that if
+  # length-dependent degradation ever appears, it is visible rather than
+  # guessed at.
+  #
+  # num_buckets must be even: the bidirectional (encoder) bucketing splits it
+  # in half, one side for each direction.
+  #
+  # Parameter cost: num_buckets x num_heads per stack, 1,024 params total for
+  # Large. This bias is applied to ENCODER and DECODER SELF-attention only.
+  # Cross-attention has no position bias at all — it is purely content-based.
+  relative_attention_num_buckets: 32
+  relative_attention_max_distance: 128
+
+  # --- normalization ----------------------------------------------------------
+  # architecture.md §4.1: RMSNorm, pre-norm. RMSNorm rescales by root-mean-
+  # square without subtracting the mean and has no bias term — cheaper than
+  # LayerNorm at no quality cost. Pre-norm (normalize before each sub-layer)
+  # is what keeps gradients stable through 24 layers.
+  layer_norm_epsilon: 1.0e-6
+
+  # --- feed-forward -----------------------------------------------------------
+  # architecture.md §4.1, §4.7: GeGLU. Three matrices (gate, up, down) where a
+  # plain FFN has two, so d_ff ~= 2.75 x d_model matches the parameter count of
+  # a conventional 4x ReLU FFN while training better.
+  #
+  # `feed_forward_proj` is HuggingFace's name, in its "<gating>-<activation>"
+  # form. transformers derives two values from it:
+  #   is_gated_act = (prefix == "gated")   dense_act_fn = suffix
+  # and then looks `dense_act_fn` up in ACT2FN.
+  #
+  # gated-gelu is T5.1.1's standard string. Note the part that is easy to get
+  # wrong: transformers SPECIAL-CASES it —
+  #
+  #     if feed_forward_proj == "gated-gelu": dense_act_fn = "gelu_new"
+  #
+  # so "gated-gelu" means the TANH-APPROXIMATED GELU, not the erf-based one
+  # the name suggests. Reading it naively gives "gelu" and a model whose FFN
+  # quietly differs from what HuggingFace builds from the same config.json.
+  #
+  # Accepted: gated-gelu (this) and gated-gelu_new (explicit synonym).
+  # Both resolve to ACT2FN["gelu_new"], both here and in transformers.
+  #
+  # There is no ungated option — architecture.md §4.1 fixed the FFN as GeGLU
+  # and the §4.3 budget assumes its three matrices — and no exact-GELU option,
+  # because transformers has no gated string that selects it.
+  feed_forward_proj: gated-gelu
+
+  # --- embeddings -------------------------------------------------------------
+  # FROZEN (architecture.md §4.1). One matrix serves encoder input, decoder
+  # input and the output projection. Saves 33.5M params at no quality cost.
+  tie_word_embeddings: true
+
+  # NOT a T5Config field — HuggingFace hardcodes this. T5 scales the decoder
+  # output by d_model^-0.5 before the tied output projection. Without it,
+  # logits produced by a matrix that was initialized as an embedding are far
+  # too large and training is unstable. Only meaningful when
+  # tie_word_embeddings is true, and true is the only HuggingFace-compatible
+  # value in that case — the exporter refuses otherwise.
+  scale_output_for_tied_embeddings: true
+
+  # --- attention scaling ------------------------------------------------------
+  # NOT a T5Config field — HuggingFace hardcodes this to the `false` behaviour
+  # and the exporter refuses to export `true`.
+  #
+  # T5 does NOT divide attention scores by sqrt(d_kv). It folds that
+  # scaling into the query initializer instead (see initializer_factor below).
+  #
+  # These two settings are COUPLED. Setting this to true without also changing
+  # the initialization scheme produces attention logits that are too small and
+  # a model that trains poorly. Do not flip this in isolation.
+  scale_attention_scores: false
+
+  # --- regularization ---------------------------------------------------------
+  # architecture.md §4.1: 0.0 for pretraining, 0.1 for SFT. Pretraining data is
+  # effectively unlimited, so dropout only slows learning; SFT data is finite,
+  # so dropout prevents overfitting. Stage 2 overrides this.
+  #
+  # `dropout_rate` is HuggingFace's name (T5Config.dropout_rate).
+  dropout_rate: 0.0
+
+  # NOT a T5Config field — in HuggingFace this is a loss/Trainer argument, not
+  # a model property. Cross-entropy label smoothing. 0.0 for pretraining: the
+  # denoising target is the exact original text, so there is no label noise to
+  # smooth over.
+  label_smoothing: 0.0
+
+  # --- initialization ---------------------------------------------------------
+  # T5's scheme: every tensor's initial standard deviation is derived from its
+  # own fan-in, scaled by this factor. 1.0 is T5's value. Lower it only to
+  # debug a diverging run.
+  initializer_factor: 1.0
+
+  # --- special token ids ------------------------------------------------------
+  # Resolved from the tokenizer by NAME (architecture.md §6.4) and recorded
+  # here for the model's own use: padding for masking, and the decoder start
+  # token for teacher forcing. The model has no BOS (bos_id = -1), so T5's
+  # convention of starting the decoder with <pad> applies.
+  #
+  # These must agree with tokenizer/training/output/token_map.json. The
+  # integration test suite checks that they do.
+  pad_token_id: 0
+  decoder_start_token_id: 0
+  eos_token_id: 1
+
+  # NOT a T5Config field — in HuggingFace this belongs to the data collator
+  # (DataCollatorForSeq2Seq.label_pad_token_id). Positions in the loss target
+  # set to this value contribute nothing to the loss. -100 is PyTorch's
+  # cross-entropy ignore_index, so this is the same value HuggingFace uses.
+  # Must match UL2/src/batching.py's label padding.
+  label_pad_token_id: -100
+
+
+# -----------------------------------------------------------------------------
+# Size profiles (architecture.md §4.2).
+#
+# `expected_parameters` is a deliberate regression lock, not documentation:
+# the model verifies its real parameter count against it. If you change a
+# dimension, this number will no longer match and the check will fail — update
+# it consciously, having recomputed it, rather than discovering weeks later
+# that the model was not the size you believed. It is ours, not a T5Config
+# field, and is excluded from the exported config.json.
+#
+# Reminder: `num_layers` is the ENCODER depth (HuggingFace's meaning).
+# -----------------------------------------------------------------------------
+profiles:
+
+  # The 223M proxy. NOT a fallback — architecture.md §7.8 requires the entire
+  # pipeline (pretrain -> SFT -> evaluate) be rehearsed on Base before weeks of
+  # compute are committed to Large. Treat its results as a ranking signal, not
+  # a guarantee of Large's behaviour.
+  base:
+    d_model: 768
+    d_ff: 2048
+    num_layers: 12          # encoder depth
+    num_decoder_layers: 12
+    num_heads: 12
+    expected_parameters: 223395072
+
+  # The target model. FROZEN (architecture.md §4.2, decision D2).
+  #
+  #   token embeddings (tied)      32,768 x 1,024        33,554,432
+  #   encoder  24 x 12,847,104                          308,330,496
+  #   decoder  24 x 17,042,432                          409,018,368
+  #   relative position bias  (32 x 16) x 2                   1,024
+  #   final RMSNorms          2 x 1,024                       2,048
+  #   ----------------------------------------------------------------
+  #   TOTAL                                             750,906,368
+  #
+  # Serving footprint: ~3,004 MB fp32 / ~1,502 MB bf16 / ~751 MB int8.
+  large:
+    d_model: 1024
+    d_ff: 2816
+    num_layers: 24          # encoder depth
+    num_decoder_layers: 24
+    num_heads: 16
+    expected_parameters: 750906368
