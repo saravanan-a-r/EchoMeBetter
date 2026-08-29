@@ -1,0 +1,217 @@
+# =============================================================================
+# Training configuration — the single place to change how a run behaves.
+#
+# Every hyperparameter lives here. `training/` reads this file; no learning
+# rate, schedule or batch size is written in Python. To change a run, edit
+# this file — do not edit code.
+#
+# THE SPLIT FROM model_config.yml
+# -------------------------------
+# By lifetime, not by taste. `model_config.yml` holds what is welded into
+# every checkpoint's weight shapes and cannot change after pretraining begins.
+# This file holds what a later run — a fine-tune, a rehearsal, a resumption —
+# may legitimately choose differently.
+#
+# HUGGINGFACE NAMING
+# ------------------
+# Every field that exists in `transformers.TrainingArguments` uses that
+# field's exact name and meaning, so anyone continuing a released checkpoint
+# under HuggingFace's `Trainer` reads the vocabulary they already know:
+#
+#   output_dir  seed  data_seed  max_steps  num_train_epochs
+#   learning_rate  lr_scheduler_type  warmup_steps  warmup_ratio
+#   weight_decay  adam_beta1  adam_beta2  adam_epsilon  max_grad_norm
+#   per_device_train_batch_size  gradient_accumulation_steps
+#   gradient_checkpointing  bf16  fp16  label_smoothing_factor
+#   logging_steps  eval_steps  save_steps  save_total_limit
+#   metric_for_best_model  greater_is_better  load_best_model_at_end
+#   resume_from_checkpoint
+#
+# `lr_scheduler_type` values are `transformers.SchedulerType` values and the
+# curve is computed with `transformers.optimization`'s arithmetic, so a
+# HuggingFace-side continuation follows the same schedule rather than a
+# similar one. `TrainingConfig.to_huggingface_training_arguments()` emits a
+# dict `TrainingArguments(**d)` accepts.
+#
+# Fields with no TrainingArguments counterpart are marked "NOT a
+# TrainingArguments field" below, with the reason.
+#
+# The values are architecture.md §13's reference configuration.
+# =============================================================================
+
+# Which stage the pipeline runs unless it is told otherwise.
+#   pretrain  -> the UL2 mixture-of-denoisers run (§7)
+#   sft       -> supervised fine-tuning on rephrase pairs (§8.1)
+#   rehearsal -> the short Base-sized full-pipeline proof (§7.8)
+active_stage: pretrain
+
+
+# -----------------------------------------------------------------------------
+# Shared by every stage.
+# -----------------------------------------------------------------------------
+defaults:
+
+  # --- reproducibility --------------------------------------------------------
+  # Two seeds, not one. `seed` drives initialization and dropout; `data_seed`
+  # drives corpus order and UL2 corruption sampling. Separating them means a
+  # rerun can change one without disturbing the other — the only way to tell
+  # "this result depended on the initialization" from "this result depended on
+  # which examples came first".
+  seed: 42
+  data_seed: 1234
+
+  output_dir: runs/pretrain
+
+  # --- length -----------------------------------------------------------------
+  # `max_steps` counts OPTIMIZER steps, not micro-batches. That is
+  # HuggingFace's meaning and it is what makes a schedule comparable between
+  # runs that used different accumulation to reach the same effective batch.
+  #
+  # 200,000 steps x ~1M tokens/step is the §7.5 target of 50-100B tokens for
+  # Large. Overridden per stage below.
+  max_steps: 200000
+
+  # Carried for TrainingArguments compatibility and UNUSED here: pretraining
+  # is defined by a token budget over a streamed corpus (§7.5), which has no
+  # epochs. Left at 1.0 so an exported TrainingArguments is well-formed.
+  num_train_epochs: 1.0
+
+  # --- optimizer (§13) --------------------------------------------------------
+  # AdamW rather than Adafactor: §13 says "AdamW if memory allows", and at
+  # 751M parameters on a 40GB card it does. AdamW is the better-understood
+  # optimizer and its moments are worth the memory when the alternative is
+  # debugging Adafactor's factored second moment mid-run.
+  learning_rate: 0.0003        # 3e-4, mid-range of §13's 2e-4 - 5e-4
+  weight_decay: 0.1
+  adam_beta1: 0.9
+  adam_beta2: 0.95             # NOT PyTorch's 0.999 — see §13 and optimizer.py
+  adam_epsilon: 0.00000001     # 1e-8
+  max_grad_norm: 1.0
+
+  # --- learning-rate schedule (§13) -------------------------------------------
+  # inverse_sqrt for pretraining because it never needs to know how long the
+  # run is: a 50-100B token run can be extended without the schedule being
+  # wrong in hindsight. A cosine schedule whose horizon is later moved decays
+  # to its floor at the OLD horizon and stays there.
+  lr_scheduler_type: inverse_sqrt
+  warmup_steps: 0              # 0 means "use warmup_ratio" (HF's precedence)
+  warmup_ratio: 0.01           # §13: warmup ~1-2% of steps
+
+  # --- batching ---------------------------------------------------------------
+  # Effective batch = per_device_train_batch_size x gradient_accumulation_steps
+  # x sequence length. §13 wants >=1M tokens/step; 16 x 32 x 2048 = 1,048,576.
+  per_device_train_batch_size: 16
+  gradient_accumulation_steps: 32
+
+  # --- memory and precision ---------------------------------------------------
+  gradient_checkpointing: true # §13: on. ~30% slower, much less activation memory
+  bf16: true                   # §13: bf16 mixed precision
+  fp16: false                  # rejected by the loader; see config.py for why
+
+  # --- loss -------------------------------------------------------------------
+  # Must equal `label_smoothing` in model_config.yml — the model computes the
+  # loss, so its value is the one that applies. The trainer refuses to start
+  # if the two disagree rather than silently preferring one.
+  label_smoothing_factor: 0.0  # §13: no label smoothing during pretraining
+
+  # --- cadence ----------------------------------------------------------------
+  logging_steps: 50
+  eval_steps: 1000
+  save_steps: 1000
+
+  # --- checkpoint retention (§13: keep best-by-eval, not last) ----------------
+  save_total_limit: 5
+  metric_for_best_model: loss  # the key in whatever `evaluate` returns
+  greater_is_better: false     # it is a loss
+  load_best_model_at_end: true
+
+  # Resume from the latest checkpoint in output_dir if one exists. A 50-100B
+  # token run WILL be interrupted (§7.9), so this defaults on.
+  resume_from_checkpoint: true
+
+  # --- ours; no TrainingArguments counterpart ---------------------------------
+
+  # NOT a TrainingArguments field. Which model_config.yml profile to build.
+  # `null` means "whatever model_config.yml's active_profile says", so the two
+  # files do not have to be edited together for an ordinary run.
+  model_profile: null
+
+  # NOT a TrainingArguments field. Overrides model_config.yml's dropout_rate
+  # for this stage — §13 wants 0.0 for pretraining and 0.1 for SFT, and that
+  # is a per-run choice, not an architectural one. `null` leaves the model's
+  # own value alone.
+  dropout_rate: null
+
+  # NOT a TrainingArguments field — HuggingFace hides it inside
+  # lr_scheduler_kwargs. Anchors the inverse_sqrt decay; `null` means "use
+  # warmup_steps", which is HuggingFace's own default.
+  lr_timescale: null
+
+  # NOT TrainingArguments fields. Cosine shape controls, used only when
+  # lr_scheduler_type is `cosine`.
+  min_lr_ratio: 0.0
+  num_cycles: 0.5
+
+  # NOT a TrainingArguments field. Caps how much of the frozen validation set
+  # each evaluation consumes. `null` means all of it — correct for a small
+  # held-out slice, and worth capping during a rehearsal.
+  eval_max_batches: null
+
+  # NOT a TrainingArguments field. Protects the best-by-eval checkpoint from
+  # save_total_limit. Without it a limit of 5 quietly deletes the best model
+  # in the run once it is old enough (§13).
+  keep_best_checkpoint: true
+
+  # NOT a TrainingArguments field. Report [R]/[X]/[S] losses separately, which
+  # §7.6 requires: "An aggregate can look healthy while one objective silently
+  # fails to learn." Costs one extra inference pass per logging window.
+  log_per_mode_loss: true
+
+
+# -----------------------------------------------------------------------------
+# Stages. A stage may override only the keys listed in `_STAGE_FIELDS`
+# (training/src/config.py); anything else is a typo and is rejected, because a
+# silently-ignored key means a run that is not the one intended.
+# -----------------------------------------------------------------------------
+stages:
+
+  # architecture.md §7 — UL2 mixture-of-denoisers pretraining on Large.
+  pretrain:
+    max_steps: 200000
+    learning_rate: 0.0003
+    lr_scheduler_type: inverse_sqrt
+    warmup_ratio: 0.01
+    dropout_rate: 0.0
+    label_smoothing_factor: 0.0
+    output_dir: runs/pretrain
+
+  # architecture.md §8.1 — supervised fine-tuning on rephrase pairs.
+  # Cosine here, not inverse_sqrt: an SFT run has a known, short horizon, and
+  # decaying to zero at the end of it is what §13 specifies. Dropout and label
+  # smoothing both come on, because SFT trains on far less data and overfits.
+  sft:
+    max_steps: 20000
+    learning_rate: 0.00005     # §13: lower than pretraining
+    lr_scheduler_type: cosine
+    warmup_ratio: 0.02
+    dropout_rate: 0.1
+    label_smoothing_factor: 0.1
+    per_device_train_batch_size: 8
+    gradient_accumulation_steps: 8
+    output_dir: runs/sft
+
+  # architecture.md §7.8 — the full-pipeline rehearsal on Base (223M), run
+  # before committing weeks of compute to Large. Short by design: the purpose
+  # is to prove the pipeline produces a working rephraser at all, NOT to tune
+  # hyperparameters. Treat its numbers as a ranking signal, never a guarantee.
+  rehearsal:
+    model_profile: base
+    max_steps: 2000
+    learning_rate: 0.0003
+    lr_scheduler_type: inverse_sqrt
+    warmup_steps: 100
+    dropout_rate: 0.0
+    label_smoothing_factor: 0.0
+    per_device_train_batch_size: 8
+    gradient_accumulation_steps: 4
+    output_dir: runs/rehearsal
