@@ -8,11 +8,12 @@
 
 # ---------------------------------------------------------------------------
 # Corpora and generated data. These are rebuildable from the downloaders in
-# tokenizer/training_corpus/ and are far too large to version. The *.manifest
-# sidecars ARE tracked, so provenance travels with the code.
+# tokenizer/tokenizer_training_corpus_downloader/ and are far too large to
+# version. The *.manifest sidecars ARE tracked, so provenance travels with
+# the code.
 # ---------------------------------------------------------------------------
-tokenizer/training_corpus/output/*
-!tokenizer/training_corpus/output/*.manifest.json
+tokenizer/tokenizer_training_corpus_downloader/output/*
+!tokenizer/tokenizer_training_corpus_downloader/output/*.manifest.json
 
 # The sampled fitting corpus and the replayed eval slice. Both are derived
 # artifacts, reproducible from the manifest + seed.
