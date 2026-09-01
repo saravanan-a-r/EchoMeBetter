@@ -90,9 +90,12 @@ probabilistic model into a dependable one, and it is not optional.
 ```
 tokenizer/    vocabulary construction, validation and freeze protocol
               (byte-fallback subword model — no input is ever unrepresentable)
+corpus/       the resumable pretraining data pipeline (text -> token IDs)
 UL2/          the mixture-of-denoisers pretraining objective
 model/        the encoder–decoder itself
 training/     the training loop, optimizer, schedules and checkpointing
+pretrain.py            entrypoint wiring the four packages into a real run
+pretrain_smoke_test.py pre-flight check before a real rehearsal or full run
 ```
 
 Each module has its own README, its own test suite, and a configuration file
@@ -117,5 +120,8 @@ hyperparameter is hardcoded in Python — to reconfigure, edit the config.
 
 ## Status
 
-Tokenizer, model, pretraining objective and training loop are implemented and
-tested. Pretraining is the next milestone.
+Tokenizer, model, pretraining objective, training loop and the corpus
+pipeline are implemented and tested; `pretrain.py` wires them into a runnable
+Stage 1 pipeline, and `pretrain_smoke_test.py` proves it end to end (§7.8)
+before a real corpus is downloaded. Downloading the full 50-100B token
+pretraining corpus and starting the real run is the next milestone.

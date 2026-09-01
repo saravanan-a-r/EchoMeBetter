@@ -518,8 +518,17 @@ class Trainer:
                 f"batch is missing {missing}; expected the keys "
                 f"UL2/src/batching.pad_batch produces"
             )
+        # `non_blocking=True` is only safe (and only faster) on CUDA with
+        # pinned host memory. On MPS it has been observed to return before
+        # the copy completes: a later `.to()` call in the same comprehension
+        # can start writing into the destination buffer of an earlier one
+        # before it is done being read, silently replacing its values —
+        # not a crash, a wrong tensor. Non-blocking is switched off for
+        # every other backend so a batch is either transferred correctly or
+        # not transferred; it is never observed half-done.
+        non_blocking = self.device.type == "cuda"
         return {
-            key: _as_tensor(batch[key]).to(self.device, non_blocking=True)
+            key: _as_tensor(batch[key]).to(self.device, non_blocking=non_blocking)
             for key in REQUIRED_KEYS
         }
 
