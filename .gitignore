@@ -20,6 +20,18 @@ tokenizer/tokenizer_training_corpus_downloader/output/*
 tokenizer/training/output/corpus.txt
 tokenizer/training/output/tokenizer_evals_set.jsonl
 
+# pretrain_corpus/'s own output: downloaded/cleaned shards, staged Stack
+# Exchange archives and extracted XML, the run manifest, and the PII audit
+# log, all rebuildable from download.py + the same seed. pii_registry.json
+# is deliberately excluded from this rule and stays untracked too, but for
+# a different reason: it is mutable run state (a high-water mark), not a
+# static input -- unlike pii_pools.json/legacy_reserved.json alongside it,
+# which ARE real source data and stay tracked.
+pretrain_corpus/output/*
+pretrain_corpus/data/pii_registry.json
+pretrain_corpus/data/pii_registry.json.lock
+pretrain_corpus/data/pii_audit.jsonl
+
 # ---------------------------------------------------------------------------
 # Training runs and checkpoints
 # ---------------------------------------------------------------------------

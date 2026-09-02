@@ -1,0 +1,13 @@
+# Required
+datasets>=2.14        # streaming HuggingFace sources (src/sources.py)
+lxml>=4.9             # Stack Exchange dump XML parsing (src/sources.py)
+html2text>=2020.1.16  # Stack Exchange post body -> markdown (src/sources.py)
+
+# Optional (src/clean.py degrades gracefully if absent; recommended for
+# cleaner text -- fixes double-encoded UTF-8 like "â€™" -> "'")
+ftfy>=6.1
+
+# System dependency (not pip-installable): the `7z` binary is required for
+# Stack Exchange archives.
+#   Debian/Ubuntu: apt-get install -y p7zip-full
+#   macOS:         brew install p7zip
