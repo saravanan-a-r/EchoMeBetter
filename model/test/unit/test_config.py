@@ -65,8 +65,8 @@ def test_active_profile_is_used_when_none_is_requested():
     assert config.profile == document["active_profile"]
 
 
-def test_available_profiles_lists_both():
-    assert available_profiles(MODEL_CONFIG_PATH) == ["base", "large"]
+def test_available_profiles_lists_all():
+    assert available_profiles(MODEL_CONFIG_PATH) == ["base", "large", "medium"]
 
 
 def test_profiles_inherit_shared_defaults():
