@@ -34,8 +34,9 @@
 # =============================================================================
 
 # Which profile the pipeline builds unless it is told otherwise.
-#   large -> the target model  (architecture.md §4.2, "Decision: train Large")
-#   base  -> the 223M proxy used for the §7.8 full-pipeline rehearsal
+#   large  -> the target model  (architecture.md §4.2, "Decision: train Large")
+#   base   -> the 223M proxy used for the §7.8 full-pipeline rehearsal
+#   medium -> 500M experiment variant; not part of the frozen §4.2 decisions
 active_profile: large
 
 
@@ -218,6 +219,28 @@ profiles:
     num_decoder_layers: 12
     num_heads: 12
     expected_parameters: 223395072
+
+  # A mid-size experiment variant between Base and Large. Not part of the
+  # frozen architecture.md decisions -- added for running experiments at a
+  # scale closer to Large without paying Large's full compute cost. Same
+  # d_kv=64 and num_heads x d_kv = d_model invariant as the other profiles.
+  #
+  #   token embeddings (tied)      32,768 x 896            29,360,128
+  #   encoder  20 x 10,180,352                             203,607,040
+  #   decoder  20 x 13,392,512                             267,850,240
+  #   relative position bias  (32 x 14) x 2                        896
+  #   final RMSNorms          2 x 896                              1,792
+  #   ----------------------------------------------------------------
+  #   TOTAL                                                500,820,096
+  #
+  # Serving footprint: ~2,003 MB fp32 / ~1,002 MB bf16 / ~501 MB int8.
+  medium:
+    d_model: 896
+    d_ff: 2592
+    num_layers: 20          # encoder depth
+    num_decoder_layers: 20
+    num_heads: 14
+    expected_parameters: 500820096
 
   # The target model. FROZEN (architecture.md §4.2, decision D2).
   #
