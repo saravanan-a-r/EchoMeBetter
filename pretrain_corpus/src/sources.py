@@ -74,6 +74,27 @@ class SourceSpec:
     hf_data_files: tuple[str, ...] = ()
     text_field: str = "text"
     shuffle_buffer: int = 10_000
+    # How many underlying files a worker's shuffle buffer draws from at once.
+    #
+    # This is a *memory* knob, not a quality one, and it is the single largest
+    # consumer of RAM in a worker. `datasets` >= 5.0 fills the shuffle buffer
+    # from `max_buffer_input_shards` files concurrently, holding a separate
+    # open Parquet reader (and its download/decode buffers) for each. Measured
+    # on this corpus, one reader costs ~2.4GB of resident memory, and the cost
+    # is linear in the number of readers: the library default of 10 puts a
+    # single FineWeb-Edu worker at ~24GB, which is what OOM-killed a 125GB box
+    # running 20 workers. One reader holds the same worker at ~3GB.
+    #
+    # `buffer_size` is deliberately *not* the lever here: 1,000 and 10,000
+    # both plateau around 24GB at 10 readers, because the memory is in the
+    # readers rather than in the buffered rows. So the buffer stays large
+    # (good mixing, nearly free) and the reader count comes down.
+    #
+    # What this costs: the buffer mixes rows within one file at a time instead
+    # of across ten. File *order* is still shuffled -- `shuffle()` randomizes
+    # the shard order independently of this -- so a budget-limited run still
+    # takes a random slice of the dataset rather than a fixed prefix.
+    shuffle_input_shards: int = 1
     needs_token: bool = False
     fallback: "SourceSpec | None" = None
 
@@ -228,12 +249,41 @@ def iter_hf_records(
     if num_shards > 1:
         dataset = _shard(dataset, num_shards, shard_index)
     if spec.shuffle_buffer:
-        dataset = dataset.shuffle(seed=seed + shard_index, buffer_size=spec.shuffle_buffer)
+        dataset = _shuffle(
+            dataset,
+            seed=seed + shard_index,
+            buffer_size=spec.shuffle_buffer,
+            input_shards=spec.shuffle_input_shards,
+        )
 
     for row in dataset:
         text = row.get(spec.text_field)
         if text:
             yield text
+
+
+def _shuffle(dataset, *, seed: int, buffer_size: int, input_shards: int):
+    """
+    Shuffle a streaming dataset, capping how many files feed the buffer.
+
+    `max_buffer_input_shards` is a `datasets` >= 5.0 parameter; see
+    `SourceSpec.shuffle_input_shards` for why capping it is what keeps a
+    worker inside a few GB instead of a few tens of GB.
+
+    The parameter is passed only when the installed `datasets` actually
+    accepts it, checked by signature rather than by catching `TypeError`.
+    `requirements.txt` allows `datasets>=2.14`, and a `try/except TypeError`
+    around a call whose body is a generator-producing library function would
+    also swallow a genuine `TypeError` raised *inside* it -- turning a real
+    bug into a silent fallback to the 10-reader default, which is the exact
+    failure this function exists to prevent.
+    """
+    import inspect
+
+    kwargs: dict = {"seed": seed, "buffer_size": buffer_size}
+    if "max_buffer_input_shards" in inspect.signature(dataset.shuffle).parameters:
+        kwargs["max_buffer_input_shards"] = max(1, input_shards)
+    return dataset.shuffle(**kwargs)
 
 
 def _shard(dataset, num_shards: int, index: int):

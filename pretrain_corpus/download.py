@@ -44,6 +44,7 @@ import sys
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 from src.dedup import Deduplicator, build_deduplicator, estimate_chunks
@@ -457,8 +458,73 @@ def run_stackexchange_source(
 # --------------------------------------------------------------------------
 
 
+def _apply_stream_overrides(spec: SourceSpec, args: argparse.Namespace) -> SourceSpec:
+    """
+    Let the operator retune a source's streaming knobs without editing code.
+
+    Both default to `None` meaning "leave the SourceSpec alone", so a run that
+    passes neither flag behaves exactly as the table in `sources.py` says.
+    """
+    changes: dict = {}
+    if args.shuffle_buffer is not None:
+        changes["shuffle_buffer"] = args.shuffle_buffer
+    if args.shuffle_input_shards is not None:
+        changes["shuffle_input_shards"] = args.shuffle_input_shards
+    return replace(spec, **changes) if changes else spec
+
+
+def _available_memory_gb() -> float | None:
+    """`MemAvailable` in GB, or `None` off Linux where the file is absent."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / (1024 * 1024)
+    except OSError:  # pragma: no cover - platform dependent
+        return None
+    return None
+
+
+def _check_memory_budget(args: argparse.Namespace) -> str | None:
+    """
+    Refuse to launch more workers than this machine's RAM can hold.
+
+    Worth a preflight check rather than a comment, because the failure it
+    guards against is silent and expensive: every worker streams into its own
+    multi-GB buffers, so the total is `max_parallel_sources x
+    workers_per_source x per-worker`, and overshooting does not raise
+    `MemoryError` or slow down -- the kernel OOM killer simply SIGKILLs a
+    process, usually hours in, with the traceback going nowhere and partial
+    shards left behind. Worse, on a box with no swap it frequently kills some
+    *other* service first, so the download appears fine while unrelated things
+    on the machine die.
+
+    Returns an error string, or `None` when the run fits.
+    """
+    total_workers = args.max_parallel_sources * args.workers_per_source
+    projected = total_workers * args.mem_per_worker_gb
+    available = _available_memory_gb()
+    if available is None:
+        return None
+
+    headroom = 0.85  # leave room for page cache and everything else on the box
+    if projected <= available * headroom:
+        return None
+    return (
+        f"projected memory use is {projected:.0f} GB "
+        f"({total_workers} workers x {args.mem_per_worker_gb:.1f} GB) but only "
+        f"{available:.0f} GB is available.\n"
+        f"  A worker's memory is dominated by --shuffle-input-shards "
+        f"(~2.4 GB per concurrent reader); see src/sources.py.\n"
+        f"  Fix by lowering --max-parallel-sources / --workers-per-source, or "
+        f"adding swap.\n"
+        f"  Re-measure with --mem-per-worker-gb, or bypass with "
+        f"--skip-memory-check if you know better."
+    )
+
+
 def _run_one_source(source_id: str, args: argparse.Namespace, budget_bytes: int, registry: PIIRegistry, legacy: dict) -> dict:
-    spec = resolve(source_id)
+    spec = _apply_stream_overrides(resolve(source_id), args)
     output_dir = Path(args.output_dir)
     audit_path = Path(args.pii_audit) if args.pii_audit else None
 
@@ -651,6 +717,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "conservative on a shared box -- check `nproc`/`free -h` first.",
     )
     parser.add_argument("--shard-gb", type=float, default=2.0, help="Output file rotation size per shard.")
+    parser.add_argument(
+        "--shuffle-input-shards", type=int, default=None, metavar="N",
+        help="Files each worker's shuffle buffer reads from at once (default: the "
+             "per-source value in src/sources.py, currently 1). THE dominant memory "
+             "knob: roughly 2.4 GB of RAM per reader per worker.",
+    )
+    parser.add_argument(
+        "--shuffle-buffer", type=int, default=None, metavar="N",
+        help="Override the per-source streaming shuffle buffer size. Affects mixing "
+             "quality; barely affects memory (see --shuffle-input-shards).",
+    )
+    parser.add_argument(
+        "--mem-per-worker-gb", type=float, default=4.0,
+        help="Expected peak RAM per worker, used only by the preflight check. "
+             "Measured at ~3 GB with --shuffle-input-shards 1; ~24 GB at 10.",
+    )
+    parser.add_argument(
+        "--skip-memory-check", action="store_true",
+        help="Launch even if the preflight check says the run will not fit in RAM.",
+    )
     parser.add_argument("--include-meta", action="store_true", help="Include Stack Exchange meta.* sites.")
     parser.add_argument("--include-non-english", action="store_true", help="Include known non-English Stack Exchange sites.")
     parser.add_argument(
@@ -669,6 +755,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.gb <= 0:
         print(f"error: --gb must be > 0, got {args.gb}", file=sys.stderr)
         return 2
+    # Deliberately here and not in `run()`: this is a fact about the machine
+    # the CLI was invoked on, not about the orchestration `run()` performs.
+    # Keeping it out of `run()` also keeps that function's behaviour a
+    # function of its arguments alone, so the orchestration tests do not
+    # start passing or failing based on how much RAM the test box has.
+    if not args.skip_memory_check:
+        problem = _check_memory_budget(args)
+        if problem is not None:
+            print(f"error: {problem}", file=sys.stderr)
+            return 2
     return run(args)
 
 
