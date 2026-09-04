@@ -21,12 +21,13 @@ def test_group_counts_match_design():
     assert len(specials.STYLE_TOKENS) == 12
     assert len(specials.STRUCTURAL_TOKENS) == 2
     assert len(specials.RESERVED_TOKENS) == 36
+    assert len(specials.CLI_TOKENS) == 64
 
 
 def test_total_counts_match_design():
-    assert len(specials.USER_DEFINED_SYMBOLS) == 309
+    assert len(specials.USER_DEFINED_SYMBOLS) == 373
     assert len(specials.BUILTIN_SPECIALS) == 3
-    assert len(specials.ALL_NAMED_SPECIALS) == 312
+    assert len(specials.ALL_NAMED_SPECIALS) == 376
 
 
 def test_sentinel_count_covers_the_encoder_context():
@@ -80,6 +81,23 @@ def test_reserved_spares_are_contiguous_and_zero_indexed():
         assert name == f"<reserved_{i}>"
 
 
+def test_cli_reserved_tokens_are_contiguous_and_zero_indexed():
+    for i, name in enumerate(specials.CLI_TOKENS):
+        assert name == f"<cli_reserved_{i}>"
+
+
+def test_cli_reserved_tokens_are_distinct_from_generic_spares():
+    """
+    Two different reserved blocks, deliberately not merged: RESERVED_TOKENS
+    is generic emergency capacity, CLI_TOKENS is earmarked for the planned
+    CLI-helper fine-tune. Keeping them disjoint is what lets a future
+    Stage 2 assign CLI-specific meaning to `<cli_reserved_N>` without
+    guessing whether a given `<reserved_N>` was meant for this or something
+    else.
+    """
+    assert not set(specials.CLI_TOKENS) & set(specials.RESERVED_TOKENS)
+
+
 def test_style_tokens_cover_all_twelve_styles():
     """DESIGN.md 5.4: 5 Phase-1 styles + 7 Phase-2 styles, all reserved now."""
     expected = {
@@ -110,7 +128,9 @@ def test_user_defined_symbols_order_is_stable():
     assert specials.USER_DEFINED_SYMBOLS[0] == "<extra_id_0>"
     assert specials.USER_DEFINED_SYMBOLS[256] == "[R]"
     assert specials.USER_DEFINED_SYMBOLS[259] == "<style:grammar>"
-    assert specials.USER_DEFINED_SYMBOLS[-1] == "<reserved_35>"
+    assert specials.USER_DEFINED_SYMBOLS[273] == "<reserved_0>"
+    assert specials.USER_DEFINED_SYMBOLS[309] == "<cli_reserved_0>"
+    assert specials.USER_DEFINED_SYMBOLS[-1] == "<cli_reserved_63>"
 
 
 def test_module_self_validates_on_import():

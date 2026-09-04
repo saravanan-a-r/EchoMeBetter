@@ -4,7 +4,7 @@ Unit tests for the encoder and decoder layers.
 Two things are locked here that nothing else can catch:
 
   1. **Per-layer parameter counts**, checked against architecture.md §4.3's
-     arithmetic. These are what the 750,906,368 total is built from; a stray
+     arithmetic. These are what the 750,971,904 total is built from; a stray
      bias or an extra norm changes the model's size silently.
 
   2. **Cross-attention receives no position bias.** T5 cross-attention is

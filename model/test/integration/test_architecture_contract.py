@@ -90,13 +90,13 @@ def test_d_ff_is_about_2_75_times_d_model(large, base):
 
 
 def test_the_documented_total(large):
-    assert large.parameter_count() == 750_906_368
-    assert large.expected_parameters == 750_906_368
+    assert large.parameter_count() == 750_971_904
+    assert large.expected_parameters == 750_971_904
 
 
 def test_the_documented_base_total(base):
-    assert base.parameter_count() == 223_395_072
-    assert base.expected_parameters == 223_395_072
+    assert base.parameter_count() == 223_444_224
+    assert base.expected_parameters == 223_444_224
 
 
 def test_bf16_serving_size_is_about_1_5_gb(large):
@@ -108,14 +108,14 @@ def test_bf16_serving_size_is_about_1_5_gb(large):
 
 
 def test_embeddings_are_tied(large):
-    """architecture.md §4.1: saves 33.5M params at zero quality cost."""
+    """architecture.md §4.1: saves 33.6M params at zero quality cost."""
     assert large.tie_word_embeddings is True
 
 
 def test_tying_saves_the_documented_amount(large):
     untied = large.with_(tie_word_embeddings=False, expected_parameters=None)
     saved = untied.parameter_count() - large.parameter_count()
-    assert saved == 33_554_432
+    assert saved == 33_619_968
 
 
 def test_the_model_uses_rmsnorm_not_layernorm(tiny_config):
@@ -281,10 +281,10 @@ def test_cross_attention_carries_no_position_bias(tiny_config, monkeypatch):
 
 def test_vocab_size_matches_the_tokenizer(large, base):
     """
-    architecture.md §6.1 (FROZEN): 32,768. Must equal the trained
+    architecture.md §6.1 (FROZEN): 32,832. Must equal the trained
     tokenizer's vocabulary or every embedding row is misaligned.
     """
-    assert large.vocab_size == base.vocab_size == 32768
+    assert large.vocab_size == base.vocab_size == 32832
 
 
 def test_there_is_no_bos_token(large):

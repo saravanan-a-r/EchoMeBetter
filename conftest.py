@@ -4,12 +4,20 @@ exercise `pretrain.py` and `pretrain_smoke_test.py` — the scripts that wire
 `corpus/`, `UL2/`, `model/` and `training/` together and therefore do not
 belong to any one of those packages' own test suites.
 
-Everything here uses the **real, frozen tokenizer** (so real 32,768-wide
-vocabulary IDs flow through the whole pipeline, the way `TokenizedCorpus`
-actually produces them) but a **tiny model** (so a test step costs
-milliseconds, not the base profile's makes-a-coffee latency on CPU). Tests
-that need the tokenizer artifacts are marked `real_tokenizer` and skip
-automatically if they are not built.
+Everything here uses the **real, frozen tokenizer** (so real vocabulary IDs
+flow through the whole pipeline, the way `TokenizedCorpus` actually produces
+them) but a **tiny model** (so a test step costs milliseconds, not the base
+profile's makes-a-coffee latency on CPU). Tests that need the tokenizer
+artifacts are marked `real_tokenizer` and skip automatically if they are not
+built.
+
+The tiny model's `vocab_size` below is set to the *current design target*
+(model_config.yml's value), not necessarily the vocab size of whatever
+tokenizer happens to be frozen on disk right now -- a model config with a
+vocab_size larger than the real tokenizer's actual piece count is harmless
+(real token IDs still fit inside the larger embedding table; the extra rows
+just go unused until the tokenizer is next retrained), so this is safe to
+lead rather than follow the frozen artifact.
 """
 
 from __future__ import annotations
@@ -40,7 +48,7 @@ def _tiny_model_config_document() -> dict:
         expected_parameters=None,
     )
     defaults = dict(
-        vocab_size=32768,  # must match the real tokenizer, not a test fixture
+        vocab_size=32832,  # model_config.yml's current design target
         d_kv=16,
         max_encoder_length=64,
         max_decoder_length=64,

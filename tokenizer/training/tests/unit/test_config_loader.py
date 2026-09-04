@@ -69,7 +69,7 @@ def test_design_critical_defaults(base_cfg):
     assert t["add_dummy_prefix"] is False
     assert t["split_digits"] is True
     assert t["character_coverage"] == 1.0
-    assert t["vocab_size"] == 32768
+    assert t["vocab_size"] == 32832
     assert (t["pad_id"], t["eos_id"], t["unk_id"], t["bos_id"]) == (0, 1, 2, -1)
 
 
@@ -144,7 +144,7 @@ def test_section_not_a_mapping(tmp_path, base_cfg):
 
 def test_wrong_type(tmp_path, base_cfg):
     cfg = copy.deepcopy(base_cfg)
-    cfg["trainer"]["vocab_size"] = "32768"
+    cfg["trainer"]["vocab_size"] = "32832"
     with pytest.raises(ConfigError, match="vocab_size must be int"):
         load_config(write_cfg(tmp_path, cfg))
 
@@ -203,7 +203,7 @@ def test_semantic_bounds(tmp_path, base_cfg, section, key, value, match):
 
 def test_vocab_size_smaller_than_reserved_block(tmp_path, base_cfg):
     """
-    568 slots are spoken for before a single piece is learned (309 user-defined
+    632 slots are spoken for before a single piece is learned (373 user-defined
     + 3 control + 256 byte-fallback). Catching this here turns a confusing
     SentencePiece crash into an explicit message.
     """

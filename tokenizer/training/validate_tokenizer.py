@@ -18,7 +18,7 @@ corpus (~100M lines / 18 GB on the real download) without holding it in
 memory. Every accumulator is bounded by the vocabulary or by a fixed cap,
 never by the corpus:
 
-  * per-piece frequency  -> one counter per vocabulary id (32,768), exact
+  * per-piece frequency  -> one counter per vocabulary id (32,832), exact
   * sequence lengths     -> fixed-size reservoir sample, plus an exact max
   * URL/link fragments   -> capped unique set (MAX_URL_FRAGMENTS)
   * failure examples     -> capped at MAX_EXAMPLES
@@ -277,7 +277,7 @@ def gate_3_specials_atomic(sp: spm.SentencePieceProcessor, cfg: dict) -> GateRes
     """
     Every reserved name must survive as a single, indivisible token.
 
-    The 309 user-defined symbols are checked by encoding them: each must
+    The 373 user-defined symbols are checked by encoding them: each must
     produce exactly one id. pad/eos/unk are *control* symbols -- SentencePiece
     deliberately never matches them in input text (that is what stops user
     input from forging a control token), so encoding their literal spelling

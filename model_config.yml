@@ -47,10 +47,11 @@ defaults:
 
   # --- vocabulary -------------------------------------------------------------
   # FROZEN (architecture.md §6.1). Must match the trained tokenizer exactly.
-  # 32,768 total = 32,200 learned pieces + 568 reserved (256 sentinels,
-  # 3 mode tokens, 12 styles, 2 structural, 36 spare, 3 built-in, 256 byte
-  # fallback). Changing this invalidates the tokenizer and every checkpoint.
-  vocab_size: 32768
+  # 32,832 total = 32,200 learned pieces + 632 reserved (256 sentinels,
+  # 3 mode tokens, 12 styles, 2 structural, 36 spare, 64 CLI-helper spare,
+  # 3 built-in, 256 byte fallback). Changing this invalidates the tokenizer
+  # and every checkpoint.
+  vocab_size: 32832
 
   # --- attention geometry -----------------------------------------------------
   # architecture.md §4.7: 64 is the stability/quality sweet spot across scales.
@@ -218,39 +219,39 @@ profiles:
     num_layers: 12          # encoder depth
     num_decoder_layers: 12
     num_heads: 12
-    expected_parameters: 223395072
+    expected_parameters: 223444224
 
   # A mid-size experiment variant between Base and Large. Not part of the
   # frozen architecture.md decisions -- added for running experiments at a
   # scale closer to Large without paying Large's full compute cost. Same
   # d_kv=64 and num_heads x d_kv = d_model invariant as the other profiles.
   #
-  #   token embeddings (tied)      32,768 x 896            29,360,128
+  #   token embeddings (tied)      32,832 x 896            29,417,472
   #   encoder  20 x 10,180,352                             203,607,040
   #   decoder  20 x 13,392,512                             267,850,240
   #   relative position bias  (32 x 14) x 2                        896
   #   final RMSNorms          2 x 896                              1,792
   #   ----------------------------------------------------------------
-  #   TOTAL                                                500,820,096
+  #   TOTAL                                                500,877,440
   #
-  # Serving footprint: ~2,003 MB fp32 / ~1,002 MB bf16 / ~501 MB int8.
+  # Serving footprint: ~2,004 MB fp32 / ~1,002 MB bf16 / ~501 MB int8.
   medium:
     d_model: 896
     d_ff: 2592
     num_layers: 20          # encoder depth
     num_decoder_layers: 20
     num_heads: 14
-    expected_parameters: 500820096
+    expected_parameters: 500877440
 
   # The target model. FROZEN (architecture.md §4.2, decision D2).
   #
-  #   token embeddings (tied)      32,768 x 1,024        33,554,432
+  #   token embeddings (tied)      32,832 x 1,024        33,619,968
   #   encoder  24 x 12,847,104                          308,330,496
   #   decoder  24 x 17,042,432                          409,018,368
   #   relative position bias  (32 x 16) x 2                   1,024
   #   final RMSNorms          2 x 1,024                       2,048
   #   ----------------------------------------------------------------
-  #   TOTAL                                             750,906,368
+  #   TOTAL                                             750,971,904
   #
   # Serving footprint: ~3,004 MB fp32 / ~1,502 MB bf16 / ~751 MB int8.
   large:
@@ -259,4 +260,4 @@ profiles:
     num_layers: 24          # encoder depth
     num_decoder_layers: 24
     num_heads: 16
-    expected_parameters: 750906368
+    expected_parameters: 750971904

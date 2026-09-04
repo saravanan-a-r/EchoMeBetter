@@ -41,7 +41,7 @@ blend:
 trainer:
   model_type: unigram
   # Small enough to fit the pieces a tiny corpus can support, while still
-  # exceeding the 568-slot reserved block (309 user-defined + 3 control +
+  # exceeding the 632-slot reserved block (373 user-defined + 3 control +
   # 256 byte-fallback).
   vocab_size: 2048
 
@@ -72,7 +72,7 @@ validation:
   length_reservoir_size: 5000
   rare_token_max_count: 5
   # A 2048-piece vocabulary is necessarily less efficient than the real
-  # 32768 one, so the efficiency bands are widened: on a smoke run these
+  # 32832 one, so the efficiency bands are widened: on a smoke run these
   # metrics are informational, and only the hard fidelity gates carry
   # meaning. Utilization in particular is meaningless at smoke scale --
   # gate 10 detects that on its own and reports it as informational.

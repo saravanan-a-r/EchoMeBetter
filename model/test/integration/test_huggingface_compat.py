@@ -22,7 +22,7 @@ Two tiers of test:
 
 The strongest assertion in this file is
 `test_huggingface_builds_a_model_of_exactly_our_size`: HuggingFace,
-independently, from our config.json alone, must arrive at 750,906,368
+independently, from our config.json alone, must arrive at 750,971,904
 parameters. Nothing else establishes that our config really is a T5 config.
 """
 
@@ -355,7 +355,7 @@ def test_huggingface_builds_a_model_of_our_size_tiny():
 @pytest.mark.huggingface
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    "profile,expected", [("base", 223_395_072), ("large", 750_906_368)]
+    "profile,expected", [("base", 223_444_224), ("large", 750_971_904)]
 )
 def test_huggingface_builds_a_model_of_exactly_our_size(profile, expected):
     """

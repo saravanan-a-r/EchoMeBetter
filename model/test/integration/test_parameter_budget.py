@@ -1,7 +1,7 @@
 """
 The parameter budget, checked three independent ways.
 
-architecture.md §4.3 works out 750,906,368 parameters by hand. This file
+architecture.md §4.3 works out 750,971,904 parameters by hand. This file
 verifies that number against:
 
   1. `ModelConfig.parameter_count()` — a closed-form formula
@@ -21,9 +21,9 @@ import torch
 from src.seq2seq import RephraseSeq2Seq
 
 # architecture.md §4.3, computed by hand in the document.
-LARGE_TOTAL = 750_906_368
+LARGE_TOTAL = 750_971_904
 LARGE_COMPONENTS = {
-    "token_embeddings": 33_554_432,
+    "token_embeddings": 33_619_968,
     "encoder_per_layer": 12_847_104,
     "encoder_total": 308_330_496,
     "decoder_per_layer": 17_042_432,
@@ -33,7 +33,7 @@ LARGE_COMPONENTS = {
 }
 
 # architecture.md §4.2's table.
-BASE_TOTAL = 223_395_072
+BASE_TOTAL = 223_444_224
 
 
 # -- the documented totals ------------------------------------------------

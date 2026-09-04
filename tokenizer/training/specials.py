@@ -16,11 +16,13 @@ Counts (architecture.md 6.2):
     style tokens           12
     structural markers      2
     spare reserved         36
+    cli reserved            64
     ----------------------------
-    user_defined_symbols  309
-    (+ pad/eos/unk = 312 named specials total; with the 256 byte_fallback
-    pieces added automatically, 568 of 32,768 slots are reserved (1.73%),
-    leaving 32,200 learned pieces)
+    user_defined_symbols  373
+    (+ pad/eos/unk = 376 named specials total; with the 256 byte_fallback
+    pieces added automatically, 632 of 32,832 slots are reserved (1.93%),
+    leaving 32,200 learned pieces -- unchanged, since vocab_size grew by
+    exactly the same 64 the reserved block grew by)
 """
 
 from __future__ import annotations
@@ -60,8 +62,30 @@ STRUCTURAL_TOKENS: list[str] = ["<text_to_rewrite>", "</text_to_rewrite>"]
 # properly instead, so this stays genuine emergency capacity.
 RESERVED_TOKENS: list[str] = [f"<reserved_{i}>" for i in range(36)]
 
+# Capacity set aside for a second downstream task planned after the rewrite
+# model: a CLI helper that turns a plain-English sysadmin question into the
+# corresponding shell command. Named distinctly from RESERVED_TOKENS above
+# (generic emergency spare) so it is unambiguous, in the vocabulary itself,
+# which slots are earmarked for what -- a future Stage 2 fine-tune can start
+# assigning these specific IDs a meaning (e.g. a `<task:cli>` mode marker,
+# argument-boundary tokens) without colliding with the generic spares or
+# guessing which reserved block was meant for which purpose.
+#
+# Sized at 64 rather than reusing the 36 generic spares: the CLI task's own
+# needs (a mode token, plus room to structure command/flag/path syntax) are
+# not yet designed in detail, and the cost of reserving too much now is
+# trivial (one embedding row each) against the cost of running out later,
+# which is a full retrain -- the same "reserve now, use later" reasoning
+# RESERVED_TOKENS above and EXTRA_ID_TOKENS's 256 (vs T5's 100) already use.
+CLI_TOKENS: list[str] = [f"<cli_reserved_{i}>" for i in range(64)]
+
 USER_DEFINED_SYMBOLS: list[str] = (
-    EXTRA_ID_TOKENS + UL2_MODE_TOKENS + STYLE_TOKENS + STRUCTURAL_TOKENS + RESERVED_TOKENS
+    EXTRA_ID_TOKENS
+    + UL2_MODE_TOKENS
+    + STYLE_TOKENS
+    + STRUCTURAL_TOKENS
+    + RESERVED_TOKENS
+    + CLI_TOKENS
 )
 
 # Built-in specials assigned via pad_id/eos_id/unk_id, not user_defined_symbols.
@@ -78,8 +102,9 @@ def _validate() -> None:
     assert len(STYLE_TOKENS) == 12, len(STYLE_TOKENS)
     assert len(STRUCTURAL_TOKENS) == 2, len(STRUCTURAL_TOKENS)
     assert len(RESERVED_TOKENS) == 36, len(RESERVED_TOKENS)
-    assert len(USER_DEFINED_SYMBOLS) == 309, len(USER_DEFINED_SYMBOLS)
-    assert len(ALL_NAMED_SPECIALS) == 312, len(ALL_NAMED_SPECIALS)
+    assert len(CLI_TOKENS) == 64, len(CLI_TOKENS)
+    assert len(USER_DEFINED_SYMBOLS) == 373, len(USER_DEFINED_SYMBOLS)
+    assert len(ALL_NAMED_SPECIALS) == 376, len(ALL_NAMED_SPECIALS)
     assert len(set(ALL_NAMED_SPECIALS)) == len(ALL_NAMED_SPECIALS), "duplicate special token name"
 
 

@@ -17,7 +17,7 @@ fidelity setting that silently breaks round-tripping, missing or non-atomic
 reserved tokens, a corpus whose text is not what you think it is.
 
 It CANNOT tell you the production fertility numbers -- those depend on the
-full 32768-piece vocabulary fitted to the full corpus. Gate 4 output here is
+full 32832-piece vocabulary fitted to the full corpus. Gate 4 output here is
 directional only. Read the hard gates; treat the soft ones as a smell test.
 
 Exit codes: 0 all good, 1 a check failed, 2 could not run.

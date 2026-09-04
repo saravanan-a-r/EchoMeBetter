@@ -51,7 +51,7 @@ blend:
 
 trainer:
   model_type: unigram
-  vocab_size: 32768
+  vocab_size: 32832
 
   # -- fidelity-critical (NF1), do not change casually --
   byte_fallback: true

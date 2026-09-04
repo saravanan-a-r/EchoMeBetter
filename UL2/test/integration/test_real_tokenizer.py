@@ -77,7 +77,7 @@ def test_the_real_configuration_passes_the_capacity_proof(real_specials):
 @pytest.mark.parametrize("length", [18, 88, 597, 2048])
 def test_examples_reconstruct_with_real_ids(real_specials, mode, length):
     objective = UL2Objective(UL2Config(), real_specials)
-    # Start above the reserved block (568 slots per architecture.md 6.2) so
+    # Start above the reserved block (632 slots per architecture.md 6.2) so
     # the source cannot accidentally contain a sentinel.
     tokens = make_tokens(length, start=1000)
     example = objective.corrupt(tokens, random.Random(0), mode=mode)
