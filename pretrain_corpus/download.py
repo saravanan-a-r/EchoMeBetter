@@ -55,15 +55,28 @@ from src.pipeline import RecordPipeline
 from src.quality import QualityFilter
 from src.sources import (
     SourceSpec,
+    check_git_dependencies,
     check_hf_dependencies,
+    check_man_dependencies,
     check_stackexchange_dependencies,
+    clone_git_repo,
     download_archive,
     extract_archive,
+    iter_cheat_sheets,
     iter_hf_records,
+    iter_man_pages,
+    iter_nl2bash_pairs,
     iter_stackexchange_posts,
+    iter_tldr_pages,
+    list_cheat_sheets,
+    list_man_pages,
     list_site_archives,
+    list_tldr_pages,
     order_sites,
     resolve,
+    CLI_CHEAT_REPO_URL,
+    CLI_NL2BASH_REPO_URL,
+    CLI_TLDR_REPO_URL,
 )
 from src.writer import BudgetWriter, estimate_tokens, gb_to_bytes, write_manifest
 
@@ -96,13 +109,23 @@ DEFAULT_START_METHOD = "spawn" if sys.platform == "darwin" else "fork"
 # permissive code gets the smallest share since its only job is teaching
 # verbatim code-span handling, not general fluency.
 DEFAULT_BLEND: dict[str, float] = {
-    "fineweb_edu": 0.45,
-    "c4": 0.15,
-    "cosmopedia": 0.08,
-    "gutenberg_pg19": 0.12,
-    "slimpajama": 0.12,
-    "stackexchange": 0.05,
-    "permissive_code": 0.03,
+    "fineweb_edu": 0.4275,
+    "c4": 0.1425,
+    "cosmopedia": 0.076,
+    "gutenberg_pg19": 0.114,
+    "slimpajama": 0.114,
+    "stackexchange": 0.0475,
+    "permissive_code": 0.0285,
+    # CLI-helper sources (see src/sources.py) -- all four are small relative
+    # to a 500GB budget, so each will typically show up as an
+    # "underfilled_sources" warning in the manifest (the same already-
+    # handled path SlimPajama's ungated fallback and Cosmopedia hit), not an
+    # error. Present so the tokenizer's blend config can point at real bytes
+    # on disk for every one of them.
+    "cli_tldr": 0.02,
+    "cli_nl2bash": 0.01,
+    "cli_cheat_sheets": 0.01,
+    "cli_man_pages": 0.01,
 }
 assert abs(sum(DEFAULT_BLEND.values()) - 1.0) < 1e-9, "DEFAULT_BLEND shares must sum to 1.0"
 
@@ -454,6 +477,324 @@ def run_stackexchange_source(
 
 
 # --------------------------------------------------------------------------
+# tldr-pages (CLI helper)
+# --------------------------------------------------------------------------
+
+
+def _run_git_tldr_worker(
+    *,
+    spec: SourceSpec,
+    pages: list,
+    source_id: str,
+    worker_index: int,
+    budget_bytes: int,
+    output_dir: Path,
+    shard_bytes: int,
+) -> dict:
+    pipeline = RecordPipeline(
+        spec.pipeline,
+        masker=None,
+        quality=QualityFilter(enabled=spec.pipeline.quality),
+        deduplicator=_WORKER_DEDUP,
+    )
+    writer = BudgetWriter(
+        source_id=f"{source_id}-w{worker_index:02d}",
+        output_dir=output_dir,
+        budget_bytes=budget_bytes,
+        shard_bytes=shard_bytes,
+    )
+    for raw_text in iter_tldr_pages(pages):
+        if writer.done:
+            break
+        for chunk in pipeline.process(raw_text):
+            if writer.done:
+                break
+            writer.write(chunk)
+
+    stats = writer.close()
+    stats["pipeline_report"] = pipeline.report()
+    return stats
+
+
+def run_git_tldr_source(
+    spec: SourceSpec,
+    *,
+    budget_bytes: int,
+    output_dir: Path,
+    num_workers: int,
+    shard_bytes: int,
+    start_method: str = "fork",
+) -> dict:
+    check_git_dependencies()
+
+    source_id = "cli_tldr"
+    output_dir = output_dir / source_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    clone_dir = output_dir / "_repo"
+
+    repo_dir = clone_git_repo(CLI_TLDR_REPO_URL, clone_dir)
+    pages = list_tldr_pages(repo_dir)
+
+    # Round-robin, same reasoning as Stack Exchange's site split: no natural
+    # size skew to worry about here (pages are all tiny), it just spreads
+    # the fixed list evenly.
+    page_slices: list[list] = [[] for _ in range(num_workers)]
+    for i, page in enumerate(pages):
+        page_slices[i % num_workers].append(page)
+
+    deduplicator = build_deduplicator(estimate_chunks(budget_bytes))
+    per_worker_budget = max(1, budget_bytes // num_workers)
+
+    jobs = []
+    ctx = mp.get_context(start_method)
+    with ctx.Pool(processes=num_workers, initializer=_init_dedup_worker, initargs=(deduplicator,)) as pool:
+        for worker_index in range(num_workers):
+            jobs.append(
+                pool.apply_async(
+                    _run_git_tldr_worker,
+                    kwds=dict(
+                        spec=spec,
+                        pages=page_slices[worker_index],
+                        source_id=source_id,
+                        worker_index=worker_index,
+                        budget_bytes=per_worker_budget,
+                        output_dir=output_dir,
+                        shard_bytes=shard_bytes,
+                    ),
+                )
+            )
+        worker_stats = [job.get() for job in jobs]
+
+    return {
+        "source_id": source_id,
+        "license": spec.license,
+        "role": spec.role,
+        "pages_found": len(pages),
+        "workers": worker_stats,
+        "dedup": _aggregate_dedup_stats(deduplicator, worker_stats),
+        "bytes_written": sum(w["bytes_written"] for w in worker_stats),
+    }
+
+
+# --------------------------------------------------------------------------
+# NL2Bash
+# --------------------------------------------------------------------------
+
+
+def _run_git_nl2bash_worker(
+    *, spec: SourceSpec, pairs: list, source_id: str, worker_index: int,
+    budget_bytes: int, output_dir: Path, shard_bytes: int,
+) -> dict:
+    pipeline = RecordPipeline(
+        spec.pipeline, masker=None,
+        quality=QualityFilter(enabled=spec.pipeline.quality),
+        deduplicator=_WORKER_DEDUP,
+    )
+    writer = BudgetWriter(
+        source_id=f"{source_id}-w{worker_index:02d}", output_dir=output_dir,
+        budget_bytes=budget_bytes, shard_bytes=shard_bytes,
+    )
+    for raw_text in pairs:
+        if writer.done:
+            break
+        for chunk in pipeline.process(raw_text):
+            if writer.done:
+                break
+            writer.write(chunk)
+    stats = writer.close()
+    stats["pipeline_report"] = pipeline.report()
+    return stats
+
+
+def run_git_nl2bash_source(
+    spec: SourceSpec, *, budget_bytes: int, output_dir: Path,
+    num_workers: int, shard_bytes: int, start_method: str = "fork",
+) -> dict:
+    check_git_dependencies()
+
+    source_id = "cli_nl2bash"
+    output_dir = output_dir / source_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    repo_dir = clone_git_repo(CLI_NL2BASH_REPO_URL, output_dir / "_repo")
+    pairs = list(iter_nl2bash_pairs(repo_dir))
+
+    slices: list[list] = [[] for _ in range(num_workers)]
+    for i, pair in enumerate(pairs):
+        slices[i % num_workers].append(pair)
+
+    deduplicator = build_deduplicator(estimate_chunks(budget_bytes))
+    per_worker_budget = max(1, budget_bytes // num_workers)
+
+    jobs = []
+    ctx = mp.get_context(start_method)
+    with ctx.Pool(processes=num_workers, initializer=_init_dedup_worker, initargs=(deduplicator,)) as pool:
+        for worker_index in range(num_workers):
+            jobs.append(
+                pool.apply_async(
+                    _run_git_nl2bash_worker,
+                    kwds=dict(
+                        spec=spec, pairs=slices[worker_index], source_id=source_id,
+                        worker_index=worker_index, budget_bytes=per_worker_budget,
+                        output_dir=output_dir, shard_bytes=shard_bytes,
+                    ),
+                )
+            )
+        worker_stats = [job.get() for job in jobs]
+
+    return {
+        "source_id": source_id, "license": spec.license, "role": spec.role,
+        "pairs_found": len(pairs), "workers": worker_stats,
+        "dedup": _aggregate_dedup_stats(deduplicator, worker_stats),
+        "bytes_written": sum(w["bytes_written"] for w in worker_stats),
+    }
+
+
+# --------------------------------------------------------------------------
+# cheat.sh cheat sheets
+# --------------------------------------------------------------------------
+
+
+def _run_git_cheat_worker(
+    *, spec: SourceSpec, paths: list, source_id: str, worker_index: int,
+    budget_bytes: int, output_dir: Path, shard_bytes: int,
+) -> dict:
+    pipeline = RecordPipeline(
+        spec.pipeline, masker=None,
+        quality=QualityFilter(enabled=spec.pipeline.quality),
+        deduplicator=_WORKER_DEDUP,
+    )
+    writer = BudgetWriter(
+        source_id=f"{source_id}-w{worker_index:02d}", output_dir=output_dir,
+        budget_bytes=budget_bytes, shard_bytes=shard_bytes,
+    )
+    for raw_text in iter_cheat_sheets(paths):
+        if writer.done:
+            break
+        for chunk in pipeline.process(raw_text):
+            if writer.done:
+                break
+            writer.write(chunk)
+    stats = writer.close()
+    stats["pipeline_report"] = pipeline.report()
+    return stats
+
+
+def run_git_cheat_source(
+    spec: SourceSpec, *, budget_bytes: int, output_dir: Path,
+    num_workers: int, shard_bytes: int, start_method: str = "fork",
+) -> dict:
+    check_git_dependencies()
+
+    source_id = "cli_cheat_sheets"
+    output_dir = output_dir / source_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    repo_dir = clone_git_repo(CLI_CHEAT_REPO_URL, output_dir / "_repo")
+    paths = list_cheat_sheets(repo_dir)
+
+    slices: list[list] = [[] for _ in range(num_workers)]
+    for i, path in enumerate(paths):
+        slices[i % num_workers].append(path)
+
+    deduplicator = build_deduplicator(estimate_chunks(budget_bytes))
+    per_worker_budget = max(1, budget_bytes // num_workers)
+
+    jobs = []
+    ctx = mp.get_context(start_method)
+    with ctx.Pool(processes=num_workers, initializer=_init_dedup_worker, initargs=(deduplicator,)) as pool:
+        for worker_index in range(num_workers):
+            jobs.append(
+                pool.apply_async(
+                    _run_git_cheat_worker,
+                    kwds=dict(
+                        spec=spec, paths=slices[worker_index], source_id=source_id,
+                        worker_index=worker_index, budget_bytes=per_worker_budget,
+                        output_dir=output_dir, shard_bytes=shard_bytes,
+                    ),
+                )
+            )
+        worker_stats = [job.get() for job in jobs]
+
+    return {
+        "source_id": source_id, "license": spec.license, "role": spec.role,
+        "files_found": len(paths), "workers": worker_stats,
+        "dedup": _aggregate_dedup_stats(deduplicator, worker_stats),
+        "bytes_written": sum(w["bytes_written"] for w in worker_stats),
+    }
+
+
+# --------------------------------------------------------------------------
+# Local man pages
+# --------------------------------------------------------------------------
+
+
+def _run_man_pages_worker(
+    *, spec: SourceSpec, pages: list, source_id: str, worker_index: int,
+    budget_bytes: int, output_dir: Path, shard_bytes: int,
+) -> dict:
+    pipeline = RecordPipeline(
+        spec.pipeline, masker=None,
+        quality=QualityFilter(enabled=spec.pipeline.quality),
+        deduplicator=_WORKER_DEDUP,
+    )
+    writer = BudgetWriter(
+        source_id=f"{source_id}-w{worker_index:02d}", output_dir=output_dir,
+        budget_bytes=budget_bytes, shard_bytes=shard_bytes,
+    )
+    for raw_text in iter_man_pages(pages):
+        if writer.done:
+            break
+        for chunk in pipeline.process(raw_text):
+            if writer.done:
+                break
+            writer.write(chunk)
+    stats = writer.close()
+    stats["pipeline_report"] = pipeline.report()
+    return stats
+
+
+def run_man_pages_source(
+    spec: SourceSpec, *, budget_bytes: int, output_dir: Path,
+    num_workers: int, shard_bytes: int, start_method: str = "fork",
+) -> dict:
+    check_man_dependencies()
+
+    source_id = "cli_man_pages"
+    output_dir = output_dir / source_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pages = list_man_pages()
+
+    slices: list[list] = [[] for _ in range(num_workers)]
+    for i, page in enumerate(pages):
+        slices[i % num_workers].append(page)
+
+    deduplicator = build_deduplicator(estimate_chunks(budget_bytes))
+    per_worker_budget = max(1, budget_bytes // num_workers)
+
+    jobs = []
+    ctx = mp.get_context(start_method)
+    with ctx.Pool(processes=num_workers, initializer=_init_dedup_worker, initargs=(deduplicator,)) as pool:
+        for worker_index in range(num_workers):
+            jobs.append(
+                pool.apply_async(
+                    _run_man_pages_worker,
+                    kwds=dict(
+                        spec=spec, pages=slices[worker_index], source_id=source_id,
+                        worker_index=worker_index, budget_bytes=per_worker_budget,
+                        output_dir=output_dir, shard_bytes=shard_bytes,
+                    ),
+                )
+            )
+        worker_stats = [job.get() for job in jobs]
+
+    return {
+        "source_id": source_id, "license": spec.license, "role": spec.role,
+        "pages_found": len(pages), "workers": worker_stats,
+        "dedup": _aggregate_dedup_stats(deduplicator, worker_stats),
+        "bytes_written": sum(w["bytes_written"] for w in worker_stats),
+    }
+
+
+# --------------------------------------------------------------------------
 # Orchestration
 # --------------------------------------------------------------------------
 
@@ -541,6 +882,42 @@ def _run_one_source(source_id: str, args: argparse.Namespace, budget_bytes: int,
             audit_path=audit_path,
             include_meta=args.include_meta,
             include_non_english=args.include_non_english,
+            start_method=args.start_method,
+        )
+    if spec.kind == "git_tldr":
+        return run_git_tldr_source(
+            spec,
+            budget_bytes=budget_bytes,
+            output_dir=output_dir,
+            num_workers=args.workers_per_source,
+            shard_bytes=gb_to_bytes(args.shard_gb),
+            start_method=args.start_method,
+        )
+    if spec.kind == "git_nl2bash":
+        return run_git_nl2bash_source(
+            spec,
+            budget_bytes=budget_bytes,
+            output_dir=output_dir,
+            num_workers=args.workers_per_source,
+            shard_bytes=gb_to_bytes(args.shard_gb),
+            start_method=args.start_method,
+        )
+    if spec.kind == "git_cheat":
+        return run_git_cheat_source(
+            spec,
+            budget_bytes=budget_bytes,
+            output_dir=output_dir,
+            num_workers=args.workers_per_source,
+            shard_bytes=gb_to_bytes(args.shard_gb),
+            start_method=args.start_method,
+        )
+    if spec.kind == "man_pages":
+        return run_man_pages_source(
+            spec,
+            budget_bytes=budget_bytes,
+            output_dir=output_dir,
+            num_workers=args.workers_per_source,
+            shard_bytes=gb_to_bytes(args.shard_gb),
             start_method=args.start_method,
         )
     return run_hf_source(

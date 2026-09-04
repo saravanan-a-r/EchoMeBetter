@@ -7,8 +7,11 @@ from src.sources import (
     LAST_SITE,
     NON_ENGLISH_SITES,
     SOURCES,
+    _MAN_APROPOS_LINE,
     _site_name,
     _tier_of,
+    format_cheat_sheet,
+    format_tldr_page,
     order_sites,
     resolve,
 )
@@ -100,6 +103,14 @@ def test_all_seven_design_doc_sources_are_registered():
     assert expected <= SOURCES.keys()
 
 
+def test_cli_tldr_is_registered_alongside_the_seven_design_doc_sources():
+    """The CLI-helper corpus (architecture.md §9.1's later addition), kept
+    as its own test so a regression here doesn't get lost inside the
+    seven-source assertion above."""
+    assert "cli_tldr" in SOURCES
+    assert SOURCES["cli_tldr"].kind == "git_tldr"
+
+
 def test_code_source_disables_quality_and_pii_masking():
     spec = SOURCES["permissive_code"]
     assert spec.pipeline.quality is False
@@ -110,3 +121,81 @@ def test_stackexchange_source_enables_markup_stripping_and_pii_masking():
     spec = SOURCES["stackexchange"]
     assert spec.pipeline.strip_markup is True
     assert spec.pipeline.mask_pii is True
+
+
+def test_cli_tldr_source_disables_quality_and_pii_masking():
+    """
+    Same reasoning as permissive_code: short structured command records, not
+    prose, and no user-submitted text to mask.
+    """
+    spec = SOURCES["cli_tldr"]
+    assert spec.pipeline.quality is False
+    assert spec.pipeline.mask_pii is False
+    assert spec.license == "MIT"
+
+
+def test_format_tldr_page_pairs_each_description_with_its_command():
+    raw = (
+        "# tar\n\n"
+        "> Archiving utility.\n"
+        "> More information: <https://example.com>.\n\n"
+        "- Create an archive:\n\n"
+        "`tar cf target.tar file1 file2`\n\n"
+        "- Extract an archive:\n\n"
+        "`tar xf source.tar`\n"
+    )
+    text = format_tldr_page("tar", raw)
+    assert text.startswith("tar: Archiving utility.")
+    assert "Create an archive\ntar cf target.tar file1 file2" in text
+    assert "Extract an archive\ntar xf source.tar" in text
+
+
+def test_format_tldr_page_with_no_examples_yields_nothing():
+    """A page with only a description and no `- ...` / backtick pairs is
+    not useful CLI-helper training data, and must not turn into an empty
+    or malformed chunk downstream."""
+    raw = "# foo\n\n> Just a description, no examples.\n"
+    assert format_tldr_page("foo", raw) == ""
+
+
+def test_cli_nl2bash_and_cli_cheat_sheets_and_cli_man_pages_are_registered():
+    for source_id, kind in (
+        ("cli_nl2bash", "git_nl2bash"),
+        ("cli_cheat_sheets", "git_cheat"),
+        ("cli_man_pages", "man_pages"),
+    ):
+        assert source_id in SOURCES
+        assert SOURCES[source_id].kind == kind
+        assert SOURCES[source_id].pipeline.quality is False
+        assert SOURCES[source_id].pipeline.mask_pii is False
+
+
+def test_format_cheat_sheet_pairs_comment_blocks_with_code_blocks():
+    raw = (
+        "# To extract an archive:\n\n"
+        "tar xf archive.tar\n\n"
+        "# To create an archive:\n\n"
+        "tar cf archive.tar files\n"
+    )
+    text = format_cheat_sheet("tar", raw)
+    assert text.startswith("tar: To extract an archive:")
+    assert "tar xf archive.tar" in text
+    assert "tar cf archive.tar files" in text
+
+
+def test_format_cheat_sheet_with_no_code_yields_nothing():
+    raw = "# Just a comment, no command lines.\n"
+    assert format_cheat_sheet("nothing", raw) == ""
+
+
+def test_man_apropos_line_matches_both_man_db_and_bsd_mandoc_formats():
+    """
+    man-db (Linux) prints "name (section) - desc"; BSD mandoc (macOS)
+    prints "name(section)  - desc" with no space before the parenthesis.
+    Both must parse, since this runs on a macOS dev machine and an Ubuntu
+    deployment target.
+    """
+    linux_match = _MAN_APROPOS_LINE.match("ls (1)               - list directory contents")
+    macos_match = _MAN_APROPOS_LINE.match("FFI(3)                   - Foreign Function Interface")
+    assert linux_match.groups() == ("ls", "1")
+    assert macos_match.groups() == ("FFI", "3")

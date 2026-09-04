@@ -177,6 +177,55 @@ SOURCES: dict[str, SourceSpec] = {
         # the one source where PII masking is doing heavy lifting.
         pipeline=PipelineConfig(strip_markup=True, quality=True, mask_pii=True),
     ),
+    "cli_tldr": SourceSpec(
+        source_id="cli_tldr",
+        kind="git_tldr",
+        role=(
+            "plain-English command descriptions paired with real CLI syntax "
+            "(Linux/macOS); the CLI-helper downstream task's input/output "
+            "shape directly, earmarked for the <cli_reserved_*> vocabulary"
+        ),
+        license="MIT",
+        # Short structured records (one command, a few example lines), not
+        # prose -- the English-fluency quality heuristics would reject a
+        # `tar -xzf archive.tar.gz` line for the same reasons they correctly
+        # reject permissive_code, and PII masking has nothing to do here:
+        # tldr pages contain no user-submitted text, only maintained docs.
+        pipeline=PipelineConfig(quality=False, mask_pii=False),
+    ),
+    "cli_nl2bash": SourceSpec(
+        source_id="cli_nl2bash",
+        kind="git_nl2bash",
+        role=(
+            "paired English instructions and bash one-liners (Tellina/"
+            "NL2Bash corpus) -- the CLI-helper task's exact input/output "
+            "shape, pre-aligned"
+        ),
+        # Upstream (TellinaTool/nl2bash) carries no explicit OSS license
+        # file; included per explicit instruction rather than excluded on
+        # the earlier conservative default.
+        license="unspecified upstream license -- included per explicit instruction",
+        pipeline=PipelineConfig(quality=False, mask_pii=False),
+    ),
+    "cli_cheat_sheets": SourceSpec(
+        source_id="cli_cheat_sheets",
+        kind="git_cheat",
+        role="community command cheat sheets (the cheat.sh source data); wider tool coverage than tldr",
+        license="CC0-1.0 (cheat/cheatsheets)",
+        pipeline=PipelineConfig(quality=False, mask_pii=False),
+    ),
+    "cli_man_pages": SourceSpec(
+        source_id="cli_man_pages",
+        kind="man_pages",
+        role="canonical flag/option definitions rendered from the host machine's installed manual pages",
+        # Man pages ship under whatever license each utility uses (GPL for
+        # most GNU coreutils, BSD for others) -- included per explicit
+        # instruction. Generated locally from `man`, never scraped/
+        # redistributed as archives, and only from whatever the download
+        # machine already has installed.
+        license="GPL/BSD, varies per utility -- included per explicit instruction",
+        pipeline=PipelineConfig(quality=False, mask_pii=False),
+    ),
 }
 
 
@@ -670,3 +719,310 @@ def _html_converter():
     converter.ignore_links = False  # URLs are the thing we most need preserved
     converter.ignore_images = False
     return converter
+
+
+# --------------------------------------------------------------------------
+# tldr-pages (CLI helper)
+# --------------------------------------------------------------------------
+#
+# The whole repo is one shallow `git clone` (a few tens of MB), unlike Stack
+# Exchange's 362 independent archives, so there is nothing to shard by file:
+# one clone, then the page list is what gets split across workers.
+
+CLI_TLDR_REPO_URL = "https://github.com/tldr-pages/tldr.git"
+
+# Only the English, OS-relevant page sets. `pages` itself holds these plus
+# a long tail of `pages.<locale>` translation directories (pages.pt_BR,
+# pages.zh, ...) which this excludes by name, the same "exact and free
+# beats a statistical backstop" reasoning `NON_ENGLISH_SITES` uses for
+# Stack Exchange. `common` covers cross-platform tools; `linux`/`osx` are
+# the two platforms architecture.md's CLI-helper task actually targets;
+# `android`/`sunos`/`freebsd`/`netbsd`/`openbsd`/`windows` are included too
+# since they're still English and still real command syntax.
+CLI_TLDR_PLATFORM_DIRS = (
+    "common", "linux", "osx", "android", "sunos",
+    "freebsd", "netbsd", "openbsd", "windows",
+)
+
+
+def clone_git_repo(url: str, dest_dir: Path, *, depth: int = 1) -> Path:
+    """Shallow-clone `url` into `dest_dir`, or reuse an existing clone."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    repo_name = url.rstrip("/").rsplit("/", 1)[-1]
+    if repo_name.endswith(".git"):
+        repo_name = repo_name[: -len(".git")]
+    dest = dest_dir / repo_name
+    if (dest / ".git").is_dir():
+        return dest
+    tmp = dest_dir / f".{repo_name}.part"
+    if tmp.exists():
+        import shutil
+
+        shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", str(depth), "--single-branch", url, str(tmp)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        tmp.replace(dest)
+    except subprocess.CalledProcessError as exc:
+        raise ExtractionError(
+            f"git clone failed for {url}: {exc.stderr.decode('utf-8', 'replace')[:400]}"
+        ) from exc
+    return dest
+
+
+def list_tldr_pages(repo_dir: Path) -> list[Path]:
+    """Every English-locale page markdown file, sorted for determinism."""
+    pages_dir = repo_dir / "pages"
+    files: list[Path] = []
+    for platform in CLI_TLDR_PLATFORM_DIRS:
+        sub = pages_dir / platform
+        if sub.is_dir():
+            files.extend(sorted(sub.glob("*.md")))
+    return files
+
+
+def iter_tldr_pages(paths: list[Path]) -> Iterator[str]:
+    """One yielded string per page: command, description, worked examples."""
+    for path in paths:
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        text = format_tldr_page(path.stem, raw)
+        if text:
+            yield text
+
+
+def format_tldr_page(command: str, raw: str) -> str:
+    """
+    Turn one tldr-pages markdown file into plain training text.
+
+    tldr's format is fixed and simple: `# command`, then `>` description
+    lines, then repeated `- explanation:` / backtick-fenced-command pairs.
+    Reformatted as prose-plus-command pairs rather than left as markdown,
+    since the CLI-helper task's actual input/output shape is "plain-English
+    request in, shell command out" — this is that shape, not a markdown
+    rendering exercise.
+    """
+    description_lines: list[str] = []
+    examples: list[str] = []
+    pending_desc: str | None = None
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("# "):
+            continue
+        if line.startswith("> "):
+            description_lines.append(line[2:].strip())
+        elif line.startswith("- "):
+            pending_desc = line[2:].strip().rstrip(":")
+        elif line.startswith("`") and line.endswith("`") and len(line) >= 2:
+            if pending_desc:
+                code = line.strip("`")
+                examples.append(f"{pending_desc}\n{code}")
+                pending_desc = None
+
+    if not examples:
+        return ""
+
+    header = command.replace("-", " ")
+    if description_lines:
+        header = f"{header}: {' '.join(description_lines)}"
+    return header + "\n\n" + "\n\n".join(examples)
+
+
+def check_git_dependencies() -> None:
+    """Verify `git` is on PATH before any worker starts (mirrors 7z/lxml)."""
+    from shutil import which
+
+    if which("git") is None:
+        raise SourceConfigError(
+            "no `git` binary on PATH; the tldr-pages/nl2bash/cheat-sheets "
+            "sources are cloned with `git clone`. Install it with "
+            "`apt-get install -y git` (Debian/Ubuntu) or `brew install git` "
+            "(macOS)."
+        )
+
+
+# --------------------------------------------------------------------------
+# NL2Bash (Tellina) -- paired English/bash lines
+# --------------------------------------------------------------------------
+
+CLI_NL2BASH_REPO_URL = "https://github.com/TellinaTool/nl2bash.git"
+CLI_NL2BASH_NL_PATH = "data/bash/all.nl"
+CLI_NL2BASH_CM_PATH = "data/bash/all.cm"
+
+
+def iter_nl2bash_pairs(repo_dir: Path) -> Iterator[str]:
+    """
+    Yield one `english instruction\\nbash command` string per aligned line
+    pair. The two files are index-aligned by construction (line N of one is
+    the translation of line N of the other), so a plain `zip` over both
+    open file handles is correct and never needs to load either fully.
+    """
+    nl_path = repo_dir / CLI_NL2BASH_NL_PATH
+    cm_path = repo_dir / CLI_NL2BASH_CM_PATH
+    if not nl_path.is_file() or not cm_path.is_file():
+        return
+    with nl_path.open(encoding="utf-8", errors="replace") as nl_fh, cm_path.open(
+        encoding="utf-8", errors="replace"
+    ) as cm_fh:
+        for nl_line, cm_line in zip(nl_fh, cm_fh):
+            nl_line = nl_line.strip()
+            cm_line = cm_line.strip()
+            if nl_line and cm_line:
+                yield f"{nl_line}\n{cm_line}"
+
+
+# --------------------------------------------------------------------------
+# cheat.sh community cheat sheets
+# --------------------------------------------------------------------------
+
+CLI_CHEAT_REPO_URL = "https://github.com/cheat/cheatsheets.git"
+
+
+def list_cheat_sheets(repo_dir: Path) -> list[Path]:
+    """Every plain-text sheet file, skipping VCS/dotfiles and directories."""
+    files = []
+    for path in sorted(repo_dir.rglob("*")):
+        if path.is_file() and not any(part.startswith(".") for part in path.relative_to(repo_dir).parts):
+            files.append(path)
+    return files
+
+
+def format_cheat_sheet(name: str, raw: str) -> str:
+    """
+    Turn one cheat-sheet file into plain training text.
+
+    The format is looser than tldr's (no fixed markdown grammar), but the
+    convention is consistent: `#`-prefixed lines are prose description,
+    blank-separated runs of everything else are the command(s) that
+    description explains. Grouped as (description, code-block) pairs the
+    same way `format_tldr_page` groups them, for the same reason: this is
+    the CLI-helper task's actual input/output shape.
+    """
+    description_lines: list[str] = []
+    blocks: list[str] = []
+    current_code: list[str] = []
+
+    def _flush_code() -> None:
+        if current_code:
+            blocks.append("\n".join(current_code))
+            current_code.clear()
+
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            _flush_code()
+            comment = stripped.lstrip("#").strip()
+            if comment:
+                description_lines.append(comment)
+        elif stripped:
+            current_code.append(stripped)
+        else:
+            _flush_code()
+    _flush_code()
+
+    if not blocks:
+        return ""
+
+    header = name.replace("-", " ").replace("_", " ")
+    if description_lines:
+        header = f"{header}: {' '.join(description_lines)}"
+    return header + "\n\n" + "\n\n".join(blocks)
+
+
+def iter_cheat_sheets(paths: list[Path]) -> Iterator[str]:
+    for path in paths:
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        text = format_cheat_sheet(path.name, raw)
+        if text:
+            yield text
+
+
+# --------------------------------------------------------------------------
+# Local man pages
+# --------------------------------------------------------------------------
+#
+# Unlike every other source, this one is not downloaded at all: it reads
+# whatever manual pages are already installed on the machine running
+# `download.py`, via the system `man`/`col` binaries. That makes it the one
+# source whose actual content differs by machine -- on the Ubuntu box this
+# is meant to run on, that's the standard `man-db` set (coreutils, network
+# tools, etc.), which is exactly the CLI-helper task's target platform.
+
+# Linux (man-db) prints "name (section) - desc"; macOS/BSD prints
+# "name(section)  - desc" with no space before the parenthesis. Matching
+# both keeps this working on the Ubuntu deployment target and a macOS
+# dev/test machine alike.
+_MAN_APROPOS_LINE = re.compile(r"^(\S+?)\s*\((\w+)\)")
+
+
+def list_man_pages() -> list[tuple[str, str]]:
+    """`(name, section)` for every entry `man -k .` (whatis-db) knows about."""
+    try:
+        result = subprocess.run(
+            ["man", "-k", "."], capture_output=True, text=True, timeout=60, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise ExtractionError(f"could not list man pages via `man -k .`: {exc}") from exc
+
+    seen: set[tuple[str, str]] = set()
+    pages: list[tuple[str, str]] = []
+    for line in result.stdout.splitlines():
+        match = _MAN_APROPOS_LINE.match(line)
+        if not match:
+            continue
+        # BSD/macOS mandoc's apropos listing uppercases the page name
+        # ("FFI(3)") even though the actual page is invoked lowercase
+        # ("man 3 ffi"); man-db's listing is already lowercase, so this is
+        # a no-op there. Lowercasing unconditionally is correct on both.
+        key = (match.group(1).lower(), match.group(2))
+        if key not in seen:
+            seen.add(key)
+            pages.append(key)
+    return pages
+
+
+def render_man_page(name: str, section: str) -> str:
+    """Plain text of one page, with `man`'s terminal formatting stripped by `col -bx`."""
+    try:
+        rendered = subprocess.run(
+            ["man", section, name], capture_output=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+    if rendered.returncode != 0 or not rendered.stdout:
+        return ""
+    try:
+        plain = subprocess.run(
+            ["col", "-bx"], input=rendered.stdout, capture_output=True, timeout=30,
+        ).stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        plain = rendered.stdout
+    return plain.decode("utf-8", "replace").strip()
+
+
+def iter_man_pages(pages: list[tuple[str, str]]) -> Iterator[str]:
+    for name, section in pages:
+        text = render_man_page(name, section)
+        if text:
+            yield text
+
+
+def check_man_dependencies() -> None:
+    from shutil import which
+
+    if which("man") is None:
+        raise SourceConfigError(
+            "no `man` binary on PATH; the cli_man_pages source reads the "
+            "local system's installed manual pages. Install it with "
+            "`apt-get install -y man-db` (Debian/Ubuntu)."
+        )
