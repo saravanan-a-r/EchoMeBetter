@@ -1,0 +1,98 @@
+# Blend config for the CLI-helper vocabulary sweep (run_cli_vocab_experiment.py).
+#
+# Every setting outside `blend` is identical to config/default.yaml -- this
+# file only exists because the *corpus mix* changed (pretrain_corpus/'s 12
+# sources replace the older 5-source training_corpus/ download), not because
+# any fidelity-critical trainer setting needed to change.
+#
+# Composition, and why it looks like this
+# ----------------------------------------
+# Four sources (cli_tldr, cli_nl2bash, cli_man_pages, cli_cheat_sheets) are
+# so small relative to any tested input_sentence_size (a few thousand to
+# ~17,000 eligible lines each, against budgets of 250,000 and up) that normal
+# proportional blend sampling could not be trusted to reliably include all of
+# them. Their shares below (0.10 each) are deliberately far above their
+# natural byte proportion so that, combined with their tiny absolute
+# capacity, they are fully saturated (100% of their eligible lines selected
+# for training) at every configured sweep size -- run_cli_vocab_experiment.py
+# verifies this against the real corpus before launching the sweep rather
+# than assuming these numbers are big enough.
+#
+# cli_helper_stack_exchange (a Stack Exchange dump already filtered to
+# sysadmin/CLI-relevant sites -- askubuntu, unix, superuser, serverfault,
+# etc.) is real volume (~10.8M records) and gets an ordinary weighted share
+# like the other seven, boosted somewhat above what a purely general-purpose
+# blend would give it, since improving CLI vocabulary coverage is this
+# sweep's actual purpose.
+#
+# The eight non-forced shares (0.600 total) keep the same relative
+# proportions to each other as pretrain_corpus/download.py's DEFAULT_BLEND,
+# with cli_helper_stack_exchange up-weighted relative to general
+# stackexchange.
+
+corpus:
+  input_sentence_size: 1000000 # always overridden per variant by --input-sentence-size
+  max_sentence_length: 8192
+  max_drop_fraction: 0.01
+
+sampling:
+  seed: 42
+
+blend:
+  mode: weighted
+  shares:
+    fineweb_edu: 0.252
+    c4: 0.084
+    cosmopedia: 0.045
+    gutenberg_pg19: 0.066
+    slimpajama: 0.066
+    stackexchange: 0.027
+    permissive_code: 0.018
+    cli_helper_stack_exchange: 0.042
+    cli_tldr: 0.10
+    cli_nl2bash: 0.10
+    cli_man_pages: 0.10
+    cli_cheat_sheets: 0.10
+
+trainer:
+  model_type: unigram
+  vocab_size: 32832
+
+  # -- fidelity-critical (NF1), do not change casually --
+  byte_fallback: true
+  character_coverage: 1.0
+  normalization_rule_name: identity
+  remove_extra_whitespaces: false
+  allow_whitespace_only_pieces: true
+  add_dummy_prefix: false
+  split_digits: true
+
+  # -- scale / memory --
+  train_extremely_large_corpus: true
+  # Always overridden per variant by run_cli_vocab_experiment.py, sized to
+  # (cpu cores) / (parallel variants) so N concurrent trainings share the
+  # machine instead of each grabbing every core.
+  num_threads: 0
+
+  # -- ids --
+  pad_id: 0
+  eos_id: 1
+  unk_id: 2
+  bos_id: -1
+
+output:
+  dir: output
+  model_prefix: spm
+
+validation:
+  run_after_training: true
+  eval_sentence_size: 0 # always overridden per variant by --eval-corpus
+  eval_sample_save: 20000
+  length_reservoir_size: 200000
+  rare_token_max_count: 10
+  fertility_target_min: 1.25
+  fertility_target_max: 1.40
+  fertility_code_warn_above: 2.5
+  byte_fallback_rate_warn_above: 0.005
+  chars_per_token_warn_below: 3.0
+  vocab_utilization_warn_below: 0.90
