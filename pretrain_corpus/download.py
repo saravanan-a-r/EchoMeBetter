@@ -55,6 +55,7 @@ from src.pipeline import RecordPipeline
 from src.quality import QualityFilter
 from src.sources import (
     SourceSpec,
+    CLI_HELPER_STACKEXCHANGE_SITES,
     check_git_dependencies,
     check_hf_dependencies,
     check_man_dependencies,
@@ -72,6 +73,7 @@ from src.sources import (
     list_man_pages,
     list_site_archives,
     list_tldr_pages,
+    order_cli_helper_sites,
     order_sites,
     resolve,
     CLI_CHEAT_REPO_URL,
@@ -114,10 +116,10 @@ DEFAULT_BLEND: dict[str, float] = {
     "cosmopedia": 0.076,
     "gutenberg_pg19": 0.114,
     "slimpajama": 0.114,
-    "stackexchange": 0.0475,
+    "stackexchange": 0.0275,
     "permissive_code": 0.0285,
-    # CLI-helper sources (see src/sources.py) -- all four are small relative
-    # to a 500GB budget, so each will typically show up as an
+    # CLI-helper sources (see src/sources.py) -- all small relative to a
+    # 500GB budget, so each will typically show up as an
     # "underfilled_sources" warning in the manifest (the same already-
     # handled path SlimPajama's ungated fallback and Cosmopedia hit), not an
     # error. Present so the tokenizer's blend config can point at real bytes
@@ -126,6 +128,14 @@ DEFAULT_BLEND: dict[str, float] = {
     "cli_nl2bash": 0.01,
     "cli_cheat_sheets": 0.01,
     "cli_man_pages": 0.01,
+    # A hand-picked 12-site slice of Stack Exchange (askubuntu, unix,
+    # superuser, ...) most relevant to the CLI-helper task, downloaded into
+    # its own directory rather than folded into the general "stackexchange"
+    # share above -- see src/sources.py's CLI_HELPER_STACKEXCHANGE_SITES.
+    # Shaved out of "stackexchange"'s own share (0.0475 -> 0.0275) rather
+    # than added on top, so the two Stack Exchange draws together still cost
+    # the same fraction of the total budget as before this source existed.
+    "cli_helper_stack_exchange": 0.02,
 }
 assert abs(sum(DEFAULT_BLEND.values()) - 1.0) < 1e-9, "DEFAULT_BLEND shares must sum to 1.0"
 
@@ -470,6 +480,95 @@ def run_stackexchange_source(
         "license": spec.license,
         "role": spec.role,
         "sites_considered": len(ordered),
+        "workers": worker_stats,
+        "dedup": _aggregate_dedup_stats(deduplicator, worker_stats),
+        "bytes_written": sum(w["bytes_written"] for w in worker_stats),
+    }
+
+
+# --------------------------------------------------------------------------
+# CLI-helper Stack Exchange (a fixed 12-site slice of the same dump)
+# --------------------------------------------------------------------------
+
+
+def run_cli_helper_stackexchange_source(
+    spec: SourceSpec,
+    *,
+    budget_bytes: int,
+    output_dir: Path,
+    num_workers: int,
+    shard_bytes: int,
+    registry: PIIRegistry,
+    legacy: dict[str, frozenset[str]],
+    pii_block_size: int,
+    audit_path: Path | None,
+    start_method: str = "fork",
+) -> dict:
+    """
+    Same download/extract/parse machinery as `run_stackexchange_source`
+    (reuses `_run_stackexchange_worker` unchanged), restricted to
+    `CLI_HELPER_STACKEXCHANGE_SITES` and written under its own
+    `source_id`/output directory -- so this never touches, shares a cache
+    with, or reorders shards belonging to the general `stackexchange` source
+    already on disk. Deduplication against that source is a deliberate later
+    step, not done here.
+    """
+    check_stackexchange_dependencies()
+
+    source_id = "cli_helper_stack_exchange"
+    output_dir = output_dir / source_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    archive_dir = output_dir / "_archives"
+    xml_dir = output_dir / "_xml"
+
+    archives = list_site_archives()
+    ordered = order_cli_helper_sites(archives)
+    missing = sorted(
+        CLI_HELPER_STACKEXCHANGE_SITES - {Path(name).name[: -len(".7z")] for name, _ in ordered}
+    )
+
+    site_slices: list[list[tuple[str, int]]] = [[] for _ in range(num_workers)]
+    for i, site in enumerate(ordered):
+        site_slices[i % num_workers].append(site)
+
+    deduplicator = build_deduplicator(estimate_chunks(budget_bytes))
+    per_worker_budget = max(1, budget_bytes // num_workers)
+    reservations = registry.reserve(
+        {"email": pii_block_size, "handle": pii_block_size, "phone": pii_block_size},
+        workers=num_workers,
+    )
+
+    jobs = []
+    ctx = mp.get_context(start_method)
+    with ctx.Pool(processes=num_workers, initializer=_init_dedup_worker, initargs=(deduplicator,)) as pool:
+        for worker_index in range(num_workers):
+            jobs.append(
+                pool.apply_async(
+                    _run_stackexchange_worker,
+                    kwds=dict(
+                        spec=spec,
+                        sites=site_slices[worker_index],
+                        source_id=source_id,
+                        worker_index=worker_index,
+                        budget_bytes=per_worker_budget,
+                        output_dir=output_dir,
+                        shard_bytes=shard_bytes,
+                        archive_dir=archive_dir,
+                        xml_dir=xml_dir,
+                        reservation=reservations[worker_index],
+                        legacy=legacy,
+                        audit_path=audit_path,
+                    ),
+                )
+            )
+        worker_stats = [job.get() for job in jobs]
+
+    return {
+        "source_id": source_id,
+        "license": spec.license,
+        "role": spec.role,
+        "sites_considered": len(ordered),
+        "sites_missing": missing,
         "workers": worker_stats,
         "dedup": _aggregate_dedup_stats(deduplicator, worker_stats),
         "bytes_written": sum(w["bytes_written"] for w in worker_stats),
@@ -882,6 +981,19 @@ def _run_one_source(source_id: str, args: argparse.Namespace, budget_bytes: int,
             audit_path=audit_path,
             include_meta=args.include_meta,
             include_non_english=args.include_non_english,
+            start_method=args.start_method,
+        )
+    if spec.kind == "cli_helper_stackexchange":
+        return run_cli_helper_stackexchange_source(
+            spec,
+            budget_bytes=budget_bytes,
+            output_dir=output_dir,
+            num_workers=args.workers_per_source,
+            shard_bytes=gb_to_bytes(args.shard_gb),
+            registry=registry,
+            legacy=legacy,
+            pii_block_size=args.pii_block_size,
+            audit_path=audit_path,
             start_method=args.start_method,
         )
     if spec.kind == "git_tldr":

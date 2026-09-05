@@ -177,6 +177,23 @@ SOURCES: dict[str, SourceSpec] = {
         # the one source where PII masking is doing heavy lifting.
         pipeline=PipelineConfig(strip_markup=True, quality=True, mask_pii=True),
     ),
+    "cli_helper_stack_exchange": SourceSpec(
+        source_id="cli_helper_stack_exchange",
+        kind="cli_helper_stackexchange",
+        role=(
+            "Q&A from the Stack Exchange sites most relevant to a "
+            "command-line/sysadmin helper (askubuntu, unix, superuser, "
+            "serverfault, security, devops, networking, IoT, mobile OS "
+            "shells, electronics) -- downloaded into its own directory, "
+            "isolated from the general `stackexchange` source so it can be "
+            "deduplicated against it separately before use"
+        ),
+        license="CC BY-SA 4.0",
+        # Same content shape as the general Stack Exchange source (real
+        # users' HTML post bodies): identical markup-stripping, quality
+        # filtering, and PII-masking treatment.
+        pipeline=PipelineConfig(strip_markup=True, quality=True, mask_pii=True),
+    ),
     "cli_tldr": SourceSpec(
         source_id="cli_tldr",
         kind="git_tldr",
@@ -514,6 +531,49 @@ def order_sites(
 
     tail = [item for item in archives if _site_name(item[0]) == LAST_SITE]
     return selected + tail
+
+
+# The CLI-helper task's Stack Exchange allowlist: sites whose Q&A content is
+# actually about using a command line (shells, package managers, sysadmin
+# tools), as opposed to `order_sites`'s full-corpus list which spans every
+# non-technical/technical/science tier. Kept as its own explicit set rather
+# than a `_tier_of`-style keyword match, so the membership is auditable at a
+# glance instead of implied by a tier a site happens to fall into.
+CLI_HELPER_STACKEXCHANGE_SITES = frozenset(
+    {
+        "askubuntu.com",
+        "unix.stackexchange.com",
+        "superuser.com",
+        "serverfault.com",
+        "networkengineering.stackexchange.com",
+        "security.stackexchange.com",
+        "raspberrypi.stackexchange.com",
+        "devops.stackexchange.com",
+        "apple.stackexchange.com",
+        "android.stackexchange.com",
+        "electronics.stackexchange.com",
+        "iot.stackexchange.com",
+    }
+)
+
+
+def order_cli_helper_sites(archives: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    """
+    Filter the full Stack Exchange site list down to
+    `CLI_HELPER_STACKEXCHANGE_SITES`, smallest archive first.
+
+    Deliberately a fixed allowlist rather than `order_sites` with different
+    tier weights: this source is meant to produce a small, separate,
+    fully-isolated corpus for the CLI-helper downstream task -- reusing
+    `order_sites` here would also pull in `include_meta`/`include_non_english`
+    knobs and the tier/curriculum ordering that make sense for the general
+    358-site run but have no bearing on a hand-picked 12-site list.
+    """
+    selected = [
+        (name, size) for name, size in archives if _site_name(name) in CLI_HELPER_STACKEXCHANGE_SITES
+    ]
+    selected.sort(key=lambda item: (item[1], item[0]))
+    return selected
 
 
 def download_archive(archive_name: str, dest_dir: Path, *, timeout: int = 3600) -> Path:

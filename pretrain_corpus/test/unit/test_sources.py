@@ -4,6 +4,7 @@ import pytest
 
 from src.errors import SourceConfigError
 from src.sources import (
+    CLI_HELPER_STACKEXCHANGE_SITES,
     LAST_SITE,
     NON_ENGLISH_SITES,
     SOURCES,
@@ -12,6 +13,7 @@ from src.sources import (
     _tier_of,
     format_cheat_sheet,
     format_tldr_page,
+    order_cli_helper_sites,
     order_sites,
     resolve,
 )
@@ -132,6 +134,62 @@ def test_cli_tldr_source_disables_quality_and_pii_masking():
     assert spec.pipeline.quality is False
     assert spec.pipeline.mask_pii is False
     assert spec.license == "MIT"
+
+
+def test_cli_helper_stack_exchange_is_registered_as_its_own_source():
+    """
+    Separate from `stackexchange` on purpose: a hand-picked slice of sites
+    for the CLI-helper task, downloaded into its own directory so it can be
+    deduplicated against the general Stack Exchange source later rather than
+    being folded into it (or worse, requiring the already-downloaded general
+    source to be re-split after the fact -- its output has no per-site
+    attribution left once written, see `order_sites`'s own site-mixing).
+    """
+    spec = SOURCES["cli_helper_stack_exchange"]
+    assert spec.kind == "cli_helper_stackexchange"
+    assert spec.pipeline.strip_markup is True
+    assert spec.pipeline.mask_pii is True
+    assert spec.license == "CC BY-SA 4.0"
+
+
+def test_cli_helper_stackexchange_sites_is_a_fixed_twelve_site_allowlist():
+    assert len(CLI_HELPER_STACKEXCHANGE_SITES) == 12
+    assert "askubuntu.com" in CLI_HELPER_STACKEXCHANGE_SITES
+    assert "superuser.com" in CLI_HELPER_STACKEXCHANGE_SITES
+    assert "raspberrypi.stackexchange.com" in CLI_HELPER_STACKEXCHANGE_SITES
+    # Not part of the CLI-helper slice -- would silently defeat the point of
+    # a separate, deduplicatable corpus if it leaked in.
+    assert "cooking.stackexchange.com" not in CLI_HELPER_STACKEXCHANGE_SITES
+
+
+def test_order_cli_helper_sites_keeps_only_the_allowlisted_sites():
+    archives = [
+        ("x/askubuntu.com.7z", 500),
+        ("x/cooking.stackexchange.com.7z", 100),
+        ("x/unix.stackexchange.com.7z", 200),
+    ]
+    ordered = order_cli_helper_sites(archives)
+    sites = [_site_name(name) for name, _ in ordered]
+    assert sites == ["unix.stackexchange.com", "askubuntu.com"]
+
+
+def test_order_cli_helper_sites_smallest_first():
+    archives = [
+        ("x/askubuntu.com.7z", 9000),
+        ("x/apple.stackexchange.com.7z", 10),
+    ]
+    ordered = order_cli_helper_sites(archives)
+    assert [size for _name, size in ordered] == [10, 9000]
+
+
+def test_order_cli_helper_sites_ignores_meta_and_non_english_filters():
+    """
+    Unlike `order_sites`, this is a fixed allowlist -- none of its 12 sites
+    are meta or non-English, so there is nothing for those flags to do, and
+    the function intentionally exposes no such parameters.
+    """
+    archives = [("x/askubuntu.com.meta.7z", 100)]
+    assert order_cli_helper_sites(archives) == []
 
 
 def test_format_tldr_page_pairs_each_description_with_its_command():
