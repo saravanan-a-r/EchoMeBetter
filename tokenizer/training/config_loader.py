@@ -66,6 +66,18 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "chars_per_token_warn_below": Number,
         "vocab_utilization_warn_below": Number,
     },
+    "runtime": {
+        "workers": int,
+    },
+}
+
+# Sections that may be omitted entirely, filled in with these defaults. Only
+# `runtime` qualifies: it holds pure execution knobs (how many processes to
+# split the corpus scan across) which change how long a run takes and nothing
+# about its result, so an older config without the section stays valid and
+# every existing config keeps working untouched.
+OPTIONAL_SECTIONS: dict[str, dict[str, Any]] = {
+    "runtime": {"workers": 0},  # 0 = auto-detect
 }
 
 
@@ -82,6 +94,12 @@ def _type_name(expected: Any) -> str:
 def _check_schema(cfg: dict[str, Any]) -> None:
     if not isinstance(cfg, dict):
         raise ConfigError(f"config root must be a mapping, got {type(cfg).__name__}")
+
+    for section, defaults in OPTIONAL_SECTIONS.items():
+        body = cfg.setdefault(section, {})
+        if isinstance(body, dict):
+            for key, value in defaults.items():
+                body.setdefault(key, value)
 
     missing_sections = sorted(set(SCHEMA) - set(cfg))
     if missing_sections:
@@ -165,6 +183,9 @@ def _check_semantics(cfg: dict[str, Any]) -> None:
         raise ConfigError("trainer.character_coverage must be in (0.0, 1.0]")
     if trainer["num_threads"] < 0:
         raise ConfigError("trainer.num_threads must be >= 0 (0 = auto-detect)")
+
+    if cfg["runtime"]["workers"] < 0:
+        raise ConfigError("runtime.workers must be >= 0 (0 = auto-detect)")
 
     # The reserved block must physically fit inside the vocabulary. Catching
     # this here turns a confusing SentencePiece crash minutes into a run

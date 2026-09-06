@@ -34,7 +34,6 @@ import argparse
 import datetime
 import json
 import platform
-import random
 import sys
 import time
 from pathlib import Path
@@ -44,6 +43,7 @@ import trainer as trainer_module
 import validate_tokenizer
 from config_loader import ConfigError, load_config
 from corpus_reader import CorpusError
+from execution import Executor
 from specials import ALL_NAMED_SPECIALS
 
 MODULE_DIR = Path(__file__).resolve().parent
@@ -71,6 +71,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--input-sentence-size", type=int, default=None, help="Override corpus.input_sentence_size."
     )
     parser.add_argument("--seed", type=int, default=None, help="Override sampling.seed.")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Processes for the corpus scan, sampling and eval scan. "
+             "Override runtime.workers (0 = auto-detect). Results are identical "
+             "at any worker count; only wall-clock time changes.",
+    )
     parser.add_argument(
         "--eval-corpus",
         type=int,
@@ -155,6 +163,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    # The one place a core count enters the pipeline. Everything downstream
+    # takes an Executor and never asks how big the machine is.
+    executor = Executor.from_config(
+        args.workers if args.workers is not None else cfg["runtime"]["workers"]
+    )
+
     output_dir = resolve_output_dir(cfg)
     output_dir.mkdir(parents=True, exist_ok=True)
     corpus_txt = output_dir / "corpus.txt"
@@ -178,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
             max_sentence_length=cfg["corpus"]["max_sentence_length"],
             max_drop_fraction=cfg["corpus"]["max_drop_fraction"],
             blend=cfg["blend"],
+            executor=executor,
         )
     except CorpusError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -262,32 +277,31 @@ def main(argv: list[str] | None = None) -> int:
                   "training); gates 1/2/4/5/6/8/9/10/11 cannot be measured", file=sys.stderr)
 
         eval_started = time.time()
-        # Reservoir sample of the evaluated stream, saved for export_hf.py and
-        # human inspection. Bounded, so a 100M-line evaluation still writes a
-        # small, representative file.
+        # The eval sample saved for export_hf.py and human inspection is drawn
+        # by the scan itself (a bounded reservoir per file, merged), so the
+        # eval corpus is still read exactly once no matter how many workers
+        # read it.
         sample_budget = cfg["validation"]["eval_sample_save"]
-        sample: list[dict] = []
-        sample_rng = random.Random(cfg["sampling"]["seed"] + 2)
-
-        def eval_stream():
-            for i, (text, source) in enumerate(
-                corpus_reader.iter_eval_lines(files, plan, limit=limit)
-            ):
-                if len(sample) < sample_budget:
-                    sample.append({"text": text, "source": source})
-                elif sample_budget > 0:
-                    j = sample_rng.randint(0, i)
-                    if j < sample_budget:
-                        sample[j] = {"text": text, "source": source}
-                yield text, source
 
         try:
+            eval_scan = validate_tokenizer.scan_eval_corpus(
+                model_path,
+                files,
+                plan,
+                limit=limit,
+                length_reservoir_size=cfg["validation"]["length_reservoir_size"],
+                seed=cfg["sampling"]["seed"],
+                sample_budget=sample_budget,
+                executor=executor,
+                progress=True,
+            )
             results, eval_scan = validate_tokenizer.run_all_gates(
-                sp, eval_stream(), cfg, progress=True
+                sp, None, cfg, progress=True, scan=eval_scan
             )
         except CorpusError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+        sample = eval_scan.sample
 
         with open(eval_sample_jsonl, "w", encoding="utf-8") as fh:
             for record in sample:

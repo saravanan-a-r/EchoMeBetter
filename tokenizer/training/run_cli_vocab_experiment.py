@@ -68,6 +68,7 @@ if str(MODULE_DIR) not in sys.path:
 
 import corpus_reader  # noqa: E402
 from config_loader import ConfigError, load_config  # noqa: E402
+from execution import Executor  # noqa: E402
 
 DEFAULT_BASE_CONFIG = MODULE_DIR / "config" / "cli_experiment.yaml"
 TRAIN_SCRIPT = MODULE_DIR / "train_tokenization.py"
@@ -192,6 +193,7 @@ def verify_forced_sources_saturated(
     seed: int,
     smallest_size: int,
     scratch_dir: Path,
+    executor: Executor | None = None,
 ) -> list[SaturationCheck]:
     """
     Run the real scan-and-sample step (no SentencePiece training) at the
@@ -213,6 +215,7 @@ def verify_forced_sources_saturated(
         max_sentence_length=cfg["corpus"]["max_sentence_length"],
         max_drop_fraction=cfg["corpus"]["max_drop_fraction"],
         blend=cfg["blend"],
+        executor=executor or Executor(),
     )
     capacities: dict[str, int] = info["scan"]["per_source_lines"]
     trained: dict[str, int] = info["train_lines_per_source"]
@@ -278,6 +281,11 @@ def build_variant_jobs(
 
         cfg = copy.deepcopy(base_cfg)
         cfg["trainer"]["num_threads"] = num_threads
+        # The corpus scan, the sampling pass and the eval scan get the same
+        # budget as SentencePiece itself. They used to be single-threaded no
+        # matter what this said, which left `num_threads` describing about 30
+        # seconds of a four-hour run; now it describes the whole run.
+        cfg.setdefault("runtime", {})["workers"] = num_threads
         config_path = variant_dir / "config.yaml"
         config_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
 
@@ -290,6 +298,7 @@ def build_variant_jobs(
             "--input-sentence-size", str(size),
             "--seed", str(seed),
             "--eval-corpus", str(eval_size),
+            "--workers", str(num_threads),
         ]
         jobs.append(VariantJob(
             label=label, size=size, output_dir=output_dir, config_path=config_path, argv=argv,
@@ -634,6 +643,10 @@ def main(argv: list[str] | None = None) -> int:
         checks = verify_forced_sources_saturated(
             flattened, args.base_config, seed=args.seed, smallest_size=min(sizes),
             scratch_dir=args.workdir / "_verify_scratch",
+            # This pre-flight does the same two full corpus passes a variant
+            # does, so it gets the same core budget rather than crawling
+            # through ~860GB on one core before the sweep even starts.
+            executor=Executor.from_config(args.cpu_cores),
         )
     except (ExperimentError, ConfigError, corpus_reader.CorpusError) as exc:
         print(f"error: {exc}", file=sys.stderr)

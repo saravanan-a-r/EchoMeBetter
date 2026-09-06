@@ -33,10 +33,12 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable
 
 import sentencepiece as spm
 
+from execution import largest_remainder
 from marker_escape import escape_markers, unescape_markers
 from specials import BUILTIN_SPECIALS, USER_DEFINED_SYMBOLS
 
@@ -105,6 +107,103 @@ class ScanStats:
     url_fragments: set[str] = field(default_factory=set)
     url_fragments_capped: bool = False
     per_source: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Reservoir of evaluated records, saved beside the model for export_hf.py
+    # and human inspection. Accumulated here rather than by the caller so the
+    # eval corpus is still read exactly once when the scan is split over
+    # workers -- a caller-side reservoir would need its own pass.
+    sample: list[dict] = field(default_factory=list)
+
+    @classmethod
+    def merged(
+        cls,
+        parts: list["ScanStats"],
+        *,
+        seed: int,
+        length_reservoir_size: int,
+        sample_budget: int,
+    ) -> "ScanStats":
+        """
+        Combine per-file scans into the single corpus-wide result the gates read.
+
+        Sums, maxima and set unions are order-independent, so they merge
+        trivially. The two reservoirs are the only interesting part: each part
+        holds a uniform sample of *its own* file, so the union is drawn by
+        giving each part a share proportional to how many records it actually
+        saw (`largest_remainder`), then taking that many of its reservoir
+        entries. That yields a uniform sample of the whole eval stream, and a
+        seeded shuffle keeps which entries survive reproducible.
+        """
+        parts = [p for p in parts if p is not None]
+        if not parts:
+            return cls()
+
+        total = cls(id_counts=[0] * len(parts[0].id_counts))
+        for part in parts:
+            total.n_records += part.n_records
+            total.n_roundtrip_ok += part.n_roundtrip_ok
+            total.total_tokens += part.total_tokens
+            total.total_words += part.total_words
+            total.total_chars += part.total_chars
+            total.total_unk += part.total_unk
+            total.total_byte_tokens += part.total_byte_tokens
+            total.max_tokens_per_sentence = max(
+                total.max_tokens_per_sentence, part.max_tokens_per_sentence
+            )
+            for i, count in enumerate(part.id_counts):
+                total.id_counts[i] += count
+            for source, values in part.per_source.items():
+                slot = total.per_source.setdefault(
+                    source,
+                    {"records": 0, "tokens": 0, "words": 0, "chars": 0, "unk": 0, "byte_tokens": 0},
+                )
+                for key, value in values.items():
+                    slot[key] = slot.get(key, 0) + value
+            if not total.url_fragments_capped:
+                total.url_fragments.update(part.url_fragments)
+                if len(total.url_fragments) >= MAX_URL_FRAGMENTS:
+                    total.url_fragments_capped = True
+            total.url_fragments_capped = total.url_fragments_capped or part.url_fragments_capped
+            # Examples are illustrative, not exhaustive; the cap is what keeps
+            # a catastrophic failure from producing a gigabyte of report.
+            for src, dst in (
+                (part.roundtrip_failures, total.roundtrip_failures),
+                (part.unk_failures, total.unk_failures),
+            ):
+                dst.extend(src[: max(0, MAX_EXAMPLES - len(dst))])
+
+        counts = [p.n_records for p in parts]
+        rng = random.Random(seed)
+        total.length_reservoir = _merge_reservoirs(
+            [p.length_reservoir for p in parts], counts, length_reservoir_size, rng
+        )
+        total.sample = _merge_reservoirs(
+            [p.sample for p in parts], counts, sample_budget, rng
+        )
+        return total
+
+
+def _merge_reservoirs(
+    reservoirs: list[list], counts: list[int], capacity: int, rng: random.Random
+) -> list:
+    """
+    Draw `capacity` items uniformly from the union of per-file reservoirs.
+
+    Each file's reservoir is already uniform over that file, so a share
+    proportional to the file's record count -- capped at what its reservoir
+    actually holds -- gives a uniform sample of the whole.
+    """
+    if capacity <= 0:
+        return []
+    quotas = largest_remainder(min(capacity, sum(counts)), counts)
+    merged: list = []
+    for reservoir, quota in zip(reservoirs, quotas):
+        take = min(quota, len(reservoir))
+        if take <= 0:
+            continue
+        pool = list(reservoir)
+        rng.shuffle(pool)
+        merged.extend(pool[:take])
+    return merged
 
 
 def _byte_piece_ids(sp: spm.SentencePieceProcessor) -> set[int]:
@@ -125,6 +224,7 @@ def stream_scan(
     length_reservoir_size: int,
     seed: int,
     progress: bool = False,
+    sample_budget: int = 0,
 ) -> ScanStats:
     """
     One streaming pass feeding gates 1, 2, 4, 5, 6, 8, 9, 10 and 11.
@@ -135,6 +235,7 @@ def stream_scan(
     unk_id = sp.unk_id()
     stats = ScanStats(id_counts=[0] * sp.get_piece_size())
     rng = random.Random(seed)
+    sample_rng = random.Random(seed + 2)
     started = time.time()
 
     def flush(batch: list[tuple[str, str]]) -> None:
@@ -180,6 +281,14 @@ def stream_scan(
                 if j < length_reservoir_size:
                     stats.length_reservoir[j] = n_tokens
 
+            if sample_budget > 0:
+                if len(stats.sample) < sample_budget:
+                    stats.sample.append({"text": text, "source": source})
+                else:
+                    j = sample_rng.randint(0, i)
+                    if j < sample_budget:
+                        stats.sample[j] = {"text": text, "source": source}
+
             if not stats.url_fragments_capped:
                 for fragment in MD_LINK_RE.findall(text) + URL_RE.findall(text):
                     stats.url_fragments.add(fragment)
@@ -223,6 +332,102 @@ def stream_scan(
             batch = []
     flush(batch)
     return stats
+
+
+# One SentencePiece processor per worker process, keyed by model path. Loading
+# it costs ~0.2s and a pool worker handles many files, so caching it turns a
+# per-file cost into a per-worker one. A plain module global is the right scope
+# here: each pool worker is its own process.
+_WORKER_SP: dict[str, tuple[Any, set[int]]] = {}
+
+
+def _worker_processor(model_path: str):
+    cached = _WORKER_SP.get(model_path)
+    if cached is None:
+        sp = spm.SentencePieceProcessor(model_file=model_path)
+        cached = (sp, _byte_piece_ids(sp))
+        _WORKER_SP[model_path] = cached
+    return cached
+
+
+def _scan_eval_file(task: dict) -> ScanStats:
+    """
+    Encode and measure one file's share of the eval set.
+
+    The unit of parallel work for the gates. Pure with respect to its inputs
+    -- the same file, plan and quota always produce the same counters -- which
+    is what lets the merged result be independent of worker count.
+    """
+    import corpus_reader
+
+    sp, byte_ids = _worker_processor(task["model_path"])
+    plan = corpus_reader.SplitPlan.from_dict(task["plan"])
+    stats_sink = corpus_reader.CorpusStats(files=1)
+    lines = corpus_reader.iter_eval_file(
+        Path(task["path"]), task["file_idx"], plan, task["quota"], stats_sink
+    )
+    return stream_scan(
+        sp,
+        lines,
+        byte_ids,
+        length_reservoir_size=task["length_reservoir_size"],
+        # Per-file seed: reservoirs must differ between files, or every file
+        # would keep the same positions and the merge would not be uniform.
+        seed=task["seed"] + task["file_idx"],
+        sample_budget=task["sample_budget"],
+    )
+
+
+def scan_eval_corpus(
+    model_path: Path,
+    files: list[Path],
+    plan,
+    *,
+    limit: int,
+    length_reservoir_size: int,
+    seed: int,
+    sample_budget: int,
+    executor,
+    progress: bool = False,
+) -> ScanStats:
+    """
+    Run the eval scan over the whole corpus, one file at a time, in parallel.
+
+    This is the step that dominated a sweep's wall clock: encoding ~50M eval
+    lines through SentencePiece at ~6k lines/s on a single core took over two
+    hours per variant while 41 cores idled. It is embarrassingly parallel --
+    each file's share of the eval set is independent -- so all it needed was
+    a per-file unit of work and a merge that respects the reservoirs.
+    """
+    import corpus_reader
+
+    quotas = corpus_reader.eval_file_quotas(plan, limit)
+    plan_dict = plan.as_dict()
+    tasks = [
+        {
+            "model_path": str(model_path),
+            "path": str(path),
+            "file_idx": idx,
+            "plan": plan_dict,
+            "quota": quotas[idx] if idx < len(quotas) else 0,
+            "length_reservoir_size": length_reservoir_size,
+            "seed": seed,
+            "sample_budget": sample_budget,
+        }
+        for idx, path in enumerate(files)
+    ]
+    if progress:
+        print(
+            f"      scanning {len(tasks)} file(s) across {executor.workers} worker(s)...",
+            flush=True,
+        )
+    parts = executor.map(_scan_eval_file, tasks)
+    return ScanStats.merged(
+        parts,
+        seed=seed,
+        length_reservoir_size=length_reservoir_size,
+        sample_budget=sample_budget,
+    )
 
 
 def _percentile(sorted_values: list[int], pct: float) -> int:
@@ -578,27 +783,35 @@ def gate_11_token_frequency(scan: ScanStats, cfg: dict) -> GateResult:
 
 def run_all_gates(
     sp: spm.SentencePieceProcessor,
-    lines: Iterable[tuple[str, str]],
+    lines: Iterable[tuple[str, str]] | None,
     cfg: dict,
     *,
     progress: bool = False,
+    scan: ScanStats | None = None,
 ) -> tuple[list[GateResult], ScanStats]:
     """
     Run every gate against a stream of (text, source) pairs.
 
     Returns the gate results and the raw scan, so callers can report corpus
     counts without a second pass.
+
+    `scan` lets a caller supply an already-computed scan (see
+    `scan_eval_corpus`, which produces one in parallel) instead of a stream.
+    The gates themselves are pure functions of the scan, so they are identical
+    either way -- only how the counters were gathered differs.
     """
     v = cfg["validation"]
     byte_ids = _byte_piece_ids(sp)
-    scan = stream_scan(
-        sp,
-        lines,
-        byte_ids,
-        length_reservoir_size=v["length_reservoir_size"],
-        seed=cfg["sampling"]["seed"],
-        progress=progress,
-    )
+    if scan is None:
+        scan = stream_scan(
+            sp,
+            lines or [],
+            byte_ids,
+            length_reservoir_size=v["length_reservoir_size"],
+            seed=cfg["sampling"]["seed"],
+            progress=progress,
+            sample_budget=v.get("eval_sample_save", 0),
+        )
     results = [
         gate_1_roundtrip(scan),
         gate_2_no_unk(scan),
