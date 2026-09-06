@@ -7,28 +7,42 @@
 #
 # Composition, and why it looks like this
 # ----------------------------------------
-# Four sources (cli_tldr, cli_nl2bash, cli_man_pages, cli_cheat_sheets) are
-# so small relative to any tested input_sentence_size (a few thousand to
-# ~17,000 eligible lines each, against budgets of 250,000 and up) that normal
-# proportional blend sampling could not be trusted to reliably include all of
-# them. Their shares below (0.10 each) are deliberately far above their
-# natural byte proportion so that, combined with their tiny absolute
-# capacity, they are fully saturated (100% of their eligible lines selected
-# for training) at every configured sweep size -- run_cli_vocab_experiment.py
-# verifies this against the real corpus before launching the sweep rather
-# than assuming these numbers are big enough.
+# Three sources (cli_tldr, cli_nl2bash, cli_cheat_sheets) are genuinely small
+# enough, in eligible-LINE terms (corpus_reader.py counts one eligible line
+# per newline-separated segment of a record -- the unit SentencePiece trains
+# on, not the record itself), to reliably force full inclusion at every
+# tested input_sentence_size: their true capacities, measured against the
+# real corpus, are 71,835 / 24,810 / 4,130 lines respectively. cli_tldr's
+# share is 0.13, not 0.10 like its two siblings, because at the smallest
+# tested size (250,000) 0.10 fell 5,773 lines short (measured: 66,062/71,835)
+# -- its capacity is close enough to that budget that the smaller shares
+# just weren't quite sufficient headroom; 0.13 clears it with margin.
+# run_cli_vocab_experiment.py's FORCED_SOURCES verifies this against the real
+# corpus before launching the sweep rather than assuming these numbers hold.
+#
+# cli_man_pages is NOT forced, despite looking like the same case. Its text
+# is troff-formatted and splits into ~29 eligible lines per record on
+# average (measured: 492,863 eligible lines from 16,910 records) -- bigger
+# than this sweep's own smallest tested size. No share can force "100%
+# included" there (that would need more than the entire budget devoted to
+# just this source, confirmed empirically up to share=0.50). It takes an
+# ordinary weighted share instead, same as cli_helper_stack_exchange, and
+# gets whatever proportional inclusion its weight earns at each size --
+# substantial even at 250,000 (measured: 42,537 lines, 8.6% of its content)
+# and complete from 2,000,000 upward.
 #
 # cli_helper_stack_exchange (a Stack Exchange dump already filtered to
 # sysadmin/CLI-relevant sites -- askubuntu, unix, superuser, serverfault,
-# etc.) is real volume (~10.8M records) and gets an ordinary weighted share
-# like the other seven, boosted somewhat above what a purely general-purpose
-# blend would give it, since improving CLI vocabulary coverage is this
-# sweep's actual purpose.
+# etc.) is real volume (~4.9M records post-dedup against the general
+# stackexchange source) and gets an ordinary weighted share like the other
+# eight, boosted somewhat above what a purely general-purpose blend would
+# give it, since improving CLI vocabulary coverage is this sweep's actual
+# purpose.
 #
-# The eight non-forced shares (0.600 total) keep the same relative
-# proportions to each other as pretrain_corpus/download.py's DEFAULT_BLEND,
-# with cli_helper_stack_exchange up-weighted relative to general
-# stackexchange.
+# The non-CLI shares keep the same relative proportions to each other as
+# pretrain_corpus/download.py's DEFAULT_BLEND, with cli_helper_stack_exchange
+# up-weighted relative to general stackexchange; fineweb_edu absorbs the 0.03
+# moved to cli_tldr above, so the total still sums to 1.0.
 
 corpus:
   input_sentence_size: 1000000 # always overridden per variant by --input-sentence-size
@@ -41,7 +55,7 @@ sampling:
 blend:
   mode: weighted
   shares:
-    fineweb_edu: 0.252
+    fineweb_edu: 0.222
     c4: 0.084
     cosmopedia: 0.045
     gutenberg_pg19: 0.066
@@ -49,7 +63,7 @@ blend:
     stackexchange: 0.027
     permissive_code: 0.018
     cli_helper_stack_exchange: 0.042
-    cli_tldr: 0.10
+    cli_tldr: 0.13
     cli_nl2bash: 0.10
     cli_man_pages: 0.10
     cli_cheat_sheets: 0.10

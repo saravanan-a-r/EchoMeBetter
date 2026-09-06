@@ -124,6 +124,38 @@ def test_flattened_view_raises_on_empty_corpus_dir(tmp_path):
         experiment.build_flattened_corpus_view(empty, tmp_path / "dest")
 
 
+def test_flattened_view_ignores_nested_cache_directories(tmp_path, pretrain_corpus_dir):
+    """
+    Regression test: sources built from a git clone (cli_tldr, cli_nl2bash,
+    cli_cheat_sheets) leave that clone at `<source>/_repo/`, and it is full of
+    `.json`/`.txt` files (package.json, requirements.txt, ...) that are not
+    corpus shards. An `rglob("*")` here previously swept them in and
+    symlinked them alongside the real shards under the same source label,
+    corrupting both the training text and every stat derived from it -- on
+    the real corpus this inflated cli_nl2bash's measured line count by 36%.
+
+    Real Stack Exchange-shaped sources cache extracted XML at `<source>/_xml/`
+    and raw archives at `<source>/_archives/`; those must be excluded too.
+    """
+    repo_dir = pretrain_corpus_dir / "cli_tldr" / "_repo" / "tldr"
+    repo_dir.mkdir(parents=True)
+    (repo_dir / "package.json").write_text('{"name": "tldr"}', encoding="utf-8")
+    (repo_dir / "requirements.txt").write_text("pytest>=6.0\n", encoding="utf-8")
+
+    xml_dir = pretrain_corpus_dir / "cli_helper_stack_exchange" / "_xml" / "askubuntu.com"
+    xml_dir.mkdir(parents=True)
+    (xml_dir / "Posts.xml").write_text("<row Body='not corpus text'/>", encoding="utf-8")
+
+    dest = tmp_path / "flattened"
+    counts = experiment.build_flattened_corpus_view(pretrain_corpus_dir, dest)
+
+    assert counts["cli_tldr"] == 1  # only the real .jsonl shard, not the 2 _repo files
+    assert counts["cli_helper_stack_exchange"] == 2  # unaffected by the .xml cache
+    for link in dest.iterdir():
+        assert "_repo" not in link.resolve().parts
+        assert "_xml" not in link.resolve().parts
+
+
 # --------------------------------------------------------------------------
 # verify_forced_sources_saturated
 # --------------------------------------------------------------------------

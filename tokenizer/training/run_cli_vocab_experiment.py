@@ -76,7 +76,21 @@ TRAIN_SCRIPT = MODULE_DIR / "train_tokenization.py"
 # config/cli_experiment.yaml gives them a share large enough to saturate
 # them (100% of their eligible lines selected for training), and this
 # script verifies that against the real corpus rather than assuming it.
-FORCED_SOURCES: tuple[str, ...] = ("cli_tldr", "cli_nl2bash", "cli_man_pages", "cli_cheat_sheets")
+#
+# `cli_man_pages` is deliberately NOT here, despite looking like the same
+# case (a tiny, structured CLI reference source). It was originally grouped
+# with these three on that assumption -- wrong, measured against the real
+# corpus: `corpus_reader.iter_eligible_lines` counts one eligible line per
+# newline-separated segment of a record's text (the unit SentencePiece
+# actually trains on), and a man page's troff-formatted text splits into
+# ~29 such lines on average. That puts its true capacity at 492,863 eligible
+# lines -- 29x its 16,910 record count, and bigger than this sweep's own
+# smallest tested `input_sentence_size` (250,000). No blend share can force
+# "100% included" there: it would require devoting more than the entire
+# budget to this one source, verified empirically (every share up to 0.50
+# tried, none sufficient at size=250,000). Forcing it was never coherent;
+# it now takes an ordinary weighted share like `cli_helper_stack_exchange`.
+FORCED_SOURCES: tuple[str, ...] = ("cli_tldr", "cli_nl2bash", "cli_cheat_sheets")
 
 CORPUS_SUFFIXES = (".jsonl", ".json", ".txt")
 
@@ -119,8 +133,23 @@ def build_flattened_corpus_view(pretrain_corpus_dir: Path, dest_dir: Path) -> di
     source_dirs = sorted(p for p in pretrain_corpus_dir.iterdir() if p.is_dir())
     for source_dir in source_dirs:
         source_id = source_dir.name
+        # Direct children only -- NOT rglob. Every real shard `download.py`
+        # writes lands directly in `<source>/`; every source that clones an
+        # upstream git repo to build its dataset (cli_tldr, cli_nl2bash,
+        # cli_cheat_sheets) leaves that clone at `<source>/_repo/`, and
+        # Stack Exchange sources cache extracted XML at `<source>/_xml/` and
+        # raw archives at `<source>/_archives/`. An `rglob("*")` here swept
+        # all of those in too -- a repo's `package.json`, `requirements.txt`
+        # and (worst) thousands of `.md`/other files under `_repo/` matched
+        # `CORPUS_SUFFIXES` and got symlinked in as if they were training
+        # shards, corrupting both the corpus (unrelated repo scaffolding
+        # mixed into a source's training text) and every stat derived from
+        # it (a source's measured "capacity" no longer meant "eligible
+        # lines in its real shards"). Verified against the real corpus:
+        # cli_nl2bash's line count was inflated by 8,841 lines (+36%) this
+        # way before this fix.
         shard_files = sorted(
-            p for p in source_dir.rglob("*")
+            p for p in source_dir.glob("*")
             if p.is_file() and p.suffix.lower() in CORPUS_SUFFIXES
         )
         if not shard_files:
