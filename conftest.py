@@ -99,6 +99,12 @@ def _tiny_training_config_document(output_dir: Path) -> dict:
         # since Trainer only consults eval_steps when evaluate is not None.
         eval_steps=2,
         save_steps=2,
+        # Low for the same reason eval_steps is: a two-tier test passing
+        # --max-steps 2 should actually reach both evaluations rather than
+        # only constructing them. master_eval_steps stays a multiple of
+        # save_steps, which the trainer requires of the selecting tier.
+        quick_eval_steps=1,
+        master_eval_steps=2,
         save_total_limit=None,
         metric_for_best_model="loss",
         greater_is_better=False,

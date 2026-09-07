@@ -119,6 +119,29 @@ defaults:
   eval_steps: 1000
   save_steps: 1000
 
+  # NOT TrainingArguments fields. The two-tier held-out evaluation
+  # (`EvalTier` in training/src/loop.py), used when pretrain.py is given
+  # --quick-eval-corpus / --master-eval-corpus.
+  #
+  # Why two. Eval loss on a small sample has a standard error that shrinks
+  # only as 1/sqrt(n), so one thin validation set cannot do both jobs: read
+  # often enough to show a trend, it is too noisy to rank two adjacent
+  # checkpoints; sized to rank them reliably, it is too expensive to read
+  # every thousand steps. So there are two sets and two cadences —
+  # quick_eval.jsonl (10K records) as the frequent trend signal, and
+  # master_eval.jsonl (50K) read rarely and given SOLE authority over which
+  # checkpoint is kept as best.
+  #
+  # master_eval_steps must be a multiple of save_steps, or the step it names
+  # as best is a step no checkpoint was written at; the trainer refuses such a
+  # pairing rather than discovering it at the end of the run.
+  #
+  # Only the cadences are configured here. How many records each set holds is
+  # a property of the files themselves (built by the eval-extraction script) —
+  # writing the counts here too would let the two disagree silently.
+  quick_eval_steps: 1000
+  master_eval_steps: 20000
+
   # --- checkpoint retention (§13: keep best-by-eval, not last) ----------------
   save_total_limit: 5
   metric_for_best_model: loss  # the key in whatever `evaluate` returns
@@ -207,6 +230,12 @@ stages:
   rehearsal:
     model_profile: base
     max_steps: 2000
+    # Scaled to a 2,000-step run: at the defaults' 20,000 the master tier
+    # would never fire, and a rehearsal that never exercises the tier holding
+    # best-checkpoint authority has not rehearsed the pipeline. Still a
+    # multiple of save_steps (1000), as the trainer requires.
+    quick_eval_steps: 100
+    master_eval_steps: 1000
     learning_rate: 0.0003
     lr_scheduler_type: inverse_sqrt
     warmup_steps: 100

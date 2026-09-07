@@ -76,6 +76,105 @@ def test_pretrain_runs_with_a_frozen_eval_corpus(
     assert exit_code == 0
 
 
+def test_pretrain_runs_with_both_eval_tiers(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, capsys
+):
+    """
+    The two-tier path end to end: both frozen sets are built from real corpus
+    files, wired into `Trainer.train` as `EvalTier`s, and — unlike the
+    single-tier test above, whose cadence is never reached — actually
+    evaluated, because the tiny config's cadences are 1 and 2 (conftest.py).
+    """
+    exit_code = pretrain.main(
+        [
+            "--corpus", str(mini_corpus_dir),
+            "--master-eval-corpus", str(mini_corpus_dir),
+            "--quick-eval-corpus", str(mini_corpus_dir),
+            "--master-eval-max-examples", "8",
+            "--quick-eval-max-examples", "8",
+            "--stage", "tiny",
+            "--device", "cpu",
+            "--model-config", str(tiny_model_config_path),
+            "--training-config", str(tiny_training_config_path),
+            "--max-steps", "2",
+        ]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "selects the best checkpoint" in out
+    assert "trend only" in out
+
+
+def test_pretrain_refuses_mixing_the_single_and_tiered_eval_flags(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, capsys
+):
+    """
+    Both forms claim authority over best-checkpoint selection, so accepting
+    them together would let the command decide silently which held-out set
+    ranked the checkpoints.
+    """
+    exit_code = pretrain.main(
+        [
+            "--corpus", str(mini_corpus_dir),
+            "--eval-corpus", str(mini_corpus_dir),
+            "--master-eval-corpus", str(mini_corpus_dir),
+            "--stage", "tiny",
+            "--device", "cpu",
+            "--model-config", str(tiny_model_config_path),
+            "--training-config", str(tiny_training_config_path),
+        ]
+    )
+    assert exit_code == 2
+    assert "cannot be combined" in capsys.readouterr().err
+
+
+def test_the_master_tier_is_the_one_wired_to_select_checkpoints(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, monkeypatch
+):
+    """
+    The one thing this wiring can get wrong without crashing: which tier is
+    handed `drives_best_checkpoint`. Backwards, the run would rank its
+    checkpoints on the small noisy set and quietly keep the wrong weights —
+    a failure with no symptom until the finished model underperforms.
+
+    Asserted on the arguments `pretrain.py` actually passes to `Trainer.train`,
+    rather than on a loss value, because the loss is what the tiering is
+    *supposed* to make meaningful and would be circular evidence here.
+    """
+    captured = {}
+
+    def capture(self, batches, *, evaluate=None, eval_tiers=None, data=None, max_steps=None):
+        captured["evaluate"] = evaluate
+        captured["tiers"] = list(eval_tiers or [])
+        return self.state
+
+    monkeypatch.setattr(pretrain.training_pkg.Trainer, "train", capture)
+
+    exit_code = pretrain.main(
+        [
+            "--corpus", str(mini_corpus_dir),
+            "--master-eval-corpus", str(mini_corpus_dir),
+            "--quick-eval-corpus", str(mini_corpus_dir),
+            "--master-eval-max-examples", "8",
+            "--quick-eval-max-examples", "8",
+            "--stage", "tiny",
+            "--device", "cpu",
+            "--model-config", str(tiny_model_config_path),
+            "--training-config", str(tiny_training_config_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["evaluate"] is None
+    tiers = {tier.name: tier for tier in captured["tiers"]}
+    assert set(tiers) == {"master", "quick"}
+    assert tiers["master"].drives_best_checkpoint is True
+    assert tiers["quick"].drives_best_checkpoint is False
+    # ...and each on the cadence the configuration asked for (conftest.py).
+    assert tiers["master"].every_steps == 2
+    assert tiers["quick"].every_steps == 1
+
+
 def test_pretrain_rejects_a_missing_corpus(tiny_model_config_path, tiny_training_config_path):
     with pytest.raises(pretrain.corpus_pkg.CorpusConfigError):
         pretrain.main(

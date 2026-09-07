@@ -89,6 +89,48 @@ REQUIRED_KEYS = (
 Batch = Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class EvalTier:
+    """
+    One held-out evaluation set, with its own cadence and its own authority.
+
+    A run asks two different questions of held-out data, and they do not want
+    the same answer shape. "Is the loss still falling?" wants an answer often,
+    and tolerates noise because it is read as a trend across many points.
+    "Which checkpoint is the best one?" is asked rarely and answered once, and
+    a noisy answer to it is *worse than no answer*: eval loss on a small
+    sample has a standard error that shrinks only as 1/sqrt(n), so a thin
+    validation set routinely ranks a worse checkpoint above a better one by an
+    amount smaller than its own measurement error, and the run then keeps the
+    wrong weights.
+
+    Separating the two is what lets each be sized for its own job — a small,
+    cheap set read every `save_steps`, and a large, precise one read rarely
+    and given sole authority over `best_step`. `drives_best_checkpoint` is the
+    authority, and exactly one tier may hold it: two tiers both writing
+    `best_metric` would compare numbers computed over different data, where
+    "better" means nothing.
+    """
+
+    name: str
+    evaluate: Callable[[], Mapping[str, float]]
+    every_steps: int
+    drives_best_checkpoint: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise TrainingConfigError("an eval tier needs a name; it labels its log entries")
+        if (
+            not isinstance(self.every_steps, int)
+            or isinstance(self.every_steps, bool)
+            or self.every_steps < 1
+        ):
+            raise TrainingConfigError(
+                f"eval tier {self.name!r}: every_steps must be a positive integer, "
+                f"got {self.every_steps!r}"
+            )
+
+
 @dataclass
 class StepReport:
     """What one optimizer step did, for logging and for tests to assert on."""
@@ -270,6 +312,7 @@ class Trainer:
         batches: Iterable[Batch],
         *,
         evaluate: Callable[[], Mapping[str, float]] | None = None,
+        eval_tiers: Sequence[EvalTier] | None = None,
         data: Resumable | None = None,
         max_steps: int | None = None,
     ) -> TrainerState:
@@ -282,11 +325,20 @@ class Trainer:
         Whatever it returns is recorded in `log_history` and its
         `metric_for_best_model` entry drives best-checkpoint retention.
 
+        `eval_tiers` is the general form: several held-out sets, each on its
+        own cadence, exactly one of them holding authority over `best_step`
+        (see `EvalTier`). `evaluate=` is the one-tier shorthand and is exactly
+        equivalent to a single tier named "eval", running every `eval_steps`,
+        that drives best-checkpoint selection — so every existing caller keeps
+        its current behaviour unchanged. Passing both is refused rather than
+        merged: which one ranked the checkpoints would be a coin flip.
+
         Exhausting the stream early is not an error: a rehearsal run over a
         fixed slice (§7.8) is expected to end that way. It is reported in the
         final log entry so it cannot be mistaken for having reached
         `max_steps`.
         """
+        tiers = self._resolve_eval_tiers(evaluate, eval_tiers)
         limit = max_steps if max_steps is not None else self.config.max_steps
         source = _micro_batches(batches, self.config.gradient_accumulation_steps)
         window = LossTracker()
@@ -324,8 +376,9 @@ class Trainer:
                 )
                 window.reset()
 
-            if evaluate is not None and step % self.config.eval_steps == 0:
-                self._evaluate_and_record(evaluate, step)
+            for tier in tiers:
+                if step % tier.every_steps == 0:
+                    self._evaluate_and_record(tier, step)
 
             if step % self.config.save_steps == 0:
                 self.save(step, data=data)
@@ -392,11 +445,76 @@ class Trainer:
 
         return tracker.summary()
 
-    def _evaluate_and_record(
-        self, evaluate: Callable[[], Mapping[str, float]], step: int
-    ) -> None:
-        metrics = dict(evaluate())
-        self._log({"step": step, "eval": True, **metrics})
+    def _resolve_eval_tiers(
+        self,
+        evaluate: Callable[[], Mapping[str, float]] | None,
+        eval_tiers: Sequence[EvalTier] | None,
+    ) -> tuple[EvalTier, ...]:
+        """
+        Normalize the two ways of asking for evaluation into one list.
+
+        The checks here all guard the same thing: that `best_step` has exactly
+        one, well-defined meaning. A run whose "best checkpoint" was chosen by
+        whichever tier happened to run last, or which names a step no
+        checkpoint was written at, has a best checkpoint on paper and not on
+        disk — and both failures surface at the very end of a multi-week run,
+        which is the worst possible time to discover them.
+        """
+        if evaluate is not None and eval_tiers:
+            raise TrainingConfigError(
+                "pass either evaluate= or eval_tiers=, not both: they would each "
+                "claim authority over best-checkpoint selection and which one won "
+                "would depend on argument order"
+            )
+
+        if not eval_tiers:
+            if evaluate is None:
+                return ()
+            return (
+                EvalTier(
+                    "eval",
+                    evaluate,
+                    self.config.eval_steps,
+                    drives_best_checkpoint=True,
+                ),
+            )
+
+        tiers = tuple(eval_tiers)
+        names = [tier.name for tier in tiers]
+        if len(set(names)) != len(names):
+            raise TrainingConfigError(
+                f"eval tier names must be unique — they label the log entries that "
+                f"separate one tier's curve from another's; got {names}"
+            )
+
+        drivers = [tier for tier in tiers if tier.drives_best_checkpoint]
+        if len(drivers) > 1:
+            raise TrainingConfigError(
+                f"only one eval tier may drive best-checkpoint selection, got "
+                f"{[tier.name for tier in drivers]}. Two tiers writing best_metric "
+                f"would compare losses measured over different held-out sets, where "
+                f"'better' does not mean anything."
+            )
+
+        for tier in drivers:
+            if tier.every_steps % self.config.save_steps != 0:
+                raise TrainingConfigError(
+                    f"eval tier {tier.name!r} drives best-checkpoint selection but "
+                    f"its cadence ({tier.every_steps}) is not a multiple of "
+                    f"save_steps ({self.config.save_steps}), so the step it names "
+                    f"as best is a step no checkpoint was written at — retention "
+                    f"would protect nothing and load_best_model_at_end would have "
+                    f"nothing to load"
+                )
+
+        return tiers
+
+    def _evaluate_and_record(self, tier: EvalTier, step: int) -> None:
+        metrics = dict(tier.evaluate())
+        self._log({"step": step, "eval": True, "eval_tier": tier.name, **metrics})
+
+        if not tier.drives_best_checkpoint:
+            return
 
         key = self.config.metric_for_best_model
         if key not in metrics:
@@ -594,6 +712,7 @@ def _default_device() -> torch.device:
 __all__ = [
     "Trainer",
     "StepReport",
+    "EvalTier",
     "REQUIRED_KEYS",
     "format_summary",
 ]

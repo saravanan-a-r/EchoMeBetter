@@ -31,7 +31,7 @@ import torch
 from conftest import make_batch, make_batches
 from src.errors import TrainingConfigError
 from src.interop import rephrase_model
-from src.loop import Trainer, _micro_batches
+from src.loop import EvalTier, Trainer, _micro_batches
 from src.optimizer import build_optimizer
 
 
@@ -583,7 +583,218 @@ def test_a_metric_the_evaluator_does_not_report_is_not_invented(
     assert driver.state.best_step is None
 
 
+# -- two-tier evaluation ---------------------------------------------------
+#
+# The property under test throughout this section is that the two tiers stay
+# *separate*: separate cadences, separately labelled log entries, and exactly
+# one of them with authority over which checkpoint is kept. A quick tier that
+# can move `best_step` would defeat the entire reason for having two — the
+# quick set is small enough that its ranking of adjacent checkpoints is mostly
+# measurement noise, which is precisely why the master set exists.
+
+
+def counting_evaluator(scores):
+    """An evaluator that records how many times it was called."""
+    calls = []
+
+    def evaluate():
+        calls.append(len(calls) + 1)
+        return {"loss": scores[(len(calls) - 1) % len(scores)]}
+
+    evaluate.calls = calls
+    return evaluate
+
+
+def test_each_tier_runs_on_its_own_cadence(tiny_model, training_config):
+    config = training_config.with_(
+        max_steps=6, gradient_accumulation_steps=1, save_steps=2
+    )
+    driver = trainer(tiny_model, config)
+    quick = counting_evaluator([1.0])
+    master = counting_evaluator([1.0])
+
+    driver.train(
+        make_batches(tiny_model.config, 6),
+        eval_tiers=[
+            EvalTier("quick", quick, every_steps=2),
+            EvalTier("master", master, every_steps=6, drives_best_checkpoint=True),
+        ],
+    )
+
+    assert len(quick.calls) == 3   # steps 2, 4, 6
+    assert len(master.calls) == 1  # step 6
+
+
+def test_only_the_driving_tier_selects_the_best_checkpoint(tiny_model, training_config):
+    """
+    The quick tier reports a far better loss than the master tier ever does.
+    If cadence alone decided, `best_metric` would end up holding the quick
+    tier's 0.01 and the run would keep whichever checkpoint the *noisy* set
+    happened to like.
+    """
+    config = training_config.with_(
+        max_steps=4, gradient_accumulation_steps=1, save_steps=2
+    )
+    driver = trainer(tiny_model, config)
+
+    driver.train(
+        make_batches(tiny_model.config, 4),
+        eval_tiers=[
+            EvalTier("quick", lambda: {"loss": 0.01}, every_steps=1),
+            EvalTier(
+                "master",
+                counting_evaluator([5.0, 3.0]),
+                every_steps=2,
+                drives_best_checkpoint=True,
+            ),
+        ],
+    )
+
+    assert driver.state.best_metric == 3.0  # the master tier's second reading
+    assert driver.state.best_step == 4
+    assert driver.state.best_metric != 0.01
+
+
+def test_every_evaluation_records_which_tier_produced_it(tiny_model, training_config):
+    """
+    Two curves in one log are only readable if each point says which set it
+    came from — otherwise a master reading looks like an outlier in the quick
+    tier's trend, on a different dataset with a different mean.
+    """
+    config = training_config.with_(
+        max_steps=2, gradient_accumulation_steps=1, save_steps=2
+    )
+    driver = trainer(tiny_model, config)
+    state = driver.train(
+        make_batches(tiny_model.config, 2),
+        eval_tiers=[
+            EvalTier("quick", lambda: {"loss": 1.0}, every_steps=1),
+            EvalTier(
+                "master", lambda: {"loss": 2.0}, every_steps=2, drives_best_checkpoint=True
+            ),
+        ],
+    )
+
+    tiers = [entry["eval_tier"] for entry in state.log_history if entry.get("eval")]
+    assert tiers == ["quick", "quick", "master"]
+
+
+def test_the_single_evaluate_argument_is_still_a_tier_that_selects(
+    tiny_model, training_config
+):
+    """
+    The one-tier shorthand has to keep behaving exactly as it did before the
+    tiers existed, including keeping authority over `best_step` — every
+    existing caller passes `evaluate=`.
+    """
+    config = training_config.with_(
+        max_steps=3, gradient_accumulation_steps=1, eval_steps=1, save_steps=1000
+    )
+    driver = trainer(tiny_model, config)
+    scores = iter([3.0, 1.0, 2.0])
+    state = driver.train(
+        make_batches(tiny_model.config, 3), evaluate=lambda: {"loss": next(scores)}
+    )
+
+    assert driver.state.best_metric == 1.0
+    assert driver.state.best_step == 2
+    assert {entry["eval_tier"] for entry in state.log_history if entry.get("eval")} == {"eval"}
+
+
+def test_a_run_with_no_evaluation_at_all_still_trains(tiny_model, training_config):
+    config = training_config.with_(
+        max_steps=2, gradient_accumulation_steps=1, save_steps=1000
+    )
+    driver = trainer(tiny_model, config)
+    state = driver.train(make_batches(tiny_model.config, 2))
+    assert state.global_step == 2
+    assert not [entry for entry in state.log_history if entry.get("eval")]
+
+
 # -- refusals --------------------------------------------------------------
+
+
+def test_passing_both_evaluate_and_tiers_is_refused(tiny_model, training_config):
+    driver = trainer(tiny_model, training_config)
+    with pytest.raises(TrainingConfigError, match="not both"):
+        driver.train(
+            make_batches(tiny_model.config, 2),
+            evaluate=lambda: {"loss": 1.0},
+            eval_tiers=[EvalTier("quick", lambda: {"loss": 1.0}, every_steps=1)],
+        )
+
+
+def test_two_tiers_cannot_both_select_the_best_checkpoint(tiny_model, training_config):
+    """
+    `best_metric` would hold whichever ran last, comparing losses measured on
+    different held-out sets — a number where "better" has no meaning.
+    """
+    driver = trainer(tiny_model, training_config.with_(save_steps=1))
+    with pytest.raises(TrainingConfigError, match="only one eval tier"):
+        driver.train(
+            make_batches(tiny_model.config, 2),
+            eval_tiers=[
+                EvalTier("a", lambda: {"loss": 1.0}, every_steps=1, drives_best_checkpoint=True),
+                EvalTier("b", lambda: {"loss": 1.0}, every_steps=1, drives_best_checkpoint=True),
+            ],
+        )
+
+
+def test_duplicate_tier_names_are_refused(tiny_model, training_config):
+    driver = trainer(tiny_model, training_config)
+    with pytest.raises(TrainingConfigError, match="unique"):
+        driver.train(
+            make_batches(tiny_model.config, 2),
+            eval_tiers=[
+                EvalTier("quick", lambda: {"loss": 1.0}, every_steps=1),
+                EvalTier("quick", lambda: {"loss": 1.0}, every_steps=2),
+            ],
+        )
+
+
+def test_a_selecting_tier_out_of_step_with_saving_is_refused(tiny_model, training_config):
+    """
+    The failure this prevents is invisible until the end of a multi-week run:
+    the master tier names step 1,500 as best, no checkpoint was written at
+    1,500, and `load_best_model_at_end` has nothing to load.
+    """
+    driver = trainer(tiny_model, training_config.with_(save_steps=1000))
+    with pytest.raises(TrainingConfigError, match="multiple of"):
+        driver.train(
+            make_batches(tiny_model.config, 2),
+            eval_tiers=[
+                EvalTier(
+                    "master", lambda: {"loss": 1.0}, every_steps=1500, drives_best_checkpoint=True
+                )
+            ],
+        )
+
+
+def test_a_non_selecting_tier_need_not_line_up_with_saving(tiny_model, training_config):
+    """
+    Only the selecting tier has the constraint: a trend signal names no
+    checkpoint, so its cadence is free.
+    """
+    config = training_config.with_(
+        max_steps=2, gradient_accumulation_steps=1, save_steps=1000
+    )
+    driver = trainer(tiny_model, config)
+    state = driver.train(
+        make_batches(tiny_model.config, 2),
+        eval_tiers=[EvalTier("quick", lambda: {"loss": 1.0}, every_steps=1)],
+    )
+    assert len([entry for entry in state.log_history if entry.get("eval")]) == 2
+
+
+@pytest.mark.parametrize("bad", [0, -1, True])
+def test_a_tier_cadence_must_be_a_positive_integer(bad):
+    with pytest.raises(TrainingConfigError, match="every_steps"):
+        EvalTier("quick", lambda: {"loss": 1.0}, every_steps=bad)
+
+
+def test_a_tier_must_be_named():
+    with pytest.raises(TrainingConfigError, match="name"):
+        EvalTier("", lambda: {"loss": 1.0}, every_steps=1)
 
 
 def test_disagreeing_label_smoothing_is_refused(tiny_model, training_config):

@@ -41,6 +41,8 @@ def config(**overrides) -> TrainingConfig:
         "logging_steps",
         "eval_steps",
         "save_steps",
+        "quick_eval_steps",
+        "master_eval_steps",
     ],
 )
 @pytest.mark.parametrize("bad", [0, -1])
@@ -323,6 +325,47 @@ def test_resumption_defaults_on():
 def test_the_rehearsal_stage_builds_the_base_profile():
     """§7.8: the full-pipeline rehearsal runs on Base (223M), not Large."""
     assert load_training_config(stage="rehearsal").model_profile == "base"
+
+
+# -- the two eval tiers ----------------------------------------------------
+
+
+def test_the_master_eval_is_rarer_than_the_quick_one():
+    """
+    The whole point of two tiers. If they ran at the same cadence there would
+    be no reason to hold two sets: the expensive one would be paying for
+    precision at a frequency that cannot afford it.
+    """
+    pretrain = load_training_config(stage="pretrain")
+    assert pretrain.master_eval_steps > pretrain.quick_eval_steps
+
+
+def test_the_master_eval_lands_on_a_checkpoint_step():
+    """
+    The master tier alone decides which checkpoint is kept, so every step it
+    can name as best must be a step a checkpoint was written at. Otherwise
+    retention protects a directory that does not exist and
+    `load_best_model_at_end` fails at the very end of the run.
+
+    `Trainer._resolve_eval_tiers` refuses this pairing at startup; this checks
+    the shipped configuration never presents it in the first place.
+    """
+    for stage in ("pretrain", "sft", "rehearsal"):
+        settings = load_training_config(stage=stage)
+        assert settings.master_eval_steps % settings.save_steps == 0, stage
+
+
+def test_the_rehearsal_actually_reaches_both_tiers():
+    """
+    §7.8's rehearsal exists to prove the pipeline works before weeks of
+    compute are committed to it. A rehearsal whose master-eval cadence is
+    longer than the whole rehearsal never exercises the tier that holds
+    best-checkpoint authority — so the one thing it would not have rehearsed
+    is the one that silently loses the best model.
+    """
+    rehearsal = load_training_config(stage="rehearsal")
+    assert rehearsal.master_eval_steps <= rehearsal.max_steps
+    assert rehearsal.quick_eval_steps <= rehearsal.max_steps
 
 
 def test_every_field_the_yaml_sets_is_a_real_field():

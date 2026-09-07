@@ -15,6 +15,17 @@ Usage
     python pretrain.py --corpus path/to/corpus --stage rehearsal
     python pretrain.py --corpus path/to/corpus --eval-corpus path/to/heldout
 
+    # two-tier held-out evaluation (training_config.yml's *_eval_steps):
+    python pretrain.py --corpus pretrain_corpus/output/pretrain_output \
+        --quick-eval-corpus  pretrain_corpus/output/evals/quick_eval.jsonl \
+        --master-eval-corpus pretrain_corpus/output/evals/master_eval.jsonl
+
+The two eval sets exist because one cannot do both jobs: eval loss on a small
+sample has a standard error shrinking as 1/sqrt(n), so a set thin enough to
+score every thousand steps is too noisy to rank adjacent checkpoints, and a
+set precise enough to rank them is too slow to score that often. The quick set
+is the trend line; the master set alone decides which checkpoint is kept.
+
 `--stage` selects a block from `training_config.yml` (defaults to its
 `active_stage`); the stage's own `model_profile`, if set, selects the
 `model_config.yml` profile unless `--model-profile` overrides it. This is the
@@ -137,19 +148,24 @@ def build_frozen_eval_batches(
     *,
     seed: int,
     batch_size: int,
-    max_examples: int = 512,
+    max_examples: int | None = 512,
 ) -> list[Mapping[str, Any]]:
     """
     A fixed list of padded batches from held-out text — architecture.md §7.6:
     frozen corruption, fixed equal-thirds mode mixture, built once and reused
     byte-identically for the life of the run.
+
+    `max_examples=None` means "every record in the files", which is what the
+    two-tier eval sets want: they were sized deliberately when they were
+    extracted from the corpus, so capping them again here would silently
+    discard the precision they were built to provide.
     """
     escape_markers = corpus_pkg.tokenizer_interop.escape_markers
     lines = corpus_pkg.iter_lines(list(eval_files))
     sequences: list[list[int]] = []
     for line in lines:
         sequences.append(sp.encode(escape_markers(line), out_type=int))
-        if len(sequences) >= max_examples:
+        if max_examples is not None and len(sequences) >= max_examples:
             break
 
     frozen = ul2.build_frozen_eval_set(
@@ -209,21 +225,82 @@ def run(args: argparse.Namespace) -> int:
         data_seed=training_config.data_seed,
     )
 
-    evaluate = None
-    if args.eval_corpus is not None:
-        eval_files = corpus_pkg.discover_corpus_files(args.eval_corpus)
-        eval_batches = build_frozen_eval_batches(
-            eval_files,
+    tiered = args.master_eval_corpus is not None or args.quick_eval_corpus is not None
+    if args.eval_corpus is not None and tiered:
+        print(
+            "--eval-corpus cannot be combined with --master-eval-corpus or "
+            "--quick-eval-corpus: --eval-corpus is the single-tier form and also "
+            "claims authority over best-checkpoint selection, so which held-out "
+            "set ranked the checkpoints would depend on nothing visible in the "
+            "command. Pass the tiered flags alone.",
+            file=sys.stderr,
+        )
+        return 2
+
+    def frozen_eval_callable(path: str, max_examples: int | None, seed_offset: int):
+        """
+        Build one tier's frozen batches now, and return the callable that
+        scores them later.
+
+        Built eagerly — a missing or unreadable eval corpus should fail before
+        the run starts, not twenty thousand steps into it. Each tier gets its
+        own corruption seed so the two are independent samples rather than the
+        same corruption pattern applied to different text.
+        """
+        batches = build_frozen_eval_batches(
+            corpus_pkg.discover_corpus_files(path),
             sp,
             ul2_config,
             specials,
-            seed=training_config.data_seed + 1,
+            seed=training_config.data_seed + seed_offset,
             batch_size=training_config.per_device_train_batch_size,
-            max_examples=args.eval_max_examples,
+            max_examples=max_examples,
         )
 
-        def evaluate() -> Mapping[str, float]:  # noqa: F811
-            return trainer.evaluate(eval_batches, max_batches=training_config.eval_max_batches)
+        def score() -> Mapping[str, float]:
+            return trainer.evaluate(batches, max_batches=training_config.eval_max_batches)
+
+        return score, len(batches)
+
+    evaluate = None
+    eval_tiers: list[Any] = []
+
+    if args.eval_corpus is not None:
+        evaluate, _ = frozen_eval_callable(args.eval_corpus, args.eval_max_examples, 1)
+
+    if args.master_eval_corpus is not None:
+        score, count = frozen_eval_callable(
+            args.master_eval_corpus, args.master_eval_max_examples, 1
+        )
+        eval_tiers.append(
+            training_pkg.EvalTier(
+                "master",
+                score,
+                training_config.master_eval_steps,
+                drives_best_checkpoint=True,
+            )
+        )
+        print(
+            f"master eval: {args.master_eval_corpus}  ({count} batch(es), "
+            f"every {training_config.master_eval_steps} steps, selects the best checkpoint)"
+        )
+
+    if args.quick_eval_corpus is not None:
+        score, count = frozen_eval_callable(
+            args.quick_eval_corpus, args.quick_eval_max_examples, 2
+        )
+        eval_tiers.append(
+            training_pkg.EvalTier(
+                "quick",
+                score,
+                training_config.quick_eval_steps,
+                drives_best_checkpoint=False,
+            )
+        )
+        print(
+            f"quick eval:  {args.quick_eval_corpus}  ({count} batch(es), "
+            f"every {training_config.quick_eval_steps} steps, trend only)"
+        )
 
     print(f"model profile: {model_config.profile}  ({model_config.parameter_count():,} params)")
     print(f"stage: {training_config.stage}  max_steps: {training_config.max_steps}")
@@ -238,7 +315,12 @@ def run(args: argparse.Namespace) -> int:
         trainer.resume(data=batch_source)
         print(f"resumed from step {trainer.state.global_step}")
 
-    trainer.train(batch_source, evaluate=evaluate, data=batch_source)
+    trainer.train(
+        batch_source,
+        evaluate=evaluate,
+        eval_tiers=eval_tiers or None,
+        data=batch_source,
+    )
 
     print()
     print(telemetry.format_table())
@@ -248,8 +330,45 @@ def run(args: argparse.Namespace) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", required=True, help="Training corpus: a file or directory.")
-    parser.add_argument("--eval-corpus", default=None, help="Held-out corpus for §7.6 frozen eval.")
+    parser.add_argument(
+        "--eval-corpus",
+        default=None,
+        help=(
+            "Held-out corpus for §7.6 frozen eval, single-tier form: evaluated "
+            "every eval_steps and used to select the best checkpoint. Mutually "
+            "exclusive with the two-tier flags below."
+        ),
+    )
     parser.add_argument("--eval-max-examples", type=int, default=512)
+    parser.add_argument(
+        "--master-eval-corpus",
+        default=None,
+        help=(
+            "Large held-out set (master_eval.jsonl). Evaluated every "
+            "master_eval_steps and is the ONLY tier that decides which "
+            "checkpoint is kept as best."
+        ),
+    )
+    parser.add_argument(
+        "--quick-eval-corpus",
+        default=None,
+        help=(
+            "Small held-out set (quick_eval.jsonl). Evaluated every "
+            "quick_eval_steps as a trend signal; never selects a checkpoint."
+        ),
+    )
+    parser.add_argument(
+        "--master-eval-max-examples",
+        type=int,
+        default=None,
+        help="Default: every record in the file, which is how the set was sized.",
+    )
+    parser.add_argument(
+        "--quick-eval-max-examples",
+        type=int,
+        default=None,
+        help="Default: every record in the file.",
+    )
     parser.add_argument("--stage", default=None, help="training_config.yml stage (default: its active_stage).")
     parser.add_argument("--model-profile", default=None, help="model_config.yml profile override.")
     parser.add_argument("--max-steps", type=int, default=None, help="Override the stage's max_steps.")

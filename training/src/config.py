@@ -64,6 +64,12 @@ _STAGE_FIELDS = frozenset(
         "gradient_accumulation_steps",
         "model_profile",
         "output_dir",
+        # A short stage (the §7.8 rehearsal is 2,000 steps) would never reach a
+        # 20,000-step master evaluation, so the cadences have to be settable
+        # per stage or the rehearsal cannot rehearse the thing it exists to
+        # rehearse.
+        "quick_eval_steps",
+        "master_eval_steps",
     }
 )
 
@@ -80,6 +86,8 @@ OURS_ALONE = (
     "eval_max_batches",
     "keep_best_checkpoint",
     "log_per_mode_loss",
+    "quick_eval_steps",
+    "master_eval_steps",
 )
 
 
@@ -154,6 +162,15 @@ class TrainingConfig:
     keep_best_checkpoint: bool = True
     log_per_mode_loss: bool = True
 
+    # Cadences for the two-tier held-out evaluation (`EvalTier` in loop.py).
+    # `quick_eval_steps` is the frequent, cheap trend signal; `master_eval_steps`
+    # is the rare, precise one that alone decides which checkpoint is best. Only
+    # the cadences live here: how many records each set holds is a property of
+    # the eval files themselves, and duplicating it in configuration would
+    # invite the two to disagree.
+    quick_eval_steps: int = 1000
+    master_eval_steps: int = 20000
+
     def __post_init__(self) -> None:
         positive = {
             "max_steps": self.max_steps,
@@ -162,6 +179,8 @@ class TrainingConfig:
             "logging_steps": self.logging_steps,
             "eval_steps": self.eval_steps,
             "save_steps": self.save_steps,
+            "quick_eval_steps": self.quick_eval_steps,
+            "master_eval_steps": self.master_eval_steps,
         }
         for name, value in positive.items():
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:

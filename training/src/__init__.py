@@ -67,7 +67,7 @@ from .errors import (
     TrainingConfigError,
     TrainingError,
 )
-from .loop import REQUIRED_KEYS, StepReport, Trainer
+from .loop import REQUIRED_KEYS, EvalTier, StepReport, Trainer
 from .metrics import (
     MODES,
     LossTracker,
@@ -107,6 +107,7 @@ __all__ = [
     # the loop
     "Trainer",
     "StepReport",
+    "EvalTier",
     "REQUIRED_KEYS",
     # schedules
     "learning_rate_multiplier",
