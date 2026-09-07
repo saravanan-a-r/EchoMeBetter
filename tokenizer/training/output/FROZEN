@@ -1,10 +1,10 @@
 {
-  "frozen_at": "2026-08-19T05:35:16.997939+00:00",
-  "vocab_size": 32768,
-  "model_sha256": "160c86858b3ce3c0bcef4e6a3e7dd512a6ff29c6d80a1eb3af83ce1e32fe5c19",
-  "token_map_sha256": "a1fc6a2bf6b33fe8f8e3da13cc450dd95d33ec30988448b4cf189f2f3ab8dc4d",
-  "corpus_sha256": "1b1b4a148623406ad6342b003b1c87ff810990335f4b99e090715a3a686cece0",
-  "manifest_sha256": "51a18ddd7e0dd6cd7b69e51a4f0211c6a1beec7e66066661f5dea782e8b34564",
+  "frozen_at": "2026-09-07T00:03:29.038706+00:00",
+  "vocab_size": 32832,
+  "model_sha256": "bfa27acb70076cc2d15752508cb3c98551129593e6e48730e6b0b4a1bdcb626f",
+  "token_map_sha256": "478e4fd1a1727e82f8166f8cd1eb27615e0340ef84a839f00f9b796653d905f7",
+  "corpus_sha256": "8071ce88a5b095d8a08ac6c21f29ce1916a6cbc71f9506160e83946305f1d066",
+  "manifest_sha256": "40c196dd729313c9442a78390bd4501fae704ce1624fd3560631fb5667f8f34b",
   "hard_gates_passed": [
     1,
     2,
