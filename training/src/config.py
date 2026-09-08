@@ -74,6 +74,10 @@ _STAGE_FIELDS = frozenset(
         "lr_decay_ratio",
         "lr_decay_type",
         "cooldown_blend",
+        # The synthetic rewrite task (item 4) runs inside the same cooldown and
+        # is per-stage for the same reason `cooldown_blend` is.
+        "rewrite_share",
+        "rewrite_blend",
         "dropout_rate",
         "label_smoothing_factor",
         "per_device_train_batch_size",
@@ -119,6 +123,8 @@ OURS_ALONE = (
     "lr_decay_ratio",
     "lr_decay_type",
     "cooldown_blend",
+    "rewrite_share",
+    "rewrite_blend",
     "eval_max_batches",
     "keep_best_checkpoint",
     "log_per_mode_loss",
@@ -249,6 +255,20 @@ class TrainingConfig:
     # judgement about which data is worth repeating.
     cooldown_blend: Mapping[str, float] | None = None
 
+    # -- the synthetic rewrite task (item 4) -------------------------------
+    # Cooldown-only, like `cooldown_blend`, and mixed in one level above it:
+    # during the decay phase, this share of the micro-batches is drawn from
+    # the rewrite task (`rewrite/`) instead of the UL2 denoisers -- a share of
+    # *examples*, in the same sense `mode_weights` are sampling probabilities
+    # rather than token shares. The remaining batches keep following
+    # `cooldown_blend`, whose relative weights therefore need no change.
+    #
+    # `rewrite_blend` names the sources the task corrupts, with relative
+    # weights, exactly as `cooldown_blend` does. `rewrite_share: 0.0` turns
+    # the task off; a blend with nothing to draw it is refused.
+    rewrite_share: float = 0.0
+    rewrite_blend: Mapping[str, float] | None = None
+
     def __post_init__(self) -> None:
         positive = {
             "max_steps": self.max_steps,
@@ -361,6 +381,7 @@ class TrainingConfig:
 
         self._check_decay_phase()
         self._check_cooldown_blend()
+        self._check_rewrite_task()
 
         if self.load_best_model_at_end and not self.keep_best_checkpoint:
             raise TrainingConfigError(
@@ -436,11 +457,7 @@ class TrainingConfig:
         """
         if self.cooldown_blend is None:
             return
-        if not isinstance(self.cooldown_blend, Mapping) or not self.cooldown_blend:
-            raise TrainingConfigError(
-                f"cooldown_blend must be a non-empty mapping of corpus source to "
-                f"weight, or absent; got {self.cooldown_blend!r}"
-            )
+        _check_blend("cooldown_blend", self.cooldown_blend)
         if self.lr_scheduler_type != WARMUP_STABLE_DECAY:
             raise TrainingConfigError(
                 f"cooldown_blend switches the data mixture when the decay phase "
@@ -448,20 +465,45 @@ class TrainingConfig:
                 f"has no decay phase — there is no step at which the switch would "
                 f"happen, so the upweighted mixture would never be used"
             )
-        for source, weight in self.cooldown_blend.items():
-            if not isinstance(source, str) or not source:
-                raise TrainingConfigError(
-                    f"cooldown_blend keys are corpus source names; got {source!r}"
-                )
-            if isinstance(weight, bool) or not isinstance(weight, (int, float)):
-                raise TrainingConfigError(
-                    f"cooldown_blend[{source!r}] must be a number, got {weight!r}"
-                )
-            if float(weight) <= 0.0:
-                raise TrainingConfigError(
-                    f"cooldown_blend[{source!r}] must be positive, got {weight!r}. "
-                    f"Drop the source instead of weighting it zero."
-                )
+
+    def _check_rewrite_task(self) -> None:
+        """
+        Refuse a rewrite task that could not run as written.
+
+        The share and the blend go together: a share with no sources to
+        corrupt has nothing to draw, and a blend with a zero share would be
+        read by nobody -- either one alone is a configuration that describes
+        a task the run never performs. And like `cooldown_blend`, the task
+        lives inside the decay phase, so a schedule without one has no step
+        at which it would start.
+        """
+        share = self.rewrite_share
+        if isinstance(share, bool) or not isinstance(share, (int, float)):
+            raise TrainingConfigError(f"rewrite_share must be a number, got {share!r}")
+        if not 0.0 <= float(share) < 1.0:
+            raise TrainingConfigError(
+                f"rewrite_share must be in [0.0, 1.0), got {share!r}; it is the share "
+                f"of cooldown micro-batches the task takes, and 1.0 would leave the "
+                f"UL2 denoisers nothing"
+            )
+        if self.rewrite_blend is not None:
+            _check_blend("rewrite_blend", self.rewrite_blend)
+        if share > 0.0 and self.rewrite_blend is None:
+            raise TrainingConfigError(
+                f"rewrite_share is {share} but no rewrite_blend names the sources to "
+                f"corrupt; the task would have nothing to draw from"
+            )
+        if share == 0.0 and self.rewrite_blend is not None:
+            raise TrainingConfigError(
+                "rewrite_blend is set but rewrite_share is 0, so it would never be "
+                "read; set the share or drop the blend"
+            )
+        if share > 0.0 and self.lr_scheduler_type != WARMUP_STABLE_DECAY:
+            raise TrainingConfigError(
+                f"rewrite_share runs the rewrite task during the decay phase, but "
+                f"lr_scheduler_type is {self.lr_scheduler_type!r}, which has no decay "
+                f"phase — there is no step at which the task would start"
+            )
 
     # -- derived ----------------------------------------------------------
 
@@ -605,6 +647,31 @@ class TrainingConfig:
             }
 
         return arguments
+
+
+def _check_blend(name: str, blend: Any) -> None:
+    """
+    A source-to-weight mapping that can be applied as written.
+
+    Weights are relative and normalized at use, but a non-positive one is
+    always a mistake: zero says "include this source and never draw from it",
+    which is what leaving it out already means.
+    """
+    if not isinstance(blend, Mapping) or not blend:
+        raise TrainingConfigError(
+            f"{name} must be a non-empty mapping of corpus source to weight, or "
+            f"absent; got {blend!r}"
+        )
+    for source, weight in blend.items():
+        if not isinstance(source, str) or not source:
+            raise TrainingConfigError(f"{name} keys are corpus source names; got {source!r}")
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+            raise TrainingConfigError(f"{name}[{source!r}] must be a number, got {weight!r}")
+        if float(weight) <= 0.0:
+            raise TrainingConfigError(
+                f"{name}[{source!r}] must be positive, got {weight!r}. Drop the "
+                f"source instead of weighting it zero."
+            )
 
 
 def load_training_config(

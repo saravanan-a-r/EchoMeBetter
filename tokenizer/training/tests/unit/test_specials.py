@@ -22,12 +22,13 @@ def test_group_counts_match_design():
     assert len(specials.STRUCTURAL_TOKENS) == 2
     assert len(specials.RESERVED_TOKENS) == 36
     assert len(specials.CLI_TOKENS) == 64
+    assert len(specials.CLI_VOCAB_TOKENS) == 896
 
 
 def test_total_counts_match_design():
-    assert len(specials.USER_DEFINED_SYMBOLS) == 373
+    assert len(specials.USER_DEFINED_SYMBOLS) == 1269
     assert len(specials.BUILTIN_SPECIALS) == 3
-    assert len(specials.ALL_NAMED_SPECIALS) == 376
+    assert len(specials.ALL_NAMED_SPECIALS) == 1272
 
 
 def test_sentinel_count_covers_the_encoder_context():
@@ -130,9 +131,119 @@ def test_user_defined_symbols_order_is_stable():
     assert specials.USER_DEFINED_SYMBOLS[259] == "<style:grammar>"
     assert specials.USER_DEFINED_SYMBOLS[273] == "<reserved_0>"
     assert specials.USER_DEFINED_SYMBOLS[309] == "<cli_reserved_0>"
-    assert specials.USER_DEFINED_SYMBOLS[-1] == "<cli_reserved_63>"
+    assert specials.USER_DEFINED_SYMBOLS[372] == "<cli_reserved_63>"
+    assert specials.USER_DEFINED_SYMBOLS[373] == specials.CLI_VOCAB_TOKENS[0]
+    assert specials.USER_DEFINED_SYMBOLS[-1] == specials.CLI_VOCAB_TOKENS[-1]
 
 
 def test_module_self_validates_on_import():
     """specials._validate() runs at import time; calling it again is a no-op."""
     specials._validate()
+
+
+# -- CLI vocabulary ---------------------------------------------------------
+#
+# Unlike every other block, these pieces are matched against real text, so
+# they can damage tokenization elsewhere. These are the locks on that.
+
+
+# Command names that are also ordinary English words, or prefixes of them.
+# Each was measured against the frozen tokenizer as ALREADY a single token,
+# so admitting one buys nothing -- while as a vocabulary piece it forces a
+# split everywhere the English word appears. Verified: a `cat` piece turns
+# "category" into "cat"+"egory" and "concatenate" into "con"+"cat"+"enate".
+# Prose fertility (1.31-1.39 tokens/word) is the rephrase task's core metric;
+# this list is what stands between it and a well-meant CLI addition.
+PROSE_UNSAFE = frozenset("""
+cat head tail top less more make find sort test date time file tar dig mount
+watch install locate tree cut type open env clear port kind true false say rev
+diff stat comm du cal vi su tr ar pr mas bat factor groups expr service link
+read write join look yes wait jobs history man touch patch screen script
+strings which expand split paste nice free last at id w seq sync column node go
+code set export source eval exec exit help info times trap shift local declare
+readonly command hash kill ping host route arp ip ss nc sed awk cd ls rm cp mv
+""".split())
+
+
+def test_cli_vocabulary_pieces_all_carry_the_word_boundary_marker():
+    """
+    A piece must carry U+2581 to replace a word boundary. Without it the
+    boundary is emitted as its own token and cancels the saving the piece
+    exists for: measured on this project's trainer settings, "ls -la /dev/null"
+    is 6 tokens with unmarked pieces against 4 with marked ones.
+    """
+    for token in specials.CLI_VOCAB_TOKENS:
+        assert token.startswith("▁"), token
+        assert len(token) > 1, token
+        assert "▁" not in token[1:], token
+
+
+def test_cli_vocabulary_never_admits_an_english_word():
+    """The regression lock that matters most -- see PROSE_UNSAFE above."""
+    admitted = {t.lstrip("▁") for t in specials.CLI_VOCAB_TOKENS}
+    collisions = sorted(admitted & PROSE_UNSAFE)
+    assert not collisions, (
+        f"{collisions} are ordinary English words (or prefixes of them) and are "
+        f"already single tokens; as vocabulary pieces they would split English prose"
+    )
+
+
+def test_every_letters_only_cli_piece_is_a_command_or_a_proper_noun_filename():
+    """
+    A pure-letter piece is the only kind that can collide with English, so
+    only two sorts are admitted: lowercase command names (vetted individually
+    against PROSE_UNSAFE above), and capitalized filenames -- `Dockerfile`,
+    `Gemfile`, `Vagrantfile` -- which cannot match lowercase prose at all.
+    Everything else carries '-', '/', '.', '~' or a digit, which no English
+    word does, and so is safe by construction.
+    """
+    for text in specials._CLI_FLAG_STRINGS:
+        assert not text.isalpha(), f"{text!r} is a pure-letter flag"
+    for text in specials._CLI_PATH_STRINGS:
+        if text.isalpha():
+            assert text[0].isupper(), (
+                f"{text!r} is a pure-letter path entry but is not a proper-noun "
+                f"filename; lowercase it would be free to match English prose"
+            )
+
+
+def test_cli_vocabulary_groups_are_disjoint():
+    groups = (specials._CLI_COMMAND_STRINGS,
+              specials._CLI_PATH_STRINGS,
+              specials._CLI_FLAG_STRINGS)
+    for i, left in enumerate(groups):
+        for right in groups[i + 1:]:
+            assert not set(left) & set(right), set(left) & set(right)
+    all_text = [t for g in groups for t in g]
+    assert len(set(all_text)) == len(all_text), "duplicate CLI vocabulary entry"
+
+
+def test_cli_vocabulary_does_not_collide_with_the_reserved_name_blocks():
+    """
+    `<cli_reserved_N>` is 64 placeholder *names* awaiting a meaning; the CLI
+    vocabulary is literal text. Different mechanisms, kept disjoint so neither
+    can be mistaken for the other.
+    """
+    named = set(specials.EXTRA_ID_TOKENS + specials.UL2_MODE_TOKENS
+                + specials.STYLE_TOKENS + specials.STRUCTURAL_TOKENS
+                + specials.RESERVED_TOKENS + specials.CLI_TOKENS)
+    assert not named & set(specials.CLI_VOCAB_TOKENS)
+
+
+def test_cli_vocabulary_entries_are_stripped_and_non_empty():
+    for group in (specials._CLI_COMMAND_STRINGS,
+                  specials._CLI_PATH_STRINGS,
+                  specials._CLI_FLAG_STRINGS):
+        for text in group:
+            assert text and text == text.strip(), repr(text)
+            assert not any(ch.isspace() for ch in text), repr(text)
+
+
+def test_flag_and_path_entries_look_like_what_they_claim_to_be():
+    for text in specials._CLI_FLAG_STRINGS:
+        assert text.startswith("-"), text
+    for text in specials._CLI_PATH_STRINGS:
+        # an absolute path, a dotfile, a ~/-rooted path, or a filename -- all
+        # of which carry a character no English word does ('/', '.', '_', a
+        # digit) unless they are a proper-noun filename like `Dockerfile`.
+        assert not text.isalpha() or text[0].isupper(), text

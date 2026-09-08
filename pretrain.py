@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Stage 1 entrypoint — wires `corpus/`, `UL2/`, `model/` and `training/`
-together into an actual pretraining run (architecture.md §7).
+Stage 1 entrypoint — wires `corpus/`, `UL2/`, `model/`, `training/` and
+`rewrite/` together into an actual pretraining run (architecture.md §7).
 
-This is the piece the four packages' own READMEs describe but none of them
-owns: `corpus/` reads text, `UL2/` corrupts it, `model/` scores it, and
-`training/` drives the loop — each package is deliberately ignorant of the
-other three, so something outside all of them has to do the wiring. This
-script is that something, and nothing more: no new corruption logic, no new
-training logic, no new model logic.
+This is the piece none of the packages owns: `corpus/` reads text, `UL2/`
+corrupts it, `rewrite/` builds the cooldown's rewrite pairs from it, `model/`
+scores it, and `training/` drives the loop — each package is deliberately
+ignorant of the others, so something outside all of them has to do the
+wiring. This script is that something, and nothing more: no new corruption
+logic, no new training logic, no new model logic.
 
 Usage
 -----
@@ -38,6 +38,7 @@ architecture.md §7.8 asks be run before committing weeks of compute to Large.
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.util
 import random
 import sys
@@ -50,6 +51,7 @@ CORPUS_SRC = PROJECT_ROOT / "corpus" / "src"
 UL2_SRC = PROJECT_ROOT / "UL2" / "src"
 TRAINING_SRC = PROJECT_ROOT / "training" / "src"
 MODEL_SRC = PROJECT_ROOT / "model" / "src"
+REWRITE_SRC = PROJECT_ROOT / "rewrite" / "src"
 
 DEFAULT_TOKENIZER_DIR = PROJECT_ROOT / "tokenizer" / "training" / "output"
 DEFAULT_MODEL_CONFIG = PROJECT_ROOT / "model_config.yml"
@@ -81,6 +83,7 @@ corpus_pkg = _load("echomebetter_corpus", CORPUS_SRC)
 ul2 = _load("echomebetter_ul2", UL2_SRC)
 training_pkg = _load("echomebetter_training", TRAINING_SRC)
 rephrase_model = _load("echomebetter_model", MODEL_SRC)
+rewrite = _load("echomebetter_rewrite", REWRITE_SRC)
 
 
 # -- gluing corpus + UL2 into what the trainer needs -------------------------
@@ -131,6 +134,20 @@ class PretrainBatchSource:
     stream has usually read nothing when a mid-run checkpoint is written, and
     the main stream is exactly where the cooldown left it — saving only the
     active one would restart the other from its first file on the next resume.
+
+    The rewrite task
+    ----------------
+    With `rewrite_source` and `rewrite_share` set, a share of the micro-batches
+    drawn inside the cooldown come from the synthetic rewrite task (`rewrite/`,
+    architecture_improvements.md item 4) instead of the UL2 denoisers. The
+    decision is made per batch, in `_batch_mode`, where the mode is already
+    drawn: a rewrite batch is one more kind of batch, on its own length scale,
+    exactly as `[S]` is. The task's examples never pass through the objective
+    -- they arrive as complete pairs (`RewriteExampleSource`) and are only
+    given the teacher-forcing shift here (`build_seq2seq_example`). Before the
+    cooldown, and in a run with no rewrite task, the stream of batches is
+    identical to one produced before the task existed: the extra draw only
+    happens once the task is active.
     """
 
     def __init__(
@@ -147,16 +164,34 @@ class PretrainBatchSource:
         pool_batches: int = ul2.DEFAULT_POOL_BATCHES,
         cooldown_corpus: Any | None = None,
         cooldown_start_step: int | None = None,
+        rewrite_source: Any | None = None,
+        rewrite_share: float = 0.0,
     ) -> None:
-        if (cooldown_corpus is None) != (cooldown_start_step is None):
+        needs_step = cooldown_corpus is not None or rewrite_source is not None
+        if needs_step != (cooldown_start_step is not None):
             raise ValueError(
-                "cooldown_corpus and cooldown_start_step go together: a cooldown "
-                "stream with no step to switch at would never be read, and a step "
-                "with no stream to switch to would do nothing at it"
+                "cooldown_corpus / rewrite_source and cooldown_start_step go "
+                "together: a cooldown stream or rewrite task with no step to start "
+                "at would never be read, and a step with nothing to switch to "
+                "would do nothing at it"
+            )
+        if (rewrite_source is None) != (rewrite_share <= 0.0):
+            raise ValueError(
+                "rewrite_source and a positive rewrite_share go together: a task "
+                "with no share would never be drawn, and a share with no task has "
+                "nothing to draw"
+            )
+        if rewrite_source is not None and not rewrite_share < 1.0:
+            raise ValueError(
+                f"rewrite_share must be below 1.0, got {rewrite_share}; the UL2 "
+                f"denoisers need some of the cooldown too"
             )
         self.main_corpus = corpus
         self.cooldown_corpus = cooldown_corpus
         self.cooldown_start_step = cooldown_start_step
+        self.rewrite_source = rewrite_source
+        self.rewrite_share = float(rewrite_share)
+        self._rewrite_active = False
         self.corpus = corpus
         self.objective = objective
         self.specials = specials
@@ -208,19 +243,22 @@ class PretrainBatchSource:
         arrives with it, so a run interrupted inside the cooldown comes back
         inside the cooldown without any of that having to be checkpointed.
         """
-        if self.cooldown_corpus is None:
+        if self.cooldown_start_step is None:
             return
-        assert self.cooldown_start_step is not None
-        self.corpus = (
-            self.cooldown_corpus
-            if step >= self.cooldown_start_step
-            else self.main_corpus
-        )
+        in_decay = step >= self.cooldown_start_step
+        if self.cooldown_corpus is not None:
+            self.corpus = self.cooldown_corpus if in_decay else self.main_corpus
+        self._rewrite_active = self.rewrite_source is not None and in_decay
 
     @property
     def in_cooldown(self) -> bool:
         """Whether the stream is currently drawing from the cooldown mixture."""
         return self.cooldown_corpus is not None and self.corpus is self.cooldown_corpus
+
+    @property
+    def rewrite_active(self) -> bool:
+        """Whether rewrite batches can currently be drawn."""
+        return self._rewrite_active
 
     def _produce_example(self, mode: str | None):
         """
@@ -270,12 +308,46 @@ class PretrainBatchSource:
         example exactly as it did before packing existed — unpacked examples
         are all single documents, so they share a length scale already and have
         nothing to gain here.
+
+        The rewrite task, when active, is decided first and at this level for
+        both packed and unpacked runs: its batches are whole framed documents
+        on their own length scale, and drawing them per batch is what keeps
+        the per-batch share exactly `rewrite_share` rather than a mixture of
+        rewrite rows inside denoising batches.
         """
+        if self._rewrite_active and self.rng.random() < self.rewrite_share:
+            return rewrite.REWRITE_MODE
         if not self.pack:
             return None
         return self.objective.sampler.sample(self.rng)
 
+    def _next_rewrite_example(self):
+        """
+        One framed rewrite pair, as an `Example`.
+
+        Recorded in the objective's telemetry under its own mode so the final
+        table reads the task's realized share next to [R]/[X]/[S].
+        `num_corrupted_tokens` carries the edit count: one edit is roughly one
+        token, and it is the closest thing this task has to a corruption rate.
+        """
+        pair = self.rewrite_source.next_pair()
+        example = ul2.build_seq2seq_example(
+            pair.encoder_input_ids,
+            pair.decoder_target_ids,
+            rewrite.REWRITE_MODE,
+            self.specials,
+            source_length=pair.source_length,
+            num_corrupted_tokens=pair.edits,
+        )
+        telemetry = getattr(self.objective, "telemetry", None)
+        if telemetry is not None:
+            telemetry.record(example)
+        return example
+
     def _next_example(self, mode: str | None):
+        if mode == rewrite.REWRITE_MODE:
+            return self._next_rewrite_example()
+
         if mode is None:
             token_ids = next(self.corpus)  # StopIteration only if the corpus is empty
             return self.objective.try_corrupt(token_ids, self.rng)
@@ -365,6 +437,11 @@ class PretrainBatchSource:
         # existed still names exactly what it holds.
         if self.cooldown_corpus is not None:
             state["cooldown_corpus"] = self.cooldown_corpus.state_dict()
+        # The rewrite task's own stream and corruption RNG, for the same
+        # reason as the cooldown stream: usually unread at a mid-run
+        # checkpoint, and exactly where the cooldown left it after that.
+        if self.rewrite_source is not None:
+            state["rewrite_source"] = self.rewrite_source.state_dict()
         # Examples already built and waiting in a length pool. Saved for the
         # same reason as `buffer`: they have been read from the corpus, so
         # dropping them on resume is silent data loss (architecture.md §7.9).
@@ -382,6 +459,10 @@ class PretrainBatchSource:
         # exist here to restore into.
         if self.cooldown_corpus is not None and "cooldown_corpus" in state:
             self.cooldown_corpus.load_state_dict(state["cooldown_corpus"])
+        # Same tolerance for the rewrite task: a checkpoint written before it
+        # existed resumes with an unread task, which is what it had.
+        if self.rewrite_source is not None and "rewrite_source" in state:
+            self.rewrite_source.load_state_dict(state["rewrite_source"])
         version, internal_state, gauss_next = state["rng"]
         self.rng.setstate((version, tuple(internal_state), gauss_next))
         # `.get` so a checkpoint written before packing existed still loads;
@@ -484,9 +565,11 @@ def run(args: argparse.Namespace) -> int:
     # 180,000 steps in — which is the one moment in the run where a crash
     # costs the most and a silent fallback would cost more.
     cooldown_corpus = None
-    cooldown_start_step = training_config.cooldown_start_step
-    if training_config.cooldown_blend:
+    rewrite_source = None
+    grouped = None
+    if training_config.cooldown_blend or training_config.rewrite_share > 0.0:
         grouped = corpus_pkg.group_files_by_source(files, args.corpus)
+    if training_config.cooldown_blend:
         try:
             cooldown_corpus = corpus_pkg.build_blended_corpus(
                 grouped,
@@ -500,8 +583,39 @@ def run(args: argparse.Namespace) -> int:
         except corpus_pkg.CorpusConfigError as exc:
             print(f"cooldown_blend: {exc}", file=sys.stderr)
             return 2
-    else:
-        cooldown_start_step = None
+
+    # The rewrite task (item 4), built eagerly for the same reason the
+    # cooldown mixture is: a blend naming a missing source, or a token map
+    # without the frame tokens, must fail now rather than at step 180,000.
+    if training_config.rewrite_share > 0.0:
+        try:
+            rewrite_records = corpus_pkg.build_blended_corpus(
+                grouped,
+                sp,
+                training_config.rewrite_blend,
+                seed=training_config.data_seed + 15_485_863,
+            )
+            rewrite_source = rewrite.RewriteExampleSource(
+                rewrite_records,
+                rewrite.Corruptor(),
+                functools.partial(corpus_pkg.tokenizer_interop.encode_text, sp),
+                rewrite.RewriteTokens.from_token_map(token_map_path),
+                max_source_length=ul2_config.max_source_length,
+                max_target_length=ul2_config.max_target_length,
+                min_source_length=ul2_config.min_source_length,
+                seed=training_config.data_seed + 32_452_843,
+            )
+        except (corpus_pkg.CorpusConfigError, rewrite.RewriteError) as exc:
+            print(f"rewrite task: {exc}", file=sys.stderr)
+            return 2
+
+    # The step both halves of the cooldown key off. `None` when nothing
+    # switches at it, so a pure learning-rate WSD run announces nothing.
+    cooldown_start_step = (
+        training_config.cooldown_start_step
+        if cooldown_corpus is not None or rewrite_source is not None
+        else None
+    )
 
     batch_source = PretrainBatchSource(
         corpus_stream,
@@ -511,6 +625,8 @@ def run(args: argparse.Namespace) -> int:
         data_seed=training_config.data_seed,
         cooldown_corpus=cooldown_corpus,
         cooldown_start_step=cooldown_start_step,
+        rewrite_source=rewrite_source,
+        rewrite_share=training_config.rewrite_share,
     )
 
     tiered = args.master_eval_corpus is not None or args.quick_eval_corpus is not None
@@ -612,6 +728,18 @@ def run(args: argparse.Namespace) -> int:
             )
         )
         print(f"cooldown mixture (from step {cooldown_start_step}): {shares}")
+    if rewrite_source is not None:
+        shares = ", ".join(
+            f"{source} {share:.1%}"
+            for source, share in sorted(
+                rewrite_source.records.weights.items(), key=lambda item: -item[1]
+            )
+        )
+        print(
+            f"rewrite task (from step {cooldown_start_step}): "
+            f"{training_config.rewrite_share:.0%} of batches, "
+            f"{rewrite_source.tokens.style_token}, sources {shares}"
+        )
     print(f"corpus: {args.corpus}  ({len(files)} file(s))")
     # Stated up front because it governs how much real content each step
     # actually carries: records are packed into windows for [R]/[X], while [S]
@@ -659,6 +787,17 @@ def run(args: argparse.Namespace) -> int:
             print(
                 f"  {source:<28}{cooldown_corpus.weights[source]:>8.2%}"
                 f"{realized[source]:>9.2%}{epochs[source]:>9,}"
+            )
+
+    if rewrite_source is not None and rewrite_source.pairs_emitted:
+        print()
+        print(rewrite_source.format_table())
+        realized = rewrite_source.records.realized_shares()
+        print(f"  {'source':<28}{'target':>9}{'actual':>9}")
+        for source in sorted(realized, key=lambda s: -rewrite_source.records.weights[s]):
+            print(
+                f"  {source:<28}{rewrite_source.records.weights[source]:>8.2%}"
+                f"{realized[source]:>9.2%}"
             )
 
     return 0

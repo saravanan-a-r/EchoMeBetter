@@ -90,32 +90,44 @@ def test_d_ff_is_about_2_75_times_d_model(large, base):
 
 
 def test_the_documented_total(large):
-    assert large.parameter_count() == 750_971_904
-    assert large.expected_parameters == 750_971_904
+    """
+    architecture.md §4.3 put this at 750,971,904. It grew by 917,504 — one
+    tied embedding row per CLI vocabulary piece, 896 x 1,024 — when the
+    vocabulary went from 32,832 to 33,728. See CLI_VOCABULARY.md.
+    """
+    assert large.parameter_count() == 751_889_408
+    assert large.expected_parameters == 751_889_408
+    assert large.parameter_count() - 750_971_904 == 896 * large.d_model
 
 
 def test_the_documented_base_total(base):
-    assert base.parameter_count() == 223_444_224
-    assert base.expected_parameters == 223_444_224
+    assert base.parameter_count() == 224_132_352
+    assert base.expected_parameters == 224_132_352
+    assert base.parameter_count() - 223_444_224 == 896 * base.d_model
 
 
 def test_bf16_serving_size_is_about_1_5_gb(large):
-    """architecture.md §4.3: ~1,502 MB in bf16, the default serving format."""
-    assert round(large.parameter_count() * 2 / 1_000_000) == 1502
+    """architecture.md §4.3: ~1,504 MB in bf16, the default serving format."""
+    assert round(large.parameter_count() * 2 / 1_000_000) == 1504
 
 
 # -- §4.1 backbone choices, FROZEN ---------------------------------------
 
 
 def test_embeddings_are_tied(large):
-    """architecture.md §4.1: saves 33.6M params at zero quality cost."""
+    """architecture.md §4.1: saves 34.5M params at zero quality cost."""
     assert large.tie_word_embeddings is True
 
 
 def test_tying_saves_the_documented_amount(large):
+    """
+    One full vocab x d_model matrix. Was 33,619,968 at the 32,832-piece
+    vocabulary; the 896 CLI pieces make it 34,537,472.
+    """
     untied = large.with_(tie_word_embeddings=False, expected_parameters=None)
     saved = untied.parameter_count() - large.parameter_count()
-    assert saved == 33_619_968
+    assert saved == 34_537_472
+    assert saved == large.vocab_size * large.d_model
 
 
 def test_the_model_uses_rmsnorm_not_layernorm(tiny_config):
@@ -281,10 +293,14 @@ def test_cross_attention_carries_no_position_bias(tiny_config, monkeypatch):
 
 def test_vocab_size_matches_the_tokenizer(large, base):
     """
-    architecture.md §6.1 (FROZEN): 32,832. Must equal the trained
+    architecture.md §6.1 (FROZEN): 33,728. Must equal the trained
     tokenizer's vocabulary or every embedding row is misaligned.
+
+    Was 32,832 until the 896-piece CLI vocabulary was reserved
+    (tokenizer/training/specials.py, CLI_VOCABULARY.md). The learned half is
+    still 32,200 — only the reserved block, and so the total, grew.
     """
-    assert large.vocab_size == base.vocab_size == 32832
+    assert large.vocab_size == base.vocab_size == 33728
 
 
 def test_there_is_no_bos_token(large):

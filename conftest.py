@@ -48,7 +48,7 @@ def _tiny_model_config_document() -> dict:
         expected_parameters=None,
     )
     defaults = dict(
-        vocab_size=32832,  # model_config.yml's current design target
+        vocab_size=33728,  # model_config.yml's current design target
         d_kv=16,
         max_encoder_length=64,
         max_decoder_length=64,

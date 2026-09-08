@@ -69,7 +69,7 @@ def test_design_critical_defaults(base_cfg):
     assert t["add_dummy_prefix"] is False
     assert t["split_digits"] is True
     assert t["character_coverage"] == 1.0
-    assert t["vocab_size"] == 32832
+    assert t["vocab_size"] == 33728
     assert (t["pad_id"], t["eos_id"], t["unk_id"], t["bos_id"]) == (0, 1, 2, -1)
 
 
@@ -203,9 +203,9 @@ def test_semantic_bounds(tmp_path, base_cfg, section, key, value, match):
 
 def test_vocab_size_smaller_than_reserved_block(tmp_path, base_cfg):
     """
-    632 slots are spoken for before a single piece is learned (373 user-defined
-    + 3 control + 256 byte-fallback). Catching this here turns a confusing
-    SentencePiece crash into an explicit message.
+    1,528 slots are spoken for before a single piece is learned (1,269
+    user-defined + 3 control + 256 byte-fallback). Catching this here turns a
+    confusing SentencePiece crash into an explicit message.
     """
     cfg = copy.deepcopy(base_cfg)
     cfg["trainer"]["vocab_size"] = 400
@@ -214,11 +214,17 @@ def test_vocab_size_smaller_than_reserved_block(tmp_path, base_cfg):
 
 
 def test_reserved_block_excludes_bytes_when_byte_fallback_off(tmp_path, base_cfg):
-    """Without byte_fallback the 256 byte pieces are not reserved."""
+    """
+    Without byte_fallback the 256 byte pieces are not reserved.
+
+    1,400 is chosen to sit between the two reserved totals: it exceeds the
+    1,272 named symbols but not the 1,528 that byte_fallback would add, so
+    the test fails if the 256 are ever counted when they should not be.
+    """
     cfg = copy.deepcopy(base_cfg)
     cfg["trainer"]["byte_fallback"] = False
-    cfg["trainer"]["vocab_size"] = 400
-    assert load_config(write_cfg(tmp_path, cfg))["trainer"]["vocab_size"] == 400
+    cfg["trainer"]["vocab_size"] = 1400
+    assert load_config(write_cfg(tmp_path, cfg))["trainer"]["vocab_size"] == 1400
 
 
 def test_duplicate_special_ids(tmp_path, base_cfg):

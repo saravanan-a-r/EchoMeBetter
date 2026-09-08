@@ -234,6 +234,53 @@ def build_prefix_denoising(
     )
 
 
+def build_seq2seq_example(
+    encoder_input_ids: Sequence[int],
+    decoder_target_ids: Sequence[int],
+    mode: str,
+    specials: SpecialTokens,
+    *,
+    source_length: int,
+    num_corrupted_tokens: int = 0,
+    truncated: bool = False,
+) -> Example:
+    """
+    An `Example` from an encoder input and a decoder target that are already
+    complete -- no sentinels, no prefix split, nothing masked here.
+
+    This is how a task that is *not* a denoiser joins the batch: the
+    synthetic rewrite task (`rewrite/`, architecture_improvements.md item 4)
+    arrives with both sides fully formed and framed, and needs only the
+    teacher-forcing shift and the bookkeeping every other example carries.
+    Kept next to the two denoising builders so `Example` has exactly one
+    module that knows how to construct it.
+
+    `mode` is a label for telemetry and per-mode loss, not a UL2 mode: the
+    caller chooses it, and `reconstruct_source` does not apply to it.
+    `source_length` is the length of the *original* text the target
+    reproduces; `num_corrupted_tokens` is whatever "corrupted" means for the
+    caller's task -- for the rewrite task, the number of edits made.
+    """
+    if not encoder_input_ids:
+        raise UL2Error("a seq2seq example needs a non-empty encoder input")
+    if not decoder_target_ids:
+        raise UL2Error("a seq2seq example needs a non-empty decoder target")
+    if source_length < 0 or num_corrupted_tokens < 0:
+        raise UL2Error("source_length and num_corrupted_tokens must be non-negative")
+
+    target = tuple(decoder_target_ids)
+    return Example(
+        mode=mode,
+        encoder_input_ids=tuple(encoder_input_ids),
+        decoder_target_ids=target,
+        decoder_input_ids=_shift_right(target, specials),
+        source_length=source_length,
+        num_spans=0,
+        num_corrupted_tokens=num_corrupted_tokens,
+        truncated=truncated,
+    )
+
+
 def reconstruct_source(example: Example, specials: SpecialTokens) -> tuple[int, ...]:
     """
     Rebuild the original token sequence from an example.

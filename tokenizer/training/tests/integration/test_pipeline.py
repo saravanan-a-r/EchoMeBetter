@@ -127,7 +127,7 @@ def test_report_lists_every_gate(output_dir):
 def test_token_map_covers_every_reserved_name(output_dir):
     token_map = json.loads((output_dir / "token_map.json").read_text(encoding="utf-8"))
     assert set(token_map) == set(ALL_NAMED_SPECIALS)
-    assert len(token_map) == 376
+    assert len(token_map) == 1272  # 376 named + 896 CLI vocabulary pieces
 
 
 def test_token_map_ids_are_unique_and_resolve(output_dir, sp):
@@ -215,7 +215,7 @@ def test_identity_normalization_does_not_fold_unicode(sp):
 
 
 def test_reserved_tokens_are_atomic(sp):
-    """All 373 user-defined symbols must encode to exactly one piece (Gate 3)."""
+    """All 1,269 user-defined symbols must encode to exactly one piece (Gate 3)."""
     non_atomic = [name for name in USER_DEFINED_SYMBOLS if len(sp.encode(name)) != 1]
     assert non_atomic == []
 

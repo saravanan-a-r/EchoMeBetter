@@ -20,10 +20,13 @@ import torch
 
 from src.seq2seq import RephraseSeq2Seq
 
-# architecture.md §4.3, computed by hand in the document.
-LARGE_TOTAL = 750_971_904
+# architecture.md §4.3, computed by hand in the document, then re-derived when
+# the vocabulary went 32,832 -> 33,728 for the 896-piece CLI vocabulary
+# (CLI_VOCABULARY.md). Only the tied embedding row count changed: every other
+# component below is untouched, which is the point of checking them separately.
+LARGE_TOTAL = 751_889_408
 LARGE_COMPONENTS = {
-    "token_embeddings": 33_619_968,
+    "token_embeddings": 34_537_472,
     "encoder_per_layer": 12_847_104,
     "encoder_total": 308_330_496,
     "decoder_per_layer": 17_042_432,
@@ -33,7 +36,7 @@ LARGE_COMPONENTS = {
 }
 
 # architecture.md §4.2's table.
-BASE_TOTAL = 223_444_224
+BASE_TOTAL = 224_132_352
 
 
 # -- the documented totals ------------------------------------------------
@@ -74,12 +77,12 @@ def test_the_components_sum_to_the_total(large_config):
 
 @pytest.mark.parametrize(
     "bytes_per_param,expected_mb",
-    [(4, 3004), (2, 1502), (1, 751)],
+    [(4, 3008), (2, 1504), (1, 752)],
 )
 def test_serving_footprint_matches_the_documented_table(
     large_config, bytes_per_param, expected_mb
 ):
-    """fp32 ~3,004 MB / bf16 ~1,502 MB / int8 ~751 MB."""
+    """fp32 ~3,008 MB / bf16 ~1,504 MB / int8 ~752 MB."""
     megabytes = large_config.parameter_count() * bytes_per_param / 1_000_000
     assert round(megabytes) == expected_mb
 

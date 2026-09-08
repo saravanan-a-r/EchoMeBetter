@@ -51,7 +51,10 @@ blend:
 
 trainer:
   model_type: unigram
-  vocab_size: 32832
+  # 32,200 learned pieces + 1,528 reserved (see specials.py). The 896 CLI
+  # vocabulary pieces grew this from 32,832 by exactly their own count, so the
+  # learned half is unchanged.
+  vocab_size: 33728
 
   # -- fidelity-critical (NF1), do not change casually --
   byte_fallback: true

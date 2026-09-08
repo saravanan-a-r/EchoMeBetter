@@ -121,6 +121,12 @@ class BlendedCorpus:
         self.documents_drawn[name] += 1
         return next(self.sources[name])
 
+    def next_record(self) -> str:
+        """The next document as text -- see `TokenizedCorpus.next_record`."""
+        name = self._draw()
+        self.documents_drawn[name] += 1
+        return self.sources[name].next_record()
+
     def _draw(self) -> str:
         """
         One source, drawn in proportion to its weight.

@@ -50,7 +50,7 @@ from typing import Any, Sequence
 
 from .errors import CorpusConfigError
 from .reader import extract_text, is_jsonl, join_record_lines
-from .tokenizer_interop import escape_markers
+from .tokenizer_interop import encode_text
 
 
 class TokenizedCorpus:
@@ -114,6 +114,24 @@ class TokenizedCorpus:
         document shape is exactly what a rewriting model needs to reproduce.
         """
         while True:
+            ids = self._tokenize(self.next_record())
+            if ids:
+                self.examples_emitted += 1
+                return ids
+
+    def next_record(self) -> str:
+        """
+        The next **whole record**, as text, before tokenization.
+
+        The same stream `__next__` tokenizes, exposed for the one consumer
+        that needs the text itself: the synthetic rewrite task (`rewrite/`),
+        which corrupts a document *as text* and tokenizes both versions
+        afterwards. Reading through this rather than through `__next__` and
+        `decode` keeps the two sides of that pair tokenized from the same
+        string, and keeps the file position exact -- a record read here is
+        consumed exactly as one read there.
+        """
+        while True:
             raw = self._fh.readline()
             if raw == "":
                 self._advance_file()
@@ -131,13 +149,10 @@ class TokenizedCorpus:
                 self.lines_skipped_unusable += 1
                 continue
 
-            ids = self._tokenize(record)
-            if ids:
-                self.examples_emitted += 1
-                return ids
+            return record
 
     def _tokenize(self, segment: str) -> list[int]:
-        return self.sp.encode(escape_markers(segment), out_type=int)
+        return encode_text(self.sp, segment)
 
     # -- file bookkeeping -----------------------------------------------------
 

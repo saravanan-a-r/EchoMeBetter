@@ -631,7 +631,7 @@ class Trainer:
 
         A second forward pass, under `no_grad`, because the training pass
         already discarded its logits — keeping them alive to avoid this would
-        hold a `(batch, length, 32832)` tensor through the backward pass,
+        hold a `(batch, length, 33728)` tensor through the backward pass,
         which is the single largest activation in the model. Paying one
         inference pass per logging window is cheaper than that, and the window
         is `logging_steps` wide.

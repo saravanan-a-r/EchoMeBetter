@@ -94,7 +94,9 @@ corpus/       the resumable pretraining data pipeline (text -> token IDs)
 UL2/          the mixture-of-denoisers pretraining objective
 model/        the encoder–decoder itself
 training/     the training loop, optimizer, schedules and checkpointing
-pretrain.py            entrypoint wiring the four packages into a real run
+rewrite/      the synthetic rewrite task mixed into the end of pretraining
+              (corrupted text in, original out — the shape SFT starts from)
+pretrain.py            entrypoint wiring the five packages into a real run
 pretrain_smoke_test.py pre-flight check before a real rehearsal or full run
 ```
 

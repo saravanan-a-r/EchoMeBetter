@@ -47,6 +47,7 @@ from .config import (
 from .denoise import (
     Example,
     build_prefix_denoising,
+    build_seq2seq_example,
     build_span_corruption,
     example_from_dict,
     example_to_dict,
@@ -92,6 +93,7 @@ __all__ = [
     "Example",
     "build_span_corruption",
     "build_prefix_denoising",
+    "build_seq2seq_example",
     "reconstruct_source",
     # packing several documents into one window
     "pack_documents",

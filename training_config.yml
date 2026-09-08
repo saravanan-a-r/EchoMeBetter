@@ -213,6 +213,18 @@ defaults:
   # numbers were arrived at.
   cooldown_blend: null
 
+  # NOT TrainingArguments fields. The synthetic rewrite task (item 4), which
+  # runs inside the same decay phase: this share of the cooldown's
+  # micro-batches is drawn from `rewrite/` — a corrupted document on the
+  # encoder side, framed as the product frames it, the original on the
+  # decoder side — instead of from the UL2 denoisers. A share of *batches*
+  # (examples), not of tokens, in the same sense UL2's mode_weights are
+  # sampling probabilities. `rewrite_blend` names the sources the task
+  # corrupts, with relative weights, as `cooldown_blend` does. 0.0 turns the
+  # task off; a blend with a zero share is refused. See the `pretrain` stage.
+  rewrite_share: 0.0
+  rewrite_blend: null
+
   # NOT a TrainingArguments field. Caps how much of the frozen validation set
   # each evaluation consumes. `null` means all of it — correct for a small
   # held-out slice, and worth capping during a rehearsal.
@@ -275,8 +287,11 @@ stages:
     #
     # BUCKETS. architecture_improvements.md item 2 proposes 40% high-quality
     # prose / 25% CLI / 15% code / 20% the synthetic rewrite task of item 4.
-    # Item 4 is not implemented, so its 20% is redistributed pro-rata across
-    # the other three exactly as that section says to: 50% / 31.25% / 18.75%.
+    # The rewrite task takes its 20% one level up, as `rewrite_share` below —
+    # a share of the cooldown's micro-batches — so this blend only has to
+    # describe the *other* 80%. Its three buckets are therefore written in
+    # their pro-rata shape, 50% / 31.25% / 18.75%, which lands them at exactly
+    # the proposed 40% / 25% / 15% of the whole cooldown.
     #
     # WITHIN THE CLI BUCKET, weights are NOT equal, and this is the part that
     # needed measuring rather than assuming. The five CLI sources differ by
@@ -311,6 +326,47 @@ stages:
       cli_tldr: 0.0008
       cli_nl2bash: 0.00035
       cli_cheat_sheets: 0.00005
+
+    # Item 4: the synthetic rewrite task, for the same 20,000 decay steps.
+    # One in five cooldown micro-batches is a batch of
+    #   <style:grammar> <text_to_rewrite> corrupted </text_to_rewrite> -> original
+    # pairs built from ordinary corpus text (rewrite/src/corruption.py), the
+    # shape Stage 2 SFT starts from cold otherwise.
+    #
+    # WHICH SOURCES. Every prose source, weighted by its natural share of the
+    # corpus, and nothing else:
+    #
+    #   - The five CLI sources are out. Their text is commands, flags and
+    #     paths; there is no grammar in `tar -xzf` to break and restore, and
+    #     a "corrected" flag is a different command.
+    #   - permissive_code is out for the same reason, one step further: a
+    #     lowercased identifier is not a typo, it is different code, and a
+    #     target that restores it would teach the model to edit code — the
+    #     opposite of what the product guarantees. Code *inside* prose
+    #     (stackexchange answers) is handled per line by the task itself,
+    #     which copies code lines and inline spans through verbatim.
+    #
+    # BlendedCorpus draws per document, so to reproduce each source's share
+    # of *tokens* the weights are its number of documents (millions, from
+    # pretrain_corpus/output/token_count_report.json), not its token count:
+    #
+    #   source            documents      tokens    share of rewrite tokens
+    #   fineweb_edu        91.12M        45.84B     54.4%
+    #   c4                 47.84M        17.65B     20.9%
+    #   stackexchange      38.02M         5.80B      6.9%
+    #   cosmopedia         19.74M         7.54B      9.0%
+    #   slimpajama          9.30M         4.78B      5.7%
+    #   gutenberg_pg19      3.69M         2.63B      3.1%
+    #   ebooks              0.02M         0.01B      0.02%
+    rewrite_share: 0.20
+    rewrite_blend:
+      fineweb_edu: 91.12
+      c4: 47.84
+      stackexchange: 38.02
+      cosmopedia: 19.74
+      slimpajama: 9.30
+      gutenberg_pg19: 3.69
+      ebooks: 0.02
     # Item 3: fused SDPA attention (model/src/attention.py) plus graph
     # capture. "reduce-overhead" is the mode architecture_improvements.md
     # recommends for training — it trades a one-time recompilation per shape
@@ -352,11 +408,12 @@ stages:
     # code path the rehearsal never runs is a code path the real run debugs.
     # 200 of 2,000 steps is the same 10% shape, scaled.
     #
-    # No `cooldown_blend`, deliberately. The schedule is a property of the
-    # run; the mixture is a property of the corpus, and a rehearsal is often
-    # pointed at a small slice with no per-source directory structure to blend
-    # over. The mixture switch is exercised by
-    # test/integration/test_cooldown.py instead, where a corpus of the right
+    # No `cooldown_blend` and no `rewrite_blend`, deliberately. The schedule
+    # is a property of the run; the mixtures are a property of the corpus,
+    # and a rehearsal is often pointed at a small slice with no per-source
+    # directory structure to blend over. The mixture switch is exercised by
+    # test/integration/test_cooldown.py instead, and the rewrite task by
+    # test/integration/test_rewrite_task.py, where a corpus of the right
     # shape can be built to order.
     lr_scheduler_type: warmup_stable_decay
     warmup_steps: 100

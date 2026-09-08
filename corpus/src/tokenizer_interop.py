@@ -51,6 +51,20 @@ escape_markers = _marker_escape.escape_markers
 unescape_markers = _marker_escape.unescape_markers
 
 
+def encode_text(sp: spm.SentencePieceProcessor, text: str) -> list[int]:
+    """
+    Text -> token IDs, the one way this project does it.
+
+    Routes through `escape_markers` so a literal `▁` in the corpus survives
+    (see the module docstring). `TokenizedCorpus` and the rewrite task both
+    call this, so a document and a corrupted copy of it are tokenized
+    identically -- if the two paths ever diverged, the rewrite target would be
+    a different tokenization of the same text and the model would be taught
+    to "fix" the tokenizer.
+    """
+    return sp.encode(escape_markers(text), out_type=int)
+
+
 def load_processor(model_path: str | Path) -> spm.SentencePieceProcessor:
     """Load the frozen SentencePiece model. Fails loudly if it is not built."""
     model_path = Path(model_path)

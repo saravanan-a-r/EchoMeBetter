@@ -116,8 +116,12 @@ class MixtureTelemetry:
         total_encoder = sum(c.encoder_tokens for c in self._modes.values())
         total_decoder = sum(c.decoder_tokens for c in self._modes.values())
 
+        # UL2's modes in canonical order, then anything else that was recorded
+        # -- the synthetic rewrite task (`rewrite/`) shares this telemetry so
+        # its share can be read next to [R]/[X]/[S] rather than inferred.
+        extra = sorted(set(self._modes) - set(MODES))
         modes: dict[str, Any] = {}
-        for mode in MODES:
+        for mode in (*MODES, *extra):
             if mode not in self._modes:
                 continue
             counters = self._modes[mode]
