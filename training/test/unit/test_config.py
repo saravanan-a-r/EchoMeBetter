@@ -162,6 +162,110 @@ def test_absent_optional_settings_are_accepted():
     assert config(save_total_limit=None, eval_max_batches=None, dropout_rate=None)
 
 
+# -- the decay phase and the cooldown mixture (item 2) ---------------------
+
+
+def wsd(**overrides) -> TrainingConfig:
+    """A `warmup_stable_decay` config over TINY_TRAINING's 8-step run."""
+    settings = dict(
+        lr_scheduler_type="warmup_stable_decay",
+        lr_decay_steps=2,
+        lr_decay_type="linear",
+    )
+    settings.update(overrides)
+    return config(**settings)
+
+
+def test_a_wsd_run_with_no_decay_phase_is_refused():
+    """
+    It would be `constant_with_warmup` under a name that promises an ending,
+    and the run would hold its peak learning rate to the final step — the
+    exact behaviour the schedule was chosen to replace.
+    """
+    with pytest.raises(TrainingConfigError, match="no decay phase"):
+        config(lr_scheduler_type="warmup_stable_decay")
+
+
+def test_decay_settings_on_a_schedule_without_a_decay_phase_are_refused():
+    """
+    Silently ignoring them would leave a recorded configuration describing an
+    annealing phase that never happened — a manifest that lies about the run
+    it documents.
+    """
+    with pytest.raises(TrainingConfigError, match="no cooldown phase"):
+        config(lr_scheduler_type="inverse_sqrt", lr_decay_steps=2)
+
+
+def test_a_decay_that_leaves_no_stable_phase_is_refused():
+    with pytest.raises(TrainingConfigError, match="stable phase"):
+        wsd(lr_decay_steps=TINY_TRAINING["max_steps"], warmup_steps=1)
+
+
+def test_an_unknown_decay_shape_is_refused():
+    with pytest.raises(TrainingConfigError, match="lr_decay_type"):
+        wsd(lr_decay_type="exponential")
+
+
+def test_explicit_decay_steps_beat_a_ratio():
+    assert wsd(lr_decay_steps=3, lr_decay_ratio=0.5).resolved_decay_steps == 3
+
+
+def test_a_decay_ratio_resolves_against_max_steps():
+    assert wsd(lr_decay_steps=0, lr_decay_ratio=0.5).resolved_decay_steps == 4
+
+
+def test_a_schedule_without_a_decay_phase_has_no_cooldown_step():
+    """
+    `None` rather than `max_steps`, so a caller cannot read "no cooldown" as
+    "a cooldown that starts at the very end" or, worse, at step 0.
+    """
+    assert config(lr_scheduler_type="inverse_sqrt").cooldown_start_step is None
+
+
+def test_a_cooldown_mixture_needs_a_cooldown_to_happen_in():
+    with pytest.raises(TrainingConfigError, match="no decay phase"):
+        config(lr_scheduler_type="cosine", cooldown_blend={"c4": 1.0})
+
+
+@pytest.mark.parametrize("blend", [{}, {"c4": 0.0}, {"c4": -1.0}, {"c4": "half"}])
+def test_a_malformed_cooldown_mixture_is_refused(blend):
+    """
+    A zero weight in particular: it says "include this source and never draw
+    from it", which is what leaving it out already means, so it is always
+    either a typo or a misunderstanding.
+    """
+    with pytest.raises(TrainingConfigError):
+        wsd(cooldown_blend=blend)
+
+
+def test_no_cooldown_mixture_is_a_valid_wsd_run():
+    """
+    The two halves of item 2 are separable on purpose: the learning-rate
+    decay is a settled, low-risk gain, while which data is worth repeating is
+    a judgement. A run may take the first without the second.
+    """
+    assert wsd().cooldown_blend is None
+
+
+def test_the_wsd_export_carries_the_decay_into_lr_scheduler_kwargs():
+    """
+    `transformers.get_wsd_schedule` has no default for `num_decay_steps`, so
+    an export that omitted it would not drift from this run's curve — it would
+    fail to build a scheduler at all.
+    """
+    exported = wsd().to_huggingface_training_arguments()
+    assert exported["lr_scheduler_kwargs"]["num_decay_steps"] == wsd().resolved_decay_steps
+    assert exported["lr_scheduler_kwargs"]["decay_type"] == "linear"
+
+
+def test_other_schedules_export_no_scheduler_kwargs():
+    """
+    `lr_scheduler_kwargs` is handed straight to the scheduler factory, and the
+    other five would reject keys they have no parameter for.
+    """
+    assert "lr_scheduler_kwargs" not in config().to_huggingface_training_arguments()
+
+
 # -- derived ---------------------------------------------------------------
 
 
@@ -274,13 +378,82 @@ def test_every_real_stage_loads(stage):
     assert load_training_config(stage=stage).stage == stage
 
 
-def test_pretraining_uses_inverse_sqrt():
+def test_inverse_sqrt_is_still_the_default_schedule():
     """
-    architecture.md §13. Not interchangeable with cosine: inverse_sqrt never
-    needs to know how long the run is, and a 50-100B token run's length is not
-    settled in advance (§7.5).
+    architecture.md §13's choice, and still what a stage gets unless it says
+    otherwise: inverse_sqrt never needs to know how long the run is. The
+    `pretrain` stage overrides it (see below); the default it overrides
+    should not quietly change with it.
     """
-    assert load_training_config(stage="pretrain").lr_scheduler_type == "inverse_sqrt"
+    document = yaml.safe_load(TRAINING_CONFIG_PATH.read_text(encoding="utf-8"))
+    assert document["defaults"]["lr_scheduler_type"] == "inverse_sqrt"
+
+
+def test_pretraining_anneals_over_its_final_tenth():
+    """
+    architecture_improvements.md item 2. Three things have to line up or the
+    cooldown is not the phase it claims to be: the schedule, the length of
+    the decay, and the step the decay begins at — which is also the step the
+    data mixture switches on, so an error here is not only a learning-rate
+    error.
+    """
+    pretrain = load_training_config(stage="pretrain")
+    assert pretrain.lr_scheduler_type == "warmup_stable_decay"
+    assert pretrain.resolved_decay_steps == pretrain.max_steps // 10
+    assert pretrain.cooldown_start_step == pretrain.max_steps - pretrain.resolved_decay_steps
+    # Flat at the peak right up to the boundary, then strictly falling, then
+    # zero at the horizon. Checked on the real configuration rather than a
+    # fixture, because it is the real one that a run will use.
+    assert pretrain.learning_rate_at(pretrain.cooldown_start_step - 1) == pretrain.learning_rate
+    assert pretrain.learning_rate_at(pretrain.cooldown_start_step) == pretrain.learning_rate
+    assert pretrain.learning_rate_at(pretrain.cooldown_start_step + 1) < pretrain.learning_rate
+    assert pretrain.learning_rate_at(pretrain.max_steps) == 0.0
+
+
+def test_the_rehearsal_anneals_too():
+    """
+    §7.8's rehearsal exists to run the real pipeline end to end before weeks
+    of compute go into it. A schedule phase the rehearsal never enters is a
+    phase the real run debugs.
+    """
+    rehearsal = load_training_config(stage="rehearsal")
+    assert rehearsal.lr_scheduler_type == "warmup_stable_decay"
+    assert rehearsal.cooldown_start_step is not None
+    assert rehearsal.cooldown_start_step < rehearsal.max_steps
+
+
+def test_the_cooldown_mixture_upweights_cli_and_high_quality_prose():
+    """
+    The data half of item 2. The specific weights are a judgement call and
+    will be tuned; what must not silently change is the shape of the
+    judgement — that the cooldown is a *different* mixture from the corpus,
+    concentrated on CLI text, high-quality prose and code.
+    """
+    blend = load_training_config(stage="pretrain").cooldown_blend
+    assert blend is not None
+    cli = sum(weight for source, weight in blend.items() if source.startswith("cli_"))
+    prose = blend["fineweb_edu"] + blend["cosmopedia"]
+    total = sum(blend.values())
+    assert cli / total == pytest.approx(0.3125, abs=0.01)
+    assert prose / total == pytest.approx(0.50, abs=0.01)
+    assert blend["permissive_code"] / total == pytest.approx(0.1875, abs=0.01)
+
+
+def test_the_tiny_cli_sources_are_not_weighted_like_the_big_one():
+    """
+    The one thing in the cooldown blend that is not a matter of taste.
+
+    The five CLI sources differ by four orders of magnitude in size
+    (pretrain_corpus/output/token_count_report.json): cli_cheat_sheets holds
+    ~67,500 tokens against cli_helper_stack_exchange's ~574 million. Weighting
+    them equally would show the model the cheat sheets thousands of times over
+    a 10B-token cooldown, which teaches memorization rather than vocabulary.
+    This pins the ordering that prevents it.
+    """
+    blend = load_training_config(stage="pretrain").cooldown_blend
+    assert blend["cli_helper_stack_exchange"] > 20 * blend["cli_man_pages"]
+    assert blend["cli_man_pages"] > blend["cli_tldr"] > blend["cli_nl2bash"]
+    assert blend["cli_nl2bash"] > blend["cli_cheat_sheets"]
 
 
 def test_sft_uses_cosine_and_a_lower_rate():

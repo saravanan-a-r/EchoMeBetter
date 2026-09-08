@@ -925,3 +925,105 @@ def test_the_batch_contract_is_ul2s(tiny_model):
     produced = set(make_batch(tiny_model.config))
     assert set(REQUIRED_KEYS) <= produced
     assert produced - set(REQUIRED_KEYS) == {"modes"}
+
+
+# -- the step announcement (architecture_improvements.md item 2) -----------
+
+
+class RecordingData:
+    """
+    A data pipeline that notices which step is about to run.
+
+    `state_dict`/`load_state_dict` are here because `Trainer.train` takes this
+    as its `data=` argument, which is the `Resumable` slot; `set_step` is the
+    optional addition under test.
+    """
+
+    def __init__(self) -> None:
+        self.steps: list[int] = []
+
+    def set_step(self, step: int) -> None:
+        self.steps.append(step)
+
+    def state_dict(self) -> dict:
+        return {}
+
+    def load_state_dict(self, state) -> None:
+        pass
+
+
+def test_the_data_pipeline_is_told_which_step_is_about_to_run(
+    tiny_model, training_config, model_config
+):
+    """
+    One call per optimizer step, in order, starting at 0 — the contract the
+    WSD cooldown's mixture switch depends on. If these drifted from
+    `global_step`, the cooldown would begin at the wrong place and nothing
+    would say so: the run would still train, on the wrong data mixture.
+    """
+    config = training_config.with_(max_steps=4, gradient_accumulation_steps=2)
+    data = RecordingData()
+    batches = make_batches(model_config, count=8)
+
+    trainer(tiny_model, config).train(batches, data=data)
+
+    assert data.steps == [0, 1, 2, 3]
+
+
+def test_the_step_is_announced_before_its_batches_are_drawn(
+    tiny_model, training_config, model_config
+):
+    """
+    The announcement has to land *before* the accumulation window is pulled,
+    or a window would be built half from the old phase and half from the new
+    one — a boundary that lands mid-step and cannot be reproduced on resume.
+    """
+    config = training_config.with_(max_steps=2, gradient_accumulation_steps=2)
+    data = RecordingData()
+    order: list[str] = []
+
+    def announcing_batches():
+        for batch in make_batches(model_config, count=4):
+            order.append("pull")
+            yield batch
+
+    original = data.set_step
+
+    def note(step: int) -> None:
+        order.append("announce")
+        original(step)
+
+    data.set_step = note  # type: ignore[method-assign]
+    trainer(tiny_model, config).train(announcing_batches(), data=data)
+
+    assert order[:3] == ["announce", "pull", "pull"]
+
+
+def test_a_pipeline_that_does_not_want_the_step_is_left_alone(
+    tiny_model, training_config, model_config
+):
+    """
+    `set_step` is optional. Every pipeline written before it existed — and the
+    plain lists these tests use — must keep working untouched.
+    """
+    class Plain:
+        def state_dict(self) -> dict:
+            return {}
+
+        def load_state_dict(self, state) -> None:
+            pass
+
+    config = training_config.with_(max_steps=2, gradient_accumulation_steps=1)
+    state = trainer(tiny_model, config).train(
+        make_batches(model_config, count=2), data=Plain()
+    )
+    assert state.global_step == 2
+
+
+def test_a_run_with_no_data_object_announces_nothing(
+    tiny_model, training_config, model_config
+):
+    """`data=` is optional too; `train(batches)` alone must not fail."""
+    config = training_config.with_(max_steps=2, gradient_accumulation_steps=1)
+    state = trainer(tiny_model, config).train(make_batches(model_config, count=2))
+    assert state.global_step == 2

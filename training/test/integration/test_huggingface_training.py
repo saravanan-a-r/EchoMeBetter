@@ -171,8 +171,18 @@ def test_the_exported_schedule_survives_the_round_trip(tmp_path):
     come back as the same schedule and not as the enum's default.
     """
     for schedule in SCHEDULES:
+        # `warmup_stable_decay` is the one schedule with a required extra: a
+        # decay phase of unstated length is not a schedule, and the config
+        # refuses it rather than defaulting to "no cooldown" under a name that
+        # promises one.
+        extra = (
+            {"lr_decay_steps": 10} if schedule == "warmup_stable_decay" else {}
+        )
         settings = config(
-            lr_scheduler_type=schedule, output_dir=str(tmp_path), max_steps=100
+            lr_scheduler_type=schedule,
+            output_dir=str(tmp_path),
+            max_steps=100,
+            **extra,
         )
         arguments = TrainingArguments(**settings.to_huggingface_training_arguments())
         assert arguments.lr_scheduler_type.value == schedule

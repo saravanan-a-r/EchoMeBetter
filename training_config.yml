@@ -31,8 +31,11 @@
 # `lr_scheduler_type` values are `transformers.SchedulerType` values and the
 # curve is computed with `transformers.optimization`'s arithmetic, so a
 # HuggingFace-side continuation follows the same schedule rather than a
-# similar one. `TrainingConfig.to_huggingface_training_arguments()` emits a
-# dict `TrainingArguments(**d)` accepts.
+# similar one. The three `lr_decay_*` fields below have no TrainingArguments
+# name of their own because HuggingFace passes them through
+# `lr_scheduler_kwargs`; the export puts them back there.
+# `TrainingConfig.to_huggingface_training_arguments()` emits a dict
+# `TrainingArguments(**d)` accepts.
 #
 # Fields with no TrainingArguments counterpart are marked "NOT a
 # TrainingArguments field" below, with the reason.
@@ -90,10 +93,12 @@ defaults:
   max_grad_norm: 1.0
 
   # --- learning-rate schedule (§13) -------------------------------------------
-  # inverse_sqrt for pretraining because it never needs to know how long the
-  # run is: a 50-100B token run can be extended without the schedule being
-  # wrong in hindsight. A cosine schedule whose horizon is later moved decays
-  # to its floor at the OLD horizon and stays there.
+  # inverse_sqrt is §13's reference choice and stays the default here: it never
+  # needs to know how long the run is, so a 50-100B token run can be extended
+  # without the schedule being wrong in hindsight, whereas a cosine schedule
+  # whose horizon is later moved decays to its floor at the OLD horizon and
+  # stays there. The `pretrain` stage below overrides it with
+  # warmup_stable_decay; see that block for what is traded for what.
   lr_scheduler_type: inverse_sqrt
   warmup_steps: 0              # 0 means "use warmup_ratio" (HF's precedence)
   warmup_ratio: 0.01           # §13: warmup ~1-2% of steps
@@ -181,9 +186,32 @@ defaults:
   lr_timescale: null
 
   # NOT TrainingArguments fields. Cosine shape controls, used only when
-  # lr_scheduler_type is `cosine`.
+  # lr_scheduler_type is `cosine`. `warmup_stable_decay` reads both too, with
+  # the same meaning, for its decay phase.
   min_lr_ratio: 0.0
   num_cycles: 0.5
+
+  # NOT TrainingArguments fields by name — HuggingFace hides all three inside
+  # lr_scheduler_kwargs, and to_huggingface_training_arguments() puts them
+  # back there. They configure the `warmup_stable_decay` cooldown and are
+  # rejected outright on any other schedule, because a schedule with no decay
+  # phase would ignore them and the run's recorded configuration would then
+  # describe an annealing phase that never happened.
+  #
+  # lr_decay_steps wins over lr_decay_ratio when both are set, matching the
+  # warmup_steps / warmup_ratio precedence above. Both zero = no decay phase.
+  lr_decay_steps: 0
+  lr_decay_ratio: 0.0
+  lr_decay_type: cosine        # transformers' get_wsd_schedule default
+
+  # NOT a TrainingArguments field. The data half of the cooldown: for the
+  # decay phase only, draw documents from these sources in these proportions
+  # instead of reading the corpus as it lies on disk. Keys are corpus source
+  # names (the directory names under the corpus root). `null` leaves the
+  # mixture alone, making a WSD run a pure learning-rate change. See the
+  # `pretrain` stage for the mixture this project actually uses and how its
+  # numbers were arrived at.
+  cooldown_blend: null
 
   # NOT a TrainingArguments field. Caps how much of the frozen validation set
   # each evaluation consumes. `null` means all of it — correct for a small
@@ -212,11 +240,77 @@ stages:
   pretrain:
     max_steps: 200000
     learning_rate: 0.0003
-    lr_scheduler_type: inverse_sqrt
+    # Item 2. Warmup (1%) -> flat peak (89%) -> linear decay to zero over the
+    # final 10%, on the upweighted mixture below.
+    #
+    # WHAT IS TRADED. inverse_sqrt's virtue is that it never needs to know how
+    # long the run is; this gives that up. The horizon is now load-bearing —
+    # moving max_steps after the fact means the decay happened at the wrong
+    # place — in exchange for the late-training loss drop a decay phase
+    # reliably recovers (MiniCPM, OLMo 2, DeepSeek's WSD, Llama 3's
+    # "annealing"). 200,000 steps is a settled number here, so the horizon is
+    # not the thing at risk.
+    #
+    # The stable phase is CONSTANT, not inverse_sqrt. That is what
+    # warmup_stable_decay means in transformers, and matching it is the point
+    # of using HuggingFace's name: a continuation under `Trainer` with the
+    # same lr_scheduler_type follows the same curve, not a similar one.
+    #
+    # Decay shape is linear rather than transformers' cosine default: cosine
+    # spends most of the phase near the peak and then drops steeply, while
+    # linear starts coming down immediately, which is what the annealing
+    # results above actually used.
+    lr_scheduler_type: warmup_stable_decay
     warmup_ratio: 0.01
+    lr_decay_ratio: 0.1        # 20,000 steps: 180,000 -> 200,000
+    lr_decay_type: linear
     dropout_rate: 0.0
     label_smoothing_factor: 0.0
     output_dir: runs/pretrain
+
+    # The data half of item 2: for the 20,000 decay steps only, draw from
+    # these sources in these proportions instead of reading the corpus as it
+    # lies on disk. Doing the decay on an upweighted high-value mix is what
+    # moves downstream eval; the LR decay alone mostly moves loss.
+    #
+    # BUCKETS. architecture_improvements.md item 2 proposes 40% high-quality
+    # prose / 25% CLI / 15% code / 20% the synthetic rewrite task of item 4.
+    # Item 4 is not implemented, so its 20% is redistributed pro-rata across
+    # the other three exactly as that section says to: 50% / 31.25% / 18.75%.
+    #
+    # WITHIN THE CLI BUCKET, weights are NOT equal, and this is the part that
+    # needed measuring rather than assuming. The five CLI sources differ by
+    # four orders of magnitude in size (pretrain_corpus/output/
+    # token_count_report.json), and an equal split would have shown
+    # cli_cheat_sheets to the model roughly ten thousand times during the
+    # cooldown — memorization, not vocabulary. So each small source is capped
+    # at ~8 passes over itself and cli_helper_stack_exchange, the only CLI
+    # source with real volume, takes the remainder of the bucket.
+    #
+    # Worked against a ~10.3B-token cooldown (20,000 steps x 516,544 real
+    # tokens/step, the post-bucketing figure measured on the real pipeline):
+    #
+    #   source                       tokens    weight   passes over itself
+    #   fineweb_edu                  45.84B    30%      0.07
+    #   cli_helper_stack_exchange     0.574B   30.43%   5.5
+    #   cosmopedia                    7.54B    20%      0.27
+    #   permissive_code               3.37B    18.75%   0.58
+    #   cli_man_pages                 9.12M     0.70%   7.9
+    #   cli_tldr                      1.02M     0.08%   8.1
+    #   cli_nl2bash                   0.45M     0.035%  8.0
+    #   cli_cheat_sheets              0.068M    0.005%  7.7
+    #
+    # Weights are relative and renormalized over the sources present; they are
+    # written to sum to 1.0 only so this table can be read as percentages.
+    cooldown_blend:
+      fineweb_edu: 0.30
+      cli_helper_stack_exchange: 0.3043
+      cosmopedia: 0.20
+      permissive_code: 0.1875
+      cli_man_pages: 0.0070
+      cli_tldr: 0.0008
+      cli_nl2bash: 0.00035
+      cli_cheat_sheets: 0.00005
     # Item 3: fused SDPA attention (model/src/attention.py) plus graph
     # capture. "reduce-overhead" is the mode architecture_improvements.md
     # recommends for training — it trades a one-time recompilation per shape
@@ -254,8 +348,20 @@ stages:
     quick_eval_steps: 100
     master_eval_steps: 1000
     learning_rate: 0.0003
-    lr_scheduler_type: inverse_sqrt
+    # Same schedule as `pretrain`, and for the reason §7.8 exists at all: a
+    # code path the rehearsal never runs is a code path the real run debugs.
+    # 200 of 2,000 steps is the same 10% shape, scaled.
+    #
+    # No `cooldown_blend`, deliberately. The schedule is a property of the
+    # run; the mixture is a property of the corpus, and a rehearsal is often
+    # pointed at a small slice with no per-source directory structure to blend
+    # over. The mixture switch is exercised by
+    # test/integration/test_cooldown.py instead, where a corpus of the right
+    # shape can be built to order.
+    lr_scheduler_type: warmup_stable_decay
     warmup_steps: 100
+    lr_decay_ratio: 0.1
+    lr_decay_type: linear
     dropout_rate: 0.0
     label_smoothing_factor: 0.0
     per_device_train_batch_size: 8

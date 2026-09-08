@@ -116,6 +116,21 @@ class PretrainBatchSource:
     similar-length examples into the same batch and re-randomizes the order
     afterwards; `bucket_batches=False` turns it off and restores the previous
     one-batch-at-a-time behaviour exactly.
+
+    The cooldown
+    ------------
+    With `cooldown_corpus` and `cooldown_start_step` set, documents come from
+    the ordinary corpus until that step and from an upweighted
+    `BlendedCorpus` afterwards — the data half of the WSD schedule
+    (architecture_improvements.md item 2). The step arrives through
+    `set_step`, which `Trainer.train` calls once per optimizer step; nothing
+    here counts batches to guess where the run is, because a guess that drifts
+    by one accumulation window would move the boundary silently.
+
+    Both streams are checkpointed, not just the active one. The cooldown
+    stream has usually read nothing when a mid-run checkpoint is written, and
+    the main stream is exactly where the cooldown left it — saving only the
+    active one would restart the other from its first file on the next resume.
     """
 
     def __init__(
@@ -130,7 +145,18 @@ class PretrainBatchSource:
         pack: bool = True,
         bucket_batches: bool = True,
         pool_batches: int = ul2.DEFAULT_POOL_BATCHES,
+        cooldown_corpus: Any | None = None,
+        cooldown_start_step: int | None = None,
     ) -> None:
+        if (cooldown_corpus is None) != (cooldown_start_step is None):
+            raise ValueError(
+                "cooldown_corpus and cooldown_start_step go together: a cooldown "
+                "stream with no step to switch at would never be read, and a step "
+                "with no stream to switch to would do nothing at it"
+            )
+        self.main_corpus = corpus
+        self.cooldown_corpus = cooldown_corpus
+        self.cooldown_start_step = cooldown_start_step
         self.corpus = corpus
         self.objective = objective
         self.specials = specials
@@ -168,6 +194,33 @@ class PretrainBatchSource:
         else:
             examples = [self._produce_example(mode) for _ in range(self.batch_size)]
         return ul2.pad_batch(examples, self.specials, pad_to_multiple_of=self.pad_to_multiple_of)
+
+    # -- the cooldown phase --------------------------------------------------
+
+    def set_step(self, step: int) -> None:
+        """
+        Point the stream at the phase `step` belongs to.
+
+        Called by `Trainer.train` before each optimizer step. Deriving the
+        phase from the step every time, rather than latching a flag the first
+        time the boundary is crossed, is what makes a resume land in the right
+        phase: `trainer.resume()` restores `global_step` and the next call
+        arrives with it, so a run interrupted inside the cooldown comes back
+        inside the cooldown without any of that having to be checkpointed.
+        """
+        if self.cooldown_corpus is None:
+            return
+        assert self.cooldown_start_step is not None
+        self.corpus = (
+            self.cooldown_corpus
+            if step >= self.cooldown_start_step
+            else self.main_corpus
+        )
+
+    @property
+    def in_cooldown(self) -> bool:
+        """Whether the stream is currently drawing from the cooldown mixture."""
+        return self.cooldown_corpus is not None and self.corpus is self.cooldown_corpus
 
     def _produce_example(self, mode: str | None):
         """
@@ -303,10 +356,15 @@ class PretrainBatchSource:
     def state_dict(self) -> dict[str, Any]:
         version, internal_state, gauss_next = self.rng.getstate()
         state: dict[str, Any] = {
-            "corpus": self.corpus.state_dict(),
+            "corpus": self.main_corpus.state_dict(),
             "rng": [version, list(internal_state), gauss_next],
             "buffer": [list(document) for document in self._buffer],
         }
+        # Both phases' positions, always — see the class docstring. Keyed
+        # separately from "corpus" so a checkpoint written before the cooldown
+        # existed still names exactly what it holds.
+        if self.cooldown_corpus is not None:
+            state["cooldown_corpus"] = self.cooldown_corpus.state_dict()
         # Examples already built and waiting in a length pool. Saved for the
         # same reason as `buffer`: they have been read from the corpus, so
         # dropping them on resume is silent data loss (architecture.md §7.9).
@@ -315,7 +373,15 @@ class PretrainBatchSource:
         return state
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
-        self.corpus.load_state_dict(state["corpus"])
+        self.main_corpus.load_state_dict(state["corpus"])
+        # `.get` so a checkpoint written before the cooldown existed still
+        # loads: it simply resumes with an unread cooldown stream, which is
+        # what it had. A checkpoint that *does* carry one against a run
+        # configured without a cooldown is the reverse case, and is left
+        # alone rather than guessed at — the stream it describes does not
+        # exist here to restore into.
+        if self.cooldown_corpus is not None and "cooldown_corpus" in state:
+            self.cooldown_corpus.load_state_dict(state["cooldown_corpus"])
         version, internal_state, gauss_next = state["rng"]
         self.rng.setstate((version, tuple(internal_state), gauss_next))
         # `.get` so a checkpoint written before packing existed still loads;
@@ -412,12 +478,39 @@ def run(args: argparse.Namespace) -> int:
 
     files = corpus_pkg.discover_corpus_files(args.corpus)
     corpus_stream = corpus_pkg.TokenizedCorpus(files, sp, seed=training_config.data_seed)
+
+    # The cooldown mixture (item 2). Built eagerly, before the run starts, so
+    # a blend naming a source this corpus does not have fails now rather than
+    # 180,000 steps in — which is the one moment in the run where a crash
+    # costs the most and a silent fallback would cost more.
+    cooldown_corpus = None
+    cooldown_start_step = training_config.cooldown_start_step
+    if training_config.cooldown_blend:
+        grouped = corpus_pkg.group_files_by_source(files, args.corpus)
+        try:
+            cooldown_corpus = corpus_pkg.build_blended_corpus(
+                grouped,
+                sp,
+                training_config.cooldown_blend,
+                # Offset so the cooldown's own draws are an independent stream
+                # from the main corpus's file shuffle rather than a repeat of
+                # it, the same reasoning as the batcher's seed below.
+                seed=training_config.data_seed + 104_729,
+            )
+        except corpus_pkg.CorpusConfigError as exc:
+            print(f"cooldown_blend: {exc}", file=sys.stderr)
+            return 2
+    else:
+        cooldown_start_step = None
+
     batch_source = PretrainBatchSource(
         corpus_stream,
         objective,
         specials,
         batch_size=training_config.per_device_train_batch_size,
         data_seed=training_config.data_seed,
+        cooldown_corpus=cooldown_corpus,
+        cooldown_start_step=cooldown_start_step,
     )
 
     tiered = args.master_eval_corpus is not None or args.quick_eval_corpus is not None
@@ -499,6 +592,26 @@ def run(args: argparse.Namespace) -> int:
 
     print(f"model profile: {model_config.profile}  ({model_config.parameter_count():,} params)")
     print(f"stage: {training_config.stage}  max_steps: {training_config.max_steps}")
+    print(
+        f"schedule: {training_config.lr_scheduler_type}  peak lr "
+        f"{training_config.learning_rate}  warmup "
+        f"{training_config.resolved_warmup_steps}"
+        + (
+            f"  decay {training_config.resolved_decay_steps} "
+            f"({training_config.lr_decay_type}, from step "
+            f"{training_config.cooldown_start_step})"
+            if training_config.cooldown_start_step is not None
+            else ""
+        )
+    )
+    if cooldown_corpus is not None:
+        shares = ", ".join(
+            f"{source} {share:.1%}"
+            for source, share in sorted(
+                cooldown_corpus.weights.items(), key=lambda item: -item[1]
+            )
+        )
+        print(f"cooldown mixture (from step {cooldown_start_step}): {shares}")
     print(f"corpus: {args.corpus}  ({len(files)} file(s))")
     # Stated up front because it governs how much real content each step
     # actually carries: records are packed into windows for [R]/[X], while [S]
@@ -531,6 +644,23 @@ def run(args: argparse.Namespace) -> int:
 
     print()
     print(telemetry.format_table())
+
+    if cooldown_corpus is not None and any(cooldown_corpus.documents_drawn.values()):
+        # What the cooldown actually delivered, against what it was asked for.
+        # `epochs` is the number the mixture is easiest to get wrong on: an
+        # upweighted small source is *meant* to repeat, and this says how
+        # often it did rather than leaving it to be inferred from the weights.
+        realized = cooldown_corpus.realized_shares()
+        epochs = cooldown_corpus.source_epochs()
+        print()
+        print("cooldown mixture, as realized:")
+        print(f"  {'source':<28}{'target':>9}{'actual':>9}{'epochs':>9}")
+        for source in sorted(cooldown_corpus.weights, key=lambda s: -cooldown_corpus.weights[s]):
+            print(
+                f"  {source:<28}{cooldown_corpus.weights[source]:>8.2%}"
+                f"{realized[source]:>9.2%}{epochs[source]:>9,}"
+            )
+
     return 0
 
 

@@ -3,9 +3,10 @@ Turning corpus files on disk into a stream of plain text lines.
 
 Scope
 -----
-This module is deliberately dumb: discover files, and turn each raw file
-line into zero or more text segments. It has no opinion about sampling,
-blending source shares, or train/eval splitting — that machinery already
+This module is deliberately dumb: discover files, say which source each one
+came from, and turn each raw file line into zero or more text segments. It has
+no opinion about sampling, about *what* share a source should get, or about
+train/eval splitting — that machinery already
 exists in `tokenizer/training/corpus_reader.py` for *fitting the tokenizer*,
 a one-time, whole-corpus-in-view operation. Pretraining is a different
 problem: a streamed, resumable, effectively-infinite pass (§7.5 says multiple
@@ -30,8 +31,9 @@ reader refuses to.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator
 
 from .errors import CorpusConfigError
 
@@ -61,6 +63,54 @@ def discover_corpus_files(path: str | Path) -> list[Path]:
             f"no corpus files found under {path} (looking for {', '.join(CORPUS_SUFFIXES)})"
         )
     return files
+
+
+def source_name(path: str | Path, root: str | Path) -> str:
+    """
+    Which corpus source a file belongs to.
+
+    `pretrain_corpus/` writes one directory per source
+    (`pretrain_output/cli_tldr/cli_tldr-w00-00000.jsonl`), so the source is the
+    first path component under the corpus root — the same name the download
+    blend, the token-count report and `cooldown_blend` all use, which is what
+    lets those three be compared without a translation table anywhere.
+
+    A file sitting directly in the root has no directory to name it, so its own
+    stem is used. That is the shape a single-file `--corpus` takes, and a
+    one-source corpus needs no blending anyway.
+
+    Paths are made absolute but symlinks are deliberately **not** resolved:
+    `tokenizer_experiment/flattened_corpus/` is a farm of symlinks into the
+    real corpus, and following them would report the target's source rather
+    than the layout the caller actually handed over. Where a file sits is the
+    question; where it eventually points is not.
+    """
+    path = Path(os.path.abspath(path))
+    root = Path(os.path.abspath(root))
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        # Not under the root at all — an explicit file list assembled from
+        # somewhere else. Its own directory is the best available answer.
+        return path.parent.name or path.stem
+    return relative.parts[0] if len(relative.parts) > 1 else path.stem
+
+
+def group_files_by_source(
+    files: Iterable[str | Path], root: str | Path
+) -> dict[str, list[Path]]:
+    """
+    Partition corpus files by `source_name`, preserving each source's order.
+
+    Order is preserved rather than re-sorted because `TokenizedCorpus` derives
+    its own shuffle from the order it is handed; re-sorting here would make the
+    shuffle depend on which grouping function ran, not on the seed.
+    """
+    grouped: dict[str, list[Path]] = {}
+    for entry in files:
+        path = Path(entry)
+        grouped.setdefault(source_name(path, root), []).append(path)
+    return grouped
 
 
 def is_jsonl(path: Path) -> bool:

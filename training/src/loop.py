@@ -364,6 +364,12 @@ class Trainer:
         its current behaviour unchanged. Passing both is refused rather than
         merged: which one ranked the checkpoints would be a coin flip.
 
+        `data` is the resumable data pipeline. Beyond being checkpointed, it
+        is told which step is about to run if it offers a `set_step` method
+        (see `_announce_step`) — which is how the WSD cooldown's corpus
+        mixture switches at the right step without this module knowing what a
+        corpus mixture is.
+
         Exhausting the stream early is not an error: a rehearsal run over a
         fixed slice (§7.8) is expected to end that way. It is reported in the
         final log entry so it cannot be mistaken for having reached
@@ -377,6 +383,7 @@ class Trainer:
         exhausted = False
 
         while self.state.global_step < limit:
+            self._announce_step(data, self.state.global_step)
             try:
                 micro_batches = next(source)
             except StopIteration:
@@ -654,6 +661,35 @@ class Trainer:
                     tracker.update(totals, counts, micro_batch["modes"])
         finally:
             self.model.train(was_training)
+
+    def _announce_step(self, data: Resumable | None, step: int) -> None:
+        """
+        Tell the data pipeline which step is about to be run, if it cares.
+
+        One optional method, called once per optimizer step, *before* the
+        window's micro-batches are pulled — so a pipeline that changes what it
+        emits at a step boundary changes it for the whole window rather than
+        halfway through one. This exists for the `warmup_stable_decay`
+        cooldown (architecture_improvements.md item 2), where the corpus
+        mixture switches at the step the decay phase begins.
+
+        Duck-typed rather than required: `data` is already optional, most
+        pipelines have nothing to do with the step number, and every existing
+        caller — including the plain lists the tests use — keeps working
+        untouched. The trainer deliberately does not interpret the call at
+        all; *what* changes at a step boundary is a data decision, and this
+        module has no business holding an opinion about corpus mixtures.
+
+        Note the asymmetry with `learning_rate_at`: the schedule reads the
+        step, while the pipeline is told it. The pipeline is stateful (it has
+        already read documents, it holds a pool), so it needs a single,
+        ordered notification rather than the freedom to ask at any moment.
+        """
+        if data is None:
+            return
+        announce = getattr(data, "set_step", None)
+        if callable(announce):
+            announce(step)
 
     def _autocast(self):
         return torch.autocast(

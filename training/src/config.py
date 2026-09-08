@@ -44,7 +44,14 @@ from typing import Any, Mapping
 import yaml
 
 from .errors import TrainingConfigError
-from .schedule import SCHEDULES, learning_rate_at, resolve_warmup_steps
+from .schedule import (
+    DECAY_TYPES,
+    SCHEDULES,
+    WARMUP_STABLE_DECAY,
+    learning_rate_at,
+    resolve_decay_steps,
+    resolve_warmup_steps,
+)
 
 # training/src/config.py -> training/src -> training -> project root
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "training_config.yml"
@@ -59,6 +66,14 @@ _STAGE_FIELDS = frozenset(
         "lr_scheduler_type",
         "warmup_steps",
         "warmup_ratio",
+        # The `warmup_stable_decay` cooldown (item 2). Per-stage for the same
+        # reason `lr_scheduler_type` is: pretraining anneals over its last 10%,
+        # SFT uses cosine over its whole (much shorter) horizon, and the
+        # rehearsal is too short to anneal meaningfully at all.
+        "lr_decay_steps",
+        "lr_decay_ratio",
+        "lr_decay_type",
+        "cooldown_blend",
         "dropout_rate",
         "label_smoothing_factor",
         "per_device_train_batch_size",
@@ -100,6 +115,10 @@ OURS_ALONE = (
     "lr_timescale",
     "min_lr_ratio",
     "num_cycles",
+    "lr_decay_steps",
+    "lr_decay_ratio",
+    "lr_decay_type",
+    "cooldown_blend",
     "eval_max_batches",
     "keep_best_checkpoint",
     "log_per_mode_loss",
@@ -200,6 +219,35 @@ class TrainingConfig:
     torch_compile: bool = False
     torch_compile_backend: str | None = None
     torch_compile_mode: str | None = None
+
+    # -- the WSD cooldown (item 2) ----------------------------------------
+    # No `TrainingArguments` counterpart by name: HuggingFace hides all three
+    # inside `lr_scheduler_kwargs`, the same way it hides `lr_timescale`
+    # above. `to_huggingface_training_arguments` puts them back there, so a
+    # continuation under `Trainer` gets the same three phases rather than a
+    # schedule that warms up and then never comes down.
+    #
+    # `lr_decay_steps` wins over `lr_decay_ratio` when both are set, matching
+    # the `warmup_steps` / `warmup_ratio` precedence a few fields up. Both
+    # default to "no decay phase", which is the only correct default for the
+    # five schedules that do not have one.
+    lr_decay_steps: int = 0
+    lr_decay_ratio: float = 0.0
+    lr_decay_type: str = "cosine"  # transformers' get_wsd_schedule default
+
+    # The other half of item 2, and the half that moves downstream eval most:
+    # during the decay phase alone, sample the corpus from an upweighted
+    # high-value mixture instead of reading it as it lies on disk. Maps a
+    # corpus source (the directory name under the corpus root — `cli_tldr`,
+    # `permissive_code`, ...) to a relative weight; weights are normalized
+    # over the sources actually present, so a partial corpus still produces a
+    # correctly proportioned mix rather than silently dropping the phase.
+    #
+    # `None` means "do not switch the mixture", which leaves a WSD run as a
+    # pure learning-rate change. The two halves are deliberately separable:
+    # the LR decay is a settled, low-risk gain, while the mixture switch is a
+    # judgement about which data is worth repeating.
+    cooldown_blend: Mapping[str, float] | None = None
 
     def __post_init__(self) -> None:
         positive = {
@@ -311,6 +359,9 @@ class TrainingConfig:
                 f"already spun up."
             )
 
+        self._check_decay_phase()
+        self._check_cooldown_blend()
+
         if self.load_best_model_at_end and not self.keep_best_checkpoint:
             raise TrainingConfigError(
                 "load_best_model_at_end needs keep_best_checkpoint: the best "
@@ -318,7 +369,120 @@ class TrainingConfig:
                 "to delete it"
             )
 
+    # -- the decay phase, validated ---------------------------------------
+
+    def _check_decay_phase(self) -> None:
+        """
+        Refuse a decay phase that does not fit the run it belongs to.
+
+        Every check here catches something that otherwise surfaces only as a
+        loss curve nobody can explain: a cooldown longer than the run, one
+        configured on a schedule with no cooldown to configure, or a WSD run
+        with no cooldown at all — which is a constant-LR run wearing the name
+        of a schedule chosen specifically for its ending.
+        """
+        if self.lr_decay_steps < 0:
+            raise TrainingConfigError(
+                f"lr_decay_steps must be non-negative, got {self.lr_decay_steps}"
+            )
+        if not 0.0 <= float(self.lr_decay_ratio) < 1.0:
+            raise TrainingConfigError(
+                f"lr_decay_ratio must be in [0.0, 1.0), got {self.lr_decay_ratio!r}"
+            )
+        if self.lr_decay_type not in DECAY_TYPES:
+            raise TrainingConfigError(
+                f"lr_decay_type must be one of {list(DECAY_TYPES)}, got "
+                f"{self.lr_decay_type!r}. The names are transformers'"
+                f" get_wsd_schedule(decay_type=...) values."
+            )
+
+        decay = self.resolved_decay_steps
+
+        if self.lr_scheduler_type != WARMUP_STABLE_DECAY:
+            if decay:
+                raise TrainingConfigError(
+                    f"lr_decay_steps/lr_decay_ratio configure the "
+                    f"{WARMUP_STABLE_DECAY!r} cooldown, but lr_scheduler_type is "
+                    f"{self.lr_scheduler_type!r}, which has no cooldown phase to "
+                    f"give them to. They would be silently ignored — and a run "
+                    f"whose recorded configuration describes an annealing phase "
+                    f"that never happened is not reproducible from its manifest."
+                )
+            return
+
+        if decay < 1:
+            raise TrainingConfigError(
+                f"lr_scheduler_type is {WARMUP_STABLE_DECAY!r} but no decay phase is "
+                f"configured; set lr_decay_steps or lr_decay_ratio. Without one the "
+                f"schedule is constant_with_warmup under a name that promises an "
+                f"ending it will not deliver."
+            )
+        if self.resolved_warmup_steps + decay > self.max_steps:
+            raise TrainingConfigError(
+                f"warmup ({self.resolved_warmup_steps}) + decay ({decay}) exceeds "
+                f"max_steps ({self.max_steps}): there is no stable phase between "
+                f"them and the run would decay out of its own warmup"
+            )
+
+    def _check_cooldown_blend(self) -> None:
+        """
+        Refuse a cooldown mixture that cannot be applied as written.
+
+        The mixture is switched at the moment the decay phase starts, so
+        without a decay phase there is no moment to switch it at. Weights are
+        relative and normalized at use, but a non-positive one is always a
+        mistake: zero says "include this source and never draw from it", which
+        is what leaving it out already means.
+        """
+        if self.cooldown_blend is None:
+            return
+        if not isinstance(self.cooldown_blend, Mapping) or not self.cooldown_blend:
+            raise TrainingConfigError(
+                f"cooldown_blend must be a non-empty mapping of corpus source to "
+                f"weight, or absent; got {self.cooldown_blend!r}"
+            )
+        if self.lr_scheduler_type != WARMUP_STABLE_DECAY:
+            raise TrainingConfigError(
+                f"cooldown_blend switches the data mixture when the decay phase "
+                f"begins, but lr_scheduler_type is {self.lr_scheduler_type!r}, which "
+                f"has no decay phase — there is no step at which the switch would "
+                f"happen, so the upweighted mixture would never be used"
+            )
+        for source, weight in self.cooldown_blend.items():
+            if not isinstance(source, str) or not source:
+                raise TrainingConfigError(
+                    f"cooldown_blend keys are corpus source names; got {source!r}"
+                )
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+                raise TrainingConfigError(
+                    f"cooldown_blend[{source!r}] must be a number, got {weight!r}"
+                )
+            if float(weight) <= 0.0:
+                raise TrainingConfigError(
+                    f"cooldown_blend[{source!r}] must be positive, got {weight!r}. "
+                    f"Drop the source instead of weighting it zero."
+                )
+
     # -- derived ----------------------------------------------------------
+
+    @property
+    def resolved_decay_steps(self) -> int:
+        """`lr_decay_steps` if set, else `lr_decay_ratio` of `max_steps`."""
+        return resolve_decay_steps(
+            self.lr_decay_steps, self.lr_decay_ratio, self.max_steps
+        )
+
+    @property
+    def cooldown_start_step(self) -> int | None:
+        """
+        The step the decay phase — and the `cooldown_blend` switch — begins at.
+
+        `None` for a schedule with no decay phase, so a caller cannot mistake
+        "no cooldown" for "a cooldown starting at step 0".
+        """
+        if self.lr_scheduler_type != WARMUP_STABLE_DECAY:
+            return None
+        return self.max_steps - self.resolved_decay_steps
 
     @property
     def resolved_warmup_steps(self) -> int:
@@ -335,6 +499,8 @@ class TrainingConfig:
             "timescale": self.lr_timescale,
             "num_cycles": self.num_cycles,
             "min_lr_ratio": self.min_lr_ratio,
+            "decay_steps": self.resolved_decay_steps or None,
+            "decay_type": self.lr_decay_type,
         }
 
     def learning_rate_at(self, step: int) -> float:
@@ -386,7 +552,7 @@ class TrainingConfig:
         than renamed — `TrainingArguments` would reject them, and inventing a
         near-equivalent would be worse than leaving the user to set it.
         """
-        return {
+        arguments: dict[str, Any] = {
             "output_dir": self.output_dir,
             "seed": self.seed,
             "data_seed": self.data_seed,
@@ -421,6 +587,24 @@ class TrainingConfig:
             "save_strategy": "steps",
             "logging_strategy": "steps",
         }
+
+        # `warmup_stable_decay` is the one schedule whose shape is not fully
+        # determined by the fields above: `transformers.get_wsd_schedule`
+        # *requires* num_decay_steps and has no default for it, so an export
+        # that omitted these would not merely drift from this run's curve — it
+        # would fail to build a scheduler at all. Emitted only for that
+        # schedule, because `lr_scheduler_kwargs` is passed straight to the
+        # scheduler factory and the other five would reject keys they have no
+        # parameter for.
+        if self.lr_scheduler_type == WARMUP_STABLE_DECAY:
+            arguments["lr_scheduler_kwargs"] = {
+                "num_decay_steps": self.resolved_decay_steps,
+                "decay_type": self.lr_decay_type,
+                "min_lr_ratio": self.min_lr_ratio,
+                "num_cycles": self.num_cycles,
+            }
+
+        return arguments
 
 
 def load_training_config(
