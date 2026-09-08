@@ -33,8 +33,14 @@ from typing import Sequence
 
 from .config import UL2Config
 from .denoise import Example, build_prefix_denoising, build_span_corruption
-from .errors import SourceTooLongError, SourceTooShortError, TargetTooLongError
+from .errors import (
+    SourceTooLongError,
+    SourceTooShortError,
+    TargetTooLongError,
+    UL2Error,
+)
 from .mixture import ModeSampler
+from .packing import build_packed_span_corruption
 from .spans import sample_prefix_split, sample_spans
 from .special_tokens import SpecialTokens
 from .telemetry import MixtureTelemetry
@@ -53,6 +59,11 @@ class UL2Objective:
         # example. A sentinel or decoder-target overflow found here costs
         # milliseconds; found mid-run it costs the run.
         config.validate_capacity(specials.num_sentinels)
+        # The single-document proof above does not cover packed windows, whose
+        # sentinel need is a *sum* over the documents packed in -- see
+        # `worst_case_packed_spans`. Proven here too, at the same moment, so
+        # neither path can start a run it cannot finish.
+        config.validate_packed_capacity(specials.num_sentinels)
 
         self.config = config
         self.specials = specials
@@ -118,6 +129,102 @@ class UL2Objective:
         """
         try:
             return self.corrupt(tokens, rng, mode=mode)
+        except SourceTooShortError:
+            if self.telemetry is not None:
+                self.telemetry.record_skipped_too_short()
+            return None
+        except SourceTooLongError:
+            if self.telemetry is not None:
+                self.telemetry.record_skipped_too_long()
+            return None
+
+    # -- packed windows ---------------------------------------------------
+
+    def corrupt_packed(
+        self,
+        documents: Sequence[Sequence[int]],
+        rng: random.Random,
+        *,
+        mode: str | None = None,
+    ) -> Example:
+        """
+        Build one denoising example from several documents packed together.
+
+        `[R]`/`[X]` corrupt every document separately and concatenate the
+        results into one window, so a masked span can never straddle two
+        documents (`packing.py` explains the construction and why the position
+        bias needs no change).
+
+        `[S]` is **never packed**: a packed prefix-denoising target would be
+        several continuations concatenated with only their order to say which
+        prefix each belongs to. Passing more than one document with `mode="S"`
+        is a caller error and raises, rather than silently training the model
+        on a task nobody asked for.
+
+        A single-document call is not a special case that needs avoiding --
+        it produces exactly what `corrupt` would, plus segment ids.
+        """
+        if not documents:
+            raise UL2Error("cannot build a packed example from zero documents")
+
+        chosen = mode if mode is not None else self._sampler.sample(rng)
+
+        if chosen == "S":
+            if len(documents) != 1:
+                raise UL2Error(
+                    f"[S] takes exactly one document, got {len(documents)}. Prefix "
+                    f"denoising has no sentinels, so a packed [S] target could not say "
+                    f"which prefix each continuation belongs to -- pack [R]/[X] instead "
+                    f"(UL2/src/packing.py)."
+                )
+            tokens, truncated = self._admit(documents[0])
+            example = self._build_prefix(tokens, rng, truncated=truncated)
+            self._check_budgets(example)
+            if self.telemetry is not None:
+                self.telemetry.record(example)
+            return example
+
+        admitted: list[Sequence[int]] = []
+        truncated_any = False
+        for document in documents:
+            tokens, truncated = self._admit(document)
+            truncated_any = truncated_any or truncated
+            admitted.append(tokens)
+
+        if len(admitted) > self.config.max_documents_per_window:
+            raise UL2Error(
+                f"{len(admitted)} documents exceed max_documents_per_window="
+                f"{self.config.max_documents_per_window}; the sentinel-budget proof "
+                f"(UL2Config.validate_packed_capacity) assumes that cap holds"
+            )
+
+        span_config = self.config.span_config(chosen)
+        example = build_packed_span_corruption(
+            admitted,
+            chosen,
+            self.specials,
+            rng,
+            corruption_rate=span_config.corruption_rate,
+            mean_span_length=span_config.mean_span_length,
+            append_eos_to_target=self.config.append_eos_to_target,
+            truncated=truncated_any,
+        )
+
+        self._check_budgets(example)
+        if self.telemetry is not None:
+            self.telemetry.record(example)
+        return example
+
+    def try_corrupt_packed(
+        self,
+        documents: Sequence[Sequence[int]],
+        rng: random.Random,
+        *,
+        mode: str | None = None,
+    ) -> Example | None:
+        """`corrupt_packed`, returning `None` for inadmissible input."""
+        try:
+            return self.corrupt_packed(documents, rng, mode=mode)
         except SourceTooShortError:
             if self.telemetry is not None:
                 self.telemetry.record_skipped_too_short()

@@ -25,6 +25,7 @@ from typing import Any, Sequence
 
 from .denoise import Example
 from .errors import UL2Error
+from .packing import FIRST_DOCUMENT_SEGMENT_ID, PAD_SEGMENT_ID
 from .special_tokens import SpecialTokens
 
 
@@ -53,6 +54,12 @@ def pad_batch(
     encoder_width = _round_up(max(e.encoder_length for e in examples), pad_to_multiple_of)
     decoder_width = _round_up(max(e.target_length for e in examples), pad_to_multiple_of)
 
+    # Segment ids travel with the batch only when at least one example is
+    # packed. A batch of unpacked examples carries no `encoder_segment_ids`
+    # key at all, so the model takes exactly the path it took before packing
+    # existed -- packing is additive, never a change to the unpacked case.
+    any_packed = any(example.segment_ids for example in examples)
+
     batch: dict[str, Any] = {
         "encoder_input_ids": [],
         "encoder_attention_mask": [],
@@ -61,6 +68,8 @@ def pad_batch(
         "labels": [],
         "modes": [e.mode for e in examples],
     }
+    if any_packed:
+        batch["encoder_segment_ids"] = []
 
     for example in examples:
         encoder_pad = encoder_width - example.encoder_length
@@ -68,6 +77,24 @@ def pad_batch(
             list(example.encoder_input_ids) + [specials.pad_id] * encoder_pad
         )
         batch["encoder_attention_mask"].append([1] * example.encoder_length + [0] * encoder_pad)
+
+        if any_packed:
+            if example.segment_ids and len(example.segment_ids) != example.encoder_length:
+                raise UL2Error(
+                    f"example has {len(example.segment_ids)} segment ids for "
+                    f"{example.encoder_length} encoder tokens; they must correspond "
+                    f"one to one"
+                )
+            # An unpacked example sitting in a packed batch is one whole
+            # document: every real position shares segment 1. Padding takes
+            # segment 0, which no document ever uses, so a padded position can
+            # never fall inside another example's document block.
+            segments = (
+                list(example.segment_ids)
+                if example.segment_ids
+                else [FIRST_DOCUMENT_SEGMENT_ID] * example.encoder_length
+            )
+            batch["encoder_segment_ids"].append(segments + [PAD_SEGMENT_ID] * encoder_pad)
 
         # decoder_input_ids and decoder_target_ids are the same length by
         # construction (shift-right preserves length), so one pad width and

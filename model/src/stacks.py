@@ -28,7 +28,12 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from .attention import LayerCache, build_causal_mask, build_padding_mask
+from .attention import (
+    LayerCache,
+    build_causal_mask,
+    build_padding_mask,
+    build_segment_mask,
+)
 from .blocks import DecoderLayer, EncoderLayer
 from .config import ModelConfig
 from .layers import RMSNorm
@@ -59,6 +64,7 @@ class Encoder(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
+        segment_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         hidden_states = self.dropout(self.embedding(input_ids))
 
@@ -67,6 +73,17 @@ class Encoder(nn.Module):
             if attention_mask is None
             else build_padding_mask(attention_mask, hidden_states.dtype)
         )
+
+        # Packed pretraining windows hold several independent documents
+        # (UL2/src/packing.py). Summing the block-diagonal segment mask into
+        # the padding mask blocks a position when *either* forbids it, so a
+        # token attends only inside its own document and never to padding.
+        if segment_ids is not None:
+            segment_mask = build_segment_mask(segment_ids, hidden_states.dtype)
+            additive_mask = (
+                segment_mask if additive_mask is None else additive_mask + segment_mask
+            )
+
         length = input_ids.shape[1]
         bias = self.position_bias(length, length, input_ids.device).to(hidden_states.dtype)
 

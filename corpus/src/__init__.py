@@ -26,7 +26,14 @@ Typical use
 from __future__ import annotations
 
 from .errors import CorpusConfigError, CorpusError
-from .reader import discover_corpus_files, extract_text, is_jsonl, iter_lines
+from .reader import (
+    discover_corpus_files,
+    extract_text,
+    is_jsonl,
+    iter_lines,
+    iter_records,
+    join_record_lines,
+)
 from .tokenized_corpus import TokenizedCorpus
 
 __all__ = [
@@ -34,6 +41,8 @@ __all__ = [
     "CorpusConfigError",
     "discover_corpus_files",
     "iter_lines",
+    "iter_records",
+    "join_record_lines",
     "extract_text",
     "is_jsonl",
     "TokenizedCorpus",

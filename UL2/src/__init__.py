@@ -48,6 +48,8 @@ from .denoise import (
     Example,
     build_prefix_denoising,
     build_span_corruption,
+    example_from_dict,
+    example_to_dict,
     reconstruct_source,
 )
 from .errors import (
@@ -61,8 +63,16 @@ from .errors import (
     UL2Error,
 )
 from .frozen_eval import FrozenEvalSet, build_frozen_eval_set
+from .length_batching import DEFAULT_POOL_BATCHES, LengthBucketedBatcher
 from .mixture import ModeSampler, deterministic_schedule
 from .objective import UL2Objective
+from .packing import (
+    FIRST_DOCUMENT_SEGMENT_ID,
+    PAD_SEGMENT_ID,
+    build_packed_span_corruption,
+    pack_documents,
+    reconstruct_documents,
+)
 from .spans import plan_span_counts, random_segmentation, sample_prefix_split, sample_spans
 from .special_tokens import MODES, SpecialTokens
 from .telemetry import MixtureTelemetry, ModeCounters
@@ -83,6 +93,12 @@ __all__ = [
     "build_span_corruption",
     "build_prefix_denoising",
     "reconstruct_source",
+    # packing several documents into one window
+    "pack_documents",
+    "build_packed_span_corruption",
+    "reconstruct_documents",
+    "PAD_SEGMENT_ID",
+    "FIRST_DOCUMENT_SEGMENT_ID",
     # sampling internals (exposed for testing and diagnostics)
     "sample_spans",
     "sample_prefix_split",
@@ -92,6 +108,10 @@ __all__ = [
     "deterministic_schedule",
     # batching, measurement, evaluation
     "pad_batch",
+    "LengthBucketedBatcher",
+    "DEFAULT_POOL_BATCHES",
+    "example_to_dict",
+    "example_from_dict",
     "MixtureTelemetry",
     "ModeCounters",
     "FrozenEvalSet",

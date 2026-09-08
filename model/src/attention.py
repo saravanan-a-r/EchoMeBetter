@@ -173,6 +173,41 @@ def build_padding_mask(
     return (1.0 - mask) * torch.finfo(dtype).min
 
 
+def build_segment_mask(
+    segment_ids: torch.Tensor,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """
+    Additive `(batch, 1, length, length)` mask confining attention to one
+    document.
+
+    Several documents are packed into one encoder window during pretraining
+    (`UL2/src/packing.py`). Without this, document 3's representation is
+    contaminated by document 1 — they are unrelated texts that happen to share
+    a window, and letting them attend to each other teaches a relationship
+    that does not exist.
+
+    `segment_ids` is `(batch, length)`: 0 for padding, and 1, 2, 3, ... for
+    each packed document. A query may attend to a key only when both carry the
+    same id, which makes the mask block-diagonal, one block per document.
+
+    Padding is left to `build_padding_mask`: two padded positions do share id
+    0 and are *allowed* by this mask, and are then blocked by that one. The
+    two masks are summed, so a position is blocked when either forbids it —
+    which keeps each mask responsible for exactly one thing.
+    """
+    if segment_ids.dim() != 2:
+        raise ValueError(
+            f"segment_ids must be (batch, length), got {tuple(segment_ids.shape)}"
+        )
+    same_segment = segment_ids[:, :, None] == segment_ids[:, None, :]
+    return torch.where(
+        same_segment[:, None, :, :],
+        torch.zeros((), dtype=dtype, device=segment_ids.device),
+        torch.full((), torch.finfo(dtype).min, dtype=dtype, device=segment_ids.device),
+    )
+
+
 def build_causal_mask(
     query_length: int,
     key_length: int,

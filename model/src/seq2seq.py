@@ -182,10 +182,24 @@ class RephraseSeq2Seq(nn.Module):
         self,
         encoder_input_ids: torch.Tensor,
         encoder_attention_mask: torch.Tensor | None = None,
+        encoder_segment_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Run the encoder alone. Generation calls this once, then reuses it."""
+        """
+        Run the encoder alone. Generation calls this once, then reuses it.
+
+        `encoder_segment_ids` marks which packed document each position
+        belongs to, confining self-attention to one document
+        (`UL2/src/packing.py`). It is a *pretraining* concern: at inference
+        the encoder input is one real document, so the argument is omitted and
+        attention is unrestricted, exactly as before packing existed.
+        """
         self._check_ids("encoder_input_ids", encoder_input_ids, self.config.max_encoder_length)
-        return self.encoder(encoder_input_ids, encoder_attention_mask)
+        if encoder_segment_ids is not None and encoder_segment_ids.shape != encoder_input_ids.shape:
+            raise ShapeError(
+                f"encoder_segment_ids {tuple(encoder_segment_ids.shape)} must match "
+                f"encoder_input_ids {tuple(encoder_input_ids.shape)}"
+            )
+        return self.encoder(encoder_input_ids, encoder_attention_mask, encoder_segment_ids)
 
     def project(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Decoder hidden states -> vocabulary logits."""
@@ -206,6 +220,7 @@ class RephraseSeq2Seq(nn.Module):
         encoder_hidden_states: torch.Tensor | None = None,
         cache: list[LayerCache] | None = None,
         use_cache: bool = False,
+        encoder_segment_ids: torch.Tensor | None = None,
     ) -> Seq2SeqOutput:
         """
         One training or evaluation step.
@@ -213,11 +228,21 @@ class RephraseSeq2Seq(nn.Module):
         `labels` are the `decoder_target_ids` from the UL2 objective, padded
         with `label_pad_token_id` (-100). Those positions are excluded from
         the loss, which is what stops the model learning to predict padding.
+
+        `encoder_segment_ids` blocks attention across the documents packed
+        into one pretraining window; see `encode`. Only *encoder*
+        self-attention is confined. Decoder self-attention and cross-attention
+        stay unrestricted deliberately: the decoder target is one ordered
+        fill-in-the-blanks sequence whose sentinels already say which document
+        each span came from, and the encoder states it reads are themselves
+        already document-isolated by the time cross-attention sees them.
         """
         self._check_ids("decoder_input_ids", decoder_input_ids, self.config.max_decoder_length)
 
         if encoder_hidden_states is None:
-            encoder_hidden_states = self.encode(encoder_input_ids, encoder_attention_mask)
+            encoder_hidden_states = self.encode(
+                encoder_input_ids, encoder_attention_mask, encoder_segment_ids
+            )
 
         if labels is not None and labels.shape != decoder_input_ids.shape:
             raise ShapeError(

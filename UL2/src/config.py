@@ -129,6 +129,20 @@ class UL2Config:
     # telemetry so it can never happen unnoticed.
     on_overlong_source: str = "error"
 
+    # Ceiling on how many documents `packing.py` may put in one window.
+    #
+    # This is a *safety* bound, not a tuning knob. Every document contributes
+    # at least one span (`plan_span_counts` clamps `num_spans` up to 1), so
+    # without a cap the sentinel requirement of a packed window grows with the
+    # document count and could, for a window full of minimum-length documents,
+    # approach the sentinel budget. `validate_packed_capacity` proves the cap
+    # chosen here is safe before a run starts.
+    #
+    # 64 is far above anything this corpus produces -- its median document is
+    # ~400 tokens, so a 2048-token window holds about five -- and is small
+    # enough that the proof clears the 256-sentinel budget with wide margin.
+    max_documents_per_window: int = 64
+
     def __post_init__(self) -> None:
         if self.max_source_length < MIN_CORRUPTIBLE_LENGTH:
             raise ConfigError(
@@ -151,6 +165,16 @@ class UL2Config:
             raise ConfigError(
                 f"on_overlong_source must be one of {_OVERLONG_POLICIES}, "
                 f"got {self.on_overlong_source!r}"
+            )
+
+        if (
+            not isinstance(self.max_documents_per_window, int)
+            or isinstance(self.max_documents_per_window, bool)
+            or self.max_documents_per_window < 1
+        ):
+            raise ConfigError(
+                f"max_documents_per_window must be a positive integer, "
+                f"got {self.max_documents_per_window!r}"
             )
 
         _validate_mode_weights(self.mode_weights)
@@ -287,6 +311,79 @@ class UL2Config:
                     f"for the mode token and EOS."
                 )
 
+    def worst_case_packed_spans(self, mode: str) -> int:
+        """
+        Upper bound on the sentinels one *packed* window can need.
+
+        `validate_capacity` proves the single-document case, and its proof
+        does not carry over: a packed window corrupts each of its documents
+        separately (`packing.py`), so the window's sentinel requirement is a
+        *sum* of per-document requirements, not one document's requirement.
+        Every document needs at least one span -- `plan_span_counts` clamps
+        `num_spans` up to 1 -- so that sum grows with the document count in a
+        way the single-document scan never measures.
+
+        The bound, for a window of `W` source tokens split into `k`
+        documents:
+
+            spans(L) = round(round(rate x L) / mean),  clamped up to 1
+                     <= rate x L / mean + 1            (for mean >= 1)
+
+            total    = sum over documents of spans(L_i)
+                     <= rate x (sum of L_i) / mean + k
+                     <= rate x W / mean + k
+
+        It is an upper bound rather than an exact maximum, which is the safe
+        direction: a configuration this bound accepts cannot overflow, and one
+        it rejects is refused before the run rather than three hours into it.
+
+        `k` is not simply `max_documents_per_window`: a window of `W` tokens
+        physically cannot hold more than `W / (min_source_length + 2)`
+        documents, since each costs its own length plus a `[MODE]` and a
+        `</s>`. Taking the smaller of the two keeps the bound honest on small
+        configurations — a 64-token test window cannot fit 64 documents, and
+        charging it for them would refuse configurations that are provably
+        safe.
+
+        [S] uses no sentinels and is never packed, so it reports 0.
+        """
+        if mode == "S":
+            return 0
+
+        span_config = self.span_config(mode)
+        proportional = (
+            self.max_source_length * span_config.corruption_rate / span_config.mean_span_length
+        )
+        documents = min(
+            self.max_documents_per_window,
+            max(1, self.max_source_length // (self.min_source_length + 2)),
+        )
+        return int(proportional) + 1 + documents
+
+    def validate_packed_capacity(self, num_sentinels: int) -> None:
+        """
+        Prove packing can never exhaust the sentinel budget.
+
+        Called alongside `validate_capacity` at `UL2Objective` construction,
+        so a run whose `max_documents_per_window` is too large for its
+        sentinel budget is refused at startup rather than producing a
+        `SentinelBudgetExceededError` on whichever window first happens to
+        pack enough short documents.
+        """
+        if num_sentinels < 1:
+            raise ConfigError(f"num_sentinels must be positive, got {num_sentinels}")
+
+        for mode in self.active_modes:
+            needed = self.worst_case_packed_spans(mode)
+            if needed > num_sentinels:
+                raise ConfigError(
+                    f"[{mode}] packed into windows of {self.max_source_length} tokens with "
+                    f"up to max_documents_per_window={self.max_documents_per_window} documents "
+                    f"can need up to {needed} sentinels, but only {num_sentinels} exist. "
+                    f"Lower max_documents_per_window, or raise the sentinel budget -- never "
+                    f"let the packer wrap or drop spans (architecture.md 6.3, 7.4)."
+                )
+
     # -- serialization ----------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
@@ -311,6 +408,7 @@ class UL2Config:
             "append_eos_to_source": self.append_eos_to_source,
             "append_eos_to_target": self.append_eos_to_target,
             "on_overlong_source": self.on_overlong_source,
+            "max_documents_per_window": self.max_documents_per_window,
         }
 
     @classmethod
@@ -333,6 +431,9 @@ class UL2Config:
             append_eos_to_source=data.get("append_eos_to_source", defaults.append_eos_to_source),
             append_eos_to_target=data.get("append_eos_to_target", defaults.append_eos_to_target),
             on_overlong_source=data.get("on_overlong_source", defaults.on_overlong_source),
+            max_documents_per_window=data.get(
+                "max_documents_per_window", defaults.max_documents_per_window
+            ),
         )
 
     def with_(self, **changes: Any) -> "UL2Config":

@@ -43,11 +43,12 @@ from random import Random
 from typing import Any, Iterable, Mapping, Sequence
 
 from .config import FROZEN_EVAL_MODE_WEIGHTS, UL2Config
-from .denoise import Example
+from .denoise import Example, example_from_dict, example_to_dict
 from .errors import FrozenEvalError
 from .mixture import deterministic_schedule
 from .objective import UL2Objective
-from .special_tokens import SpecialTokens
+from .packing import pack_documents
+from .special_tokens import MODES, SpecialTokens
 from .telemetry import MixtureTelemetry
 
 FORMAT_VERSION = 1
@@ -99,7 +100,7 @@ class FrozenEvalSet:
         with temporary.open("w", encoding="utf-8") as handle:
             handle.write(_dumps(self._manifest()) + "\n")
             for example in self.examples:
-                handle.write(_dumps(_example_to_dict(example)) + "\n")
+                handle.write(_dumps(example_to_dict(example)) + "\n")
 
         temporary.replace(path)
         return path
@@ -117,7 +118,7 @@ class FrozenEvalSet:
 
         try:
             manifest = json.loads(lines[0])
-            examples = tuple(_example_from_dict(json.loads(line)) for line in lines[1:] if line)
+            examples = tuple(example_from_dict(json.loads(line)) for line in lines[1:] if line)
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             raise FrozenEvalError(f"frozen eval set {path} is malformed: {exc}") from exc
 
@@ -169,6 +170,7 @@ def build_frozen_eval_set(
     seed: int,
     mode_weights: Mapping[str, float] = FROZEN_EVAL_MODE_WEIGHTS,
     max_examples: int | None = None,
+    pack: bool = False,
 ) -> FrozenEvalSet:
     """
     Build a frozen validation set from held-out token sequences.
@@ -176,6 +178,19 @@ def build_frozen_eval_set(
     Sequences that the objective would skip (too short, or too long under an
     "error" policy) are filtered out *before* modes are apportioned, so the
     mode counts are exact rather than approximately right.
+
+    `pack` must match how *training* assembles its examples. A packed run
+    evaluated on an unpacked set is measuring a different distribution from
+    the one it is learning -- the examples would be a fraction of the window
+    length, with none of the packing structure -- and that loss is what
+    selects the best checkpoint (`training/src/loop.py`'s master `EvalTier`).
+    Getting this wrong is silent: both sets build, both produce a plausible
+    loss, and the two are simply not comparable.
+
+    Apportionment stays exact **per document** when packing: every document is
+    still scored under exactly one mode, and the modes still get equal
+    document counts. What differs is the number of windows per mode, since
+    `[R]`/`[X]` pack many documents into one window and `[S]` never packs.
     """
     objective = UL2Objective(config, specials)
 
@@ -197,9 +212,13 @@ def build_frozen_eval_set(
 
     schedule = deterministic_schedule(mode_weights, len(admissible))
 
-    examples: list[Example] = []
-    for index, (tokens, mode) in enumerate(zip(admissible, schedule)):
-        examples.append(objective.corrupt(tokens, _derive_rng(seed, index), mode=mode))
+    if pack:
+        examples = _build_packed_examples(admissible, schedule, objective, config, seed)
+    else:
+        examples = [
+            objective.corrupt(tokens, _derive_rng(seed, index), mode=mode)
+            for index, (tokens, mode) in enumerate(zip(admissible, schedule))
+        ]
 
     frozen = tuple(examples)
     return FrozenEvalSet(
@@ -211,6 +230,62 @@ def build_frozen_eval_set(
     )
 
 
+def _build_packed_examples(
+    admissible: Sequence[Sequence[int]],
+    schedule: Sequence[str],
+    objective: UL2Objective,
+    config: UL2Config,
+    seed: int,
+) -> list[Example]:
+    """
+    Assemble packed windows for a frozen set, deterministically.
+
+    Documents keep the mode the apportionment gave them, then are grouped by
+    that mode and packed within the group -- `[S]` one document per window
+    (it is never packed), `[R]`/`[X]` as many as the window budget allows.
+
+    Each window's RNG is derived from its **first document's** index, so a
+    window's corruption depends only on the seed and a stable index, keeping
+    the per-example seeding property the module docstring describes.
+    """
+    by_mode: dict[str, list[tuple[int, Sequence[int]]]] = {}
+    for index, (tokens, mode) in enumerate(zip(admissible, schedule)):
+        by_mode.setdefault(mode, []).append((index, tokens))
+
+    examples: list[Example] = []
+    # Iterated in the canonical mode order rather than dict order, so the set
+    # a given seed produces does not depend on which mode happened to appear
+    # first in the apportionment.
+    for mode in MODES:
+        items = by_mode.get(mode, [])
+        if not items:
+            continue
+
+        if mode == "S":
+            for index, tokens in items:
+                examples.append(
+                    objective.corrupt_packed([tokens], _derive_rng(seed, index), mode="S")
+                )
+            continue
+
+        position = 0
+        while position < len(items):
+            remaining = [tokens for _, tokens in items[position:]]
+            count = pack_documents(
+                remaining,
+                window_budget=config.max_source_length,
+                max_documents=config.max_documents_per_window,
+            )
+            window = [tokens for _, tokens in items[position : position + count]]
+            first_index = items[position][0]
+            examples.append(
+                objective.corrupt_packed(window, _derive_rng(seed, first_index), mode=mode)
+            )
+            position += count
+
+    return examples
+
+
 def _derive_rng(seed: int, index: int) -> Random:
     """Per-example RNG, stable across platforms and Python versions."""
     material = hashlib.sha256(f"{seed}:{index}".encode("utf-8")).digest()
@@ -220,7 +295,7 @@ def _derive_rng(seed: int, index: int) -> Random:
 def _digest(examples: Sequence[Example]) -> str:
     hasher = hashlib.sha256()
     for example in examples:
-        hasher.update(_dumps(_example_to_dict(example)).encode("utf-8"))
+        hasher.update(_dumps(example_to_dict(example)).encode("utf-8"))
         hasher.update(b"\n")
     return hasher.hexdigest()
 
@@ -230,27 +305,3 @@ def _dumps(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def _example_to_dict(example: Example) -> dict[str, Any]:
-    return {
-        "mode": example.mode,
-        "encoder_input_ids": list(example.encoder_input_ids),
-        "decoder_target_ids": list(example.decoder_target_ids),
-        "decoder_input_ids": list(example.decoder_input_ids),
-        "source_length": example.source_length,
-        "num_spans": example.num_spans,
-        "num_corrupted_tokens": example.num_corrupted_tokens,
-        "truncated": example.truncated,
-    }
-
-
-def _example_from_dict(payload: Mapping[str, Any]) -> Example:
-    return Example(
-        mode=payload["mode"],
-        encoder_input_ids=tuple(payload["encoder_input_ids"]),
-        decoder_target_ids=tuple(payload["decoder_target_ids"]),
-        decoder_input_ids=tuple(payload["decoder_input_ids"]),
-        source_length=payload["source_length"],
-        num_spans=payload["num_spans"],
-        num_corrupted_tokens=payload["num_corrupted_tokens"],
-        truncated=payload["truncated"],
-    )

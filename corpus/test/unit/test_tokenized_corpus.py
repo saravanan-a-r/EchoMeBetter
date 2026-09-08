@@ -60,13 +60,26 @@ def test_skips_unusable_lines_without_raising(corpus_dir, fake_processor):
     assert corpus.lines_skipped_unusable == 1
 
 
-def test_multiline_jsonl_record_expands_to_multiple_examples(corpus_dir, fake_processor):
+def test_multiline_jsonl_record_stays_one_example(corpus_dir, fake_processor):
+    """
+    A record is one document, so it is one example — its internal newlines are
+    structure to be learned, not separators to split on.
+
+    This test asserted the opposite until packing landed: the reader used to
+    split on newlines, which turned a ~400-token document into ~6.5 fragments
+    of ~61 tokens, left the average example far below the 2048-token context
+    the model is sized for, and made batches mostly padding. The behaviour
+    was deliberately reversed; the assertion is inverted to match, so a
+    regression to line-splitting fails here.
+    """
     write_jsonl(corpus_dir / "a.jsonl", [{"text": "line one\nline two"}])
     corpus = TokenizedCorpus([corpus_dir / "a.jsonl"], fake_processor, seed=0)
-    first, second = next(corpus), next(corpus)
-    assert first != second
+
+    only = next(corpus)
     assert corpus.lines_read == 1
-    assert corpus.examples_emitted == 2
+    assert corpus.examples_emitted == 1
+    # Both lines are present in the single example, joined by a newline.
+    assert only == fake_processor.encode("line one\nline two")
 
 
 def test_state_dict_round_trips_through_json(corpus_dir, fake_processor):

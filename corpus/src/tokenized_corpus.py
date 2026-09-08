@@ -27,17 +27,18 @@ A deterministic shuffle, fixed for the life of the run, is what makes
 the state as a plain list, so resuming never has to re-derive "what would the
 shuffle at epoch N have produced" — it just is the order.
 
-Known trade-off, stated rather than hidden
--------------------------------------------
-A JSONL record whose `"text"` field contains embedded newlines expands into
-several tokenized examples per raw line. Only whole raw lines are counted in
-the resumable position, not the sub-segments within one. A crash mid-record
-therefore re-reads that one record from its start on resume rather than
-resuming mid-segment — at most one record's worth of examples is skipped
-(never duplicated, since the raw line is only marked consumed after every
-segment from it has been produced). For a multi-week run over millions of
-records this is noise; it is called out here rather than silently traded
-away, per the project's "fail loudly, never silently" principle.
+One record in, one sequence out
+-------------------------------
+A JSONL record is emitted as a single tokenized sequence, with its internal
+line structure preserved (`reader.join_record_lines`). It is *not* split into
+one example per line: that would discard the document structure the model is
+being taught, and would leave the average example far shorter than the
+context the model was sized for.
+
+That also makes the resumable position exact. A record is the unit both of
+iteration and of the saved position, so resuming re-reads no partial record
+and skips none — the earlier caveat about resuming mid-record no longer
+applies, because there is no longer a sub-record unit to be in the middle of.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .errors import CorpusConfigError
-from .reader import extract_text, is_jsonl
+from .reader import extract_text, is_jsonl, join_record_lines
 from .tokenizer_interop import escape_markers
 
 
@@ -77,7 +78,6 @@ class TokenizedCorpus:
         self._line = 0
         self.epoch = 0
         self._fh = None
-        self._pending: list[str] = []
 
         # Visible, not just internal: a run whose corpus is mostly malformed
         # or mostly oversized should be discoverable without instrumenting
@@ -94,15 +94,26 @@ class TokenizedCorpus:
         return self
 
     def __next__(self) -> list[int]:
-        while True:
-            if self._pending:
-                segment = self._pending.pop(0)
-                ids = self._tokenize(segment)
-                if ids:
-                    self.examples_emitted += 1
-                    return ids
-                continue
+        """
+        The next **whole record**, tokenized.
 
+        One record in, one sequence out. This is deliberately not one sequence
+        per line: a record's newline-separated lines are parts of one
+        document, and training on them separately throws away the document
+        structure that makes them mean anything — a man page's example split
+        from the paragraph explaining it, a book's sentence split from its
+        paragraph. Measured over this corpus, splitting on newlines turns an
+        average 401-token record into 6.5 examples of ~61 tokens each, so a
+        batch padded to its longest member is then mostly `<pad>` and the
+        model never sees an input long enough to exercise the 2048-token
+        context it was sized for.
+
+        Line structure inside the record is preserved by rejoining with
+        newlines, so the model still learns where lines break — the tokenizer
+        keeps them (`allow_whitespace_only_pieces`, byte fallback), and
+        document shape is exactly what a rewriting model needs to reproduce.
+        """
+        while True:
             raw = self._fh.readline()
             if raw == "":
                 self._advance_file()
@@ -114,7 +125,16 @@ class TokenizedCorpus:
             if text is None:
                 self.lines_skipped_unusable += 1
                 continue
-            self._pending = [s.strip() for s in text.split("\n") if s.strip()]
+
+            record = join_record_lines(text)
+            if not record:
+                self.lines_skipped_unusable += 1
+                continue
+
+            ids = self._tokenize(record)
+            if ids:
+                self.examples_emitted += 1
+                return ids
 
     def _tokenize(self, segment: str) -> list[int]:
         return self.sp.encode(escape_markers(segment), out_type=int)
@@ -135,7 +155,6 @@ class TokenizedCorpus:
     def _advance_file(self) -> None:
         self._pos += 1
         self._line = 0
-        self._pending = []
         if self._pos >= len(self._order):
             self._pos = 0
             self.epoch += 1
@@ -163,7 +182,6 @@ class TokenizedCorpus:
         self._order = list(order)
         self._pos = int(state["pos"])
         self._line = 0
-        self._pending = []
         self.epoch = int(state["epoch"])
         self._open_current()
 

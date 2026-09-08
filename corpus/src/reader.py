@@ -91,14 +91,55 @@ def extract_text(raw_line: str, jsonl: bool) -> str | None:
     return text
 
 
+def join_record_lines(text: str) -> str:
+    """
+    Normalize one record's text into the document the model trains on.
+
+    Blank lines and leading/trailing whitespace on each line are dropped, and
+    what remains is rejoined with newlines. So a record stays **one** document
+    with its line structure intact, rather than becoming a handful of
+    unrelated fragments.
+
+    Single source of truth for that normalization, shared by
+    `TokenizedCorpus` (training) and `iter_records` (held-out evaluation).
+    If the two disagreed, a run would be evaluated on differently-shaped text
+    from the text it trained on, and the eval loss driving best-checkpoint
+    selection would be measuring the wrong distribution — silently, since both
+    paths would still produce a plausible number.
+    """
+    lines = [line.strip() for line in text.split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
+def iter_records(files: list[Path]) -> Iterator[str]:
+    """
+    Stream every usable **record** from `files`, in file order, as one string
+    each with its internal line structure preserved.
+
+    The held-out counterpart of `TokenizedCorpus`'s iteration, and shaped the
+    same way on purpose — see `join_record_lines`.
+    """
+    for path in files:
+        jsonl = is_jsonl(path)
+        with open(path, encoding="utf-8") as fh:
+            for raw_line in fh:
+                text = extract_text(raw_line.rstrip("\n").rstrip("\r"), jsonl)
+                if text is None:
+                    continue
+                record = join_record_lines(text)
+                if record:
+                    yield record
+
+
 def iter_lines(files: list[Path]) -> Iterator[str]:
     """
-    Stream every non-empty text segment from `files`, in file order.
+    Stream every non-empty **line** from `files`, in file order.
 
-    A stateless, non-resumable convenience for tests and one-off inspection.
-    `TokenizedCorpus` does not use this directly — it needs to track its
-    position line-by-line to be resumable — but reuses `extract_text` so
-    the two paths cannot disagree about what counts as a usable line.
+    Retained for tests and one-off inspection. **Not** what training or
+    evaluation uses: both consume whole records via `iter_records` /
+    `TokenizedCorpus`, because a line on its own is a fragment of a document
+    rather than a document. Reaching for this in a data path is almost
+    certainly a mistake.
     """
     for path in files:
         jsonl = is_jsonl(path)

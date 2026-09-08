@@ -193,3 +193,75 @@ def test_empty_batch_rejected(specials):
 def test_invalid_multiple_rejected(specials):
     with pytest.raises(UL2Error, match="pad_to_multiple_of"):
         pad_batch(_examples(specials), specials, pad_to_multiple_of=0)
+
+
+# -- packed windows -------------------------------------------------------
+#
+# `encoder_segment_ids` tells the model which packed document each position
+# belongs to (`src/packing.py`). Two rules matter and neither is visible in a
+# loss curve if broken: the key must be absent for ordinary unpacked batches,
+# so nothing about the pre-packing path changes; and padding must never share
+# a segment with real content, or a padded position would fall inside a
+# document's attention block.
+
+
+def _packed_example(specials, documents, mode="R", seed=0):
+    import random
+
+    from src.packing import build_packed_span_corruption
+
+    return build_packed_span_corruption(
+        documents,
+        mode,
+        specials,
+        random.Random(seed),
+        corruption_rate=0.15,
+        mean_span_length=3.0,
+    )
+
+
+def test_an_unpacked_batch_carries_no_segment_ids(specials):
+    assert "encoder_segment_ids" not in pad_batch(_examples(specials), specials)
+
+
+def test_a_packed_batch_carries_one_segment_id_per_encoder_position(specials):
+    example = _packed_example(specials, [make_tokens(40), make_tokens(60)])
+    batch = pad_batch([example], specials)
+    assert len(batch["encoder_segment_ids"][0]) == len(batch["encoder_input_ids"][0])
+
+
+def test_padding_never_shares_a_segment_with_a_document(specials):
+    long_example = _packed_example(specials, [make_tokens(60), make_tokens(80)])
+    short_example = _packed_example(specials, [make_tokens(20)])
+    batch = pad_batch([long_example, short_example], specials)
+
+    for segments, mask in zip(batch["encoder_segment_ids"], batch["encoder_attention_mask"]):
+        for segment, attended in zip(segments, mask):
+            # Segment 0 is the padding segment, and it must coincide exactly
+            # with the positions the attention mask already excludes.
+            assert (segment == 0) == (attended == 0)
+
+
+def test_an_unpacked_example_in_a_packed_batch_is_one_whole_document(specials):
+    """
+    Mixed batches happen: [S] is never packed, so an [S] example sits beside
+    packed [R]/[X] ones. The unpacked example must read as a single document,
+    not inherit segment 0 (padding) and be masked out of its own attention.
+    """
+    packed = _packed_example(specials, [make_tokens(40), make_tokens(40)])
+    plain = build_prefix_denoising(make_tokens(50), 20, specials)
+    batch = pad_batch([packed, plain], specials)
+
+    real_length = plain.encoder_length
+    plain_segments = batch["encoder_segment_ids"][1]
+    assert set(plain_segments[:real_length]) == {1}
+    assert set(plain_segments[real_length:]) <= {0}
+
+
+def test_segment_ids_that_do_not_match_the_encoder_are_refused(specials):
+    from dataclasses import replace
+
+    example = _packed_example(specials, [make_tokens(40), make_tokens(40)])
+    damaged = replace(example, segment_ids=example.segment_ids[:-3])
+    with pytest.raises(UL2Error, match="segment ids"):
+        pad_batch([damaged], specials)

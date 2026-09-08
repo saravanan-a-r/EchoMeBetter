@@ -33,7 +33,7 @@ that a loss curve would never reveal.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .errors import UL2Error
 from .special_tokens import SpecialTokens
@@ -59,6 +59,21 @@ class Example:
     num_corrupted_tokens: int
     truncated: bool = False
 
+    # Which document each encoder position belongs to, when several documents
+    # were packed into one window (`packing.py`). Empty for an unpacked
+    # example, which is what every existing caller produces -- so this stays a
+    # pure addition: a batch built from unpacked examples carries no segment
+    # ids and the model's attention behaves exactly as it did before.
+    #
+    # Segment 0 is reserved for padding; documents are numbered from 1.
+    segment_ids: tuple[int, ...] = ()
+    num_documents: int = 1
+
+    @property
+    def is_packed(self) -> bool:
+        """Whether this example holds more than one document in one window."""
+        return self.num_documents > 1
+
     @property
     def realized_corruption_rate(self) -> float:
         """
@@ -79,6 +94,51 @@ class Example:
     @property
     def target_length(self) -> int:
         return len(self.decoder_target_ids)
+
+
+def example_to_dict(example: Example) -> dict[str, object]:
+    """
+    An `Example` as JSON-safe plain data.
+
+    Lives next to `Example` rather than in either of its two callers, because
+    both the frozen eval set (`frozen_eval.py`, where the encoding feeds a
+    digest) and the resumable length-bucketing pool (`length_batching.py`,
+    where it feeds a checkpoint) need the same encoding. Duplicating it would
+    let the two drift, and one of the two is a digest that must never move.
+    """
+    payload: dict[str, object] = {
+        "mode": example.mode,
+        "encoder_input_ids": list(example.encoder_input_ids),
+        "decoder_target_ids": list(example.decoder_target_ids),
+        "decoder_input_ids": list(example.decoder_input_ids),
+        "source_length": example.source_length,
+        "num_spans": example.num_spans,
+        "num_corrupted_tokens": example.num_corrupted_tokens,
+        "truncated": example.truncated,
+    }
+    # Emitted only when the example is packed, so an unpacked frozen set
+    # serializes byte-identically to one written before packing existed and
+    # its digest is unchanged.
+    if example.segment_ids:
+        payload["segment_ids"] = list(example.segment_ids)
+        payload["num_documents"] = example.num_documents
+    return payload
+
+
+def example_from_dict(payload: Mapping[str, object]) -> Example:
+    """Inverse of `example_to_dict`."""
+    return Example(
+        mode=payload["mode"],
+        encoder_input_ids=tuple(payload["encoder_input_ids"]),
+        decoder_target_ids=tuple(payload["decoder_target_ids"]),
+        decoder_input_ids=tuple(payload["decoder_input_ids"]),
+        source_length=payload["source_length"],
+        num_spans=payload["num_spans"],
+        num_corrupted_tokens=payload["num_corrupted_tokens"],
+        truncated=payload["truncated"],
+        segment_ids=tuple(payload.get("segment_ids", ())),
+        num_documents=int(payload.get("num_documents", 1)),
+    )
 
 
 def build_span_corruption(
