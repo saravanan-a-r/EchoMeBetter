@@ -23,6 +23,7 @@
 #   weight_decay  adam_beta1  adam_beta2  adam_epsilon  max_grad_norm
 #   per_device_train_batch_size  gradient_accumulation_steps
 #   gradient_checkpointing  bf16  fp16  label_smoothing_factor
+#   torch_compile  torch_compile_backend  torch_compile_mode
 #   logging_steps  eval_steps  save_steps  save_total_limit
 #   metric_for_best_model  greater_is_better  load_best_model_at_end
 #   resume_from_checkpoint
@@ -107,6 +108,15 @@ defaults:
   gradient_checkpointing: true # §13: on. ~30% slower, much less activation memory
   bf16: true                   # §13: bf16 mixed precision
   fp16: false                  # rejected by the loader; see config.py for why
+
+  # --- compilation (item 3: SDPA + torch.compile) ------------------------------
+  # Off by default here — a per-stage choice, not a global one. `torch.compile`
+  # pays for its own startup recompilation cost on a long, fixed-shape run and
+  # is a poor trade on the short, small, sometimes-different-hardware rehearsal
+  # (§7.8); see the `pretrain` stage below for where it is actually turned on.
+  torch_compile: false
+  torch_compile_backend: null  # null -> torch.compile's own default ("inductor")
+  torch_compile_mode: null     # null -> torch.compile's own default mode
 
   # --- loss -------------------------------------------------------------------
   # Must equal `label_smoothing` in model_config.yml — the model computes the
@@ -207,6 +217,13 @@ stages:
     dropout_rate: 0.0
     label_smoothing_factor: 0.0
     output_dir: runs/pretrain
+    # Item 3: fused SDPA attention (model/src/attention.py) plus graph
+    # capture. "reduce-overhead" is the mode architecture_improvements.md
+    # recommends for training — it trades a one-time recompilation per shape
+    # for cudagraphs that cut per-step kernel-launch overhead, which is worth
+    # it exactly here: a fixed shape, fixed hardware, 200,000-step run.
+    torch_compile: true
+    torch_compile_mode: reduce-overhead
 
   # architecture.md §8.1 — supervised fine-tuning on rephrase pairs.
   # Cosine here, not inverse_sqrt: an SFT run has a known, short horizon, and

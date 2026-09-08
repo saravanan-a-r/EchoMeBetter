@@ -843,6 +843,58 @@ def test_gradient_checkpointing_on_a_model_that_cannot_is_refused(training_confi
         )
 
 
+def test_torch_compile_is_off_by_default(tiny_model, training_config):
+    """HuggingFace's own default: `torch.compile` only runs when asked."""
+    driver = trainer(tiny_model, training_config)
+    assert driver._forward_model is driver.model
+
+
+def test_torch_compile_wraps_only_the_forward_path(tiny_model, training_config):
+    """
+    `self.model` must stay the plain, uncompiled module — checkpointing,
+    `.train()`/`.eval()` and gradient clipping all key off it — while only
+    `_forward_model` (used solely to run the model) is ever compiled.
+    `test_a_compiled_trainers_checkpoint_has_ordinary_weight_names` below is
+    what breaks if that ever changes.
+    """
+    driver = trainer(tiny_model, training_config.with_(torch_compile=True))
+    assert driver.model is tiny_model
+    assert driver._forward_model is not driver.model
+
+
+def test_a_compiled_trainers_checkpoint_has_ordinary_weight_names(
+    tmp_path, tiny_model, training_config
+):
+    """
+    The regression this whole feature could have introduced: `torch.compile`
+    wraps a module in one whose own `state_dict()`/`named_parameters()`
+    prefix every key with `_orig_mod.`. If `Trainer.save` ever serialized
+    that wrapper instead of the plain module, the checkpoint would carry
+    `_orig_mod.`-prefixed weight names — and `load_huggingface_state_dict`'s
+    `strict=False` load absorbs a wholesale key mismatch without raising, so
+    a resumed run would silently keep its random initialization forever.
+    Compiling never actually runs here (saving needs no forward pass), so
+    this stays a fast test despite exercising `torch_compile=True`.
+    """
+    driver = trainer(
+        tiny_model,
+        training_config.with_(torch_compile=True, output_dir=str(tmp_path)),
+    )
+    directory = driver.save(1)
+
+    from safetensors.torch import load_file
+
+    weights = load_file(str(directory / rephrase_model.huggingface.WEIGHTS_FILE))
+    assert weights
+    assert not any(name.startswith("_orig_mod.") for name in weights)
+
+    fresh = rephrase_model.build_model(driver.model.config, verify=False)
+    rephrase_model.load_huggingface_state_dict(fresh, weights)
+    original = dict(driver.model.named_parameters())
+    for name, parameter in fresh.named_parameters():
+        assert torch.equal(parameter, original[name])
+
+
 def test_a_supplied_optimizer_is_used_rather_than_replaced(tiny_model, training_config):
     optimizer = build_optimizer(tiny_model, training_config)
     assert trainer(tiny_model, training_config, optimizer=optimizer).optimizer is optimizer

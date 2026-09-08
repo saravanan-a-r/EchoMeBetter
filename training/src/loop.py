@@ -86,6 +86,13 @@ REQUIRED_KEYS = (
     "labels",
 )
 
+# Keys a batch *may* carry, moved to the device when present and ignored when
+# absent. `encoder_segment_ids` appears only when the batch holds packed
+# windows (`UL2/src/packing.py`); a batch without it takes exactly the path it
+# took before packing existed, which is what keeps packing an addition rather
+# than a change to every existing caller.
+OPTIONAL_KEYS = ("encoder_segment_ids",)
+
 Batch = Mapping[str, Any]
 
 
@@ -183,6 +190,29 @@ class Trainer:
                 )
             model.enable_gradient_checkpointing()
 
+        # `self.model` stays the uncompiled module for everything that is not
+        # a forward pass: checkpointing (`rephrase_model.save_pretrained` /
+        # `load_huggingface_state_dict` build their state dicts from
+        # `named_parameters()`), `.train()`/`.eval()`, gradient clipping, and
+        # the `getattr(self.model, "config", ...)` lookups below. That matters
+        # because `torch.compile` returns a wrapper whose own `state_dict()`
+        # prefixes every key with `_orig_mod.` — feeding that wrapper to the
+        # checkpoint code would silently save/load the wrong key names (a
+        # `strict=False` load absorbs the mismatch without erroring, so the
+        # model would keep its random init and nothing would say why). Only
+        # `_forward_model`, used solely inside `accumulate`/`evaluate`/
+        # `_track` to run the model, is ever compiled; `.train()`/`.eval()`
+        # called on `self.model` still governs it correctly, since compiling
+        # wraps the same module instance rather than copying it.
+        self._forward_model = self.model
+        if config.torch_compile:
+            compile_kwargs: dict[str, Any] = {}
+            if config.torch_compile_backend is not None:
+                compile_kwargs["backend"] = config.torch_compile_backend
+            if config.torch_compile_mode is not None:
+                compile_kwargs["mode"] = config.torch_compile_mode
+            self._forward_model = torch.compile(self.model, **compile_kwargs)
+
         torch.manual_seed(config.seed)
 
     # -- consistency ------------------------------------------------------
@@ -238,12 +268,13 @@ class Trainer:
         for micro_batch in micro_batches:
             batch = self._to_device(micro_batch)
             with self._autocast():
-                output = self.model(
+                output = self._forward_model(
                     encoder_input_ids=batch["encoder_input_ids"],
                     decoder_input_ids=batch["decoder_input_ids"],
                     encoder_attention_mask=batch["encoder_attention_mask"],
                     decoder_attention_mask=batch["decoder_attention_mask"],
                     labels=batch["labels"],
+                    encoder_segment_ids=batch.get("encoder_segment_ids"),
                 )
             tokens = float(
                 (batch["labels"] != self._label_pad_token_id()).sum().item()
@@ -427,11 +458,12 @@ class Trainer:
                         break
                     prepared = self._to_device(batch)
                     with self._autocast():
-                        output = self.model(
+                        output = self._forward_model(
                             encoder_input_ids=prepared["encoder_input_ids"],
                             decoder_input_ids=prepared["decoder_input_ids"],
                             encoder_attention_mask=prepared["encoder_attention_mask"],
                             decoder_attention_mask=prepared["decoder_attention_mask"],
+                            encoder_segment_ids=prepared.get("encoder_segment_ids"),
                         )
                     totals, counts = per_example_losses(
                         output.logits,
@@ -606,11 +638,12 @@ class Trainer:
                         continue
                     prepared = self._to_device(micro_batch)
                     with self._autocast():
-                        output = self.model(
+                        output = self._forward_model(
                             encoder_input_ids=prepared["encoder_input_ids"],
                             decoder_input_ids=prepared["decoder_input_ids"],
                             encoder_attention_mask=prepared["encoder_attention_mask"],
                             decoder_attention_mask=prepared["decoder_attention_mask"],
+                            encoder_segment_ids=prepared.get("encoder_segment_ids"),
                         )
                     totals, counts = per_example_losses(
                         output.logits,
@@ -645,9 +678,10 @@ class Trainer:
         # every other backend so a batch is either transferred correctly or
         # not transferred; it is never observed half-done.
         non_blocking = self.device.type == "cuda"
+        keys = [*REQUIRED_KEYS, *(key for key in OPTIONAL_KEYS if key in batch)]
         return {
             key: _as_tensor(batch[key]).to(self.device, non_blocking=non_blocking)
-            for key in REQUIRED_KEYS
+            for key in keys
         }
 
     def _label_pad_token_id(self) -> int:

@@ -71,6 +71,32 @@ def test_an_unknown_schedule_is_refused():
         config(lr_scheduler_type="triangular")
 
 
+def test_an_unknown_torch_compile_mode_is_refused():
+    """
+    `torch.compile` itself only raises this at the first forward call, deep
+    into a run — catching the typo here means it fails before a single batch
+    runs instead of after the model, optimizer and data pipeline have all
+    already spun up.
+    """
+    with pytest.raises(TrainingConfigError, match="torch_compile_mode"):
+        config(torch_compile_mode="not-a-real-mode")
+
+
+def test_torch_compile_mode_is_optional():
+    assert config(torch_compile_mode=None).torch_compile_mode is None
+
+
+def test_torch_compile_is_off_by_default():
+    """
+    Matches HuggingFace's own default. Also matters for every stage block and
+    fixture that predates this feature: they must keep working unchanged.
+    """
+    settings = config()
+    assert settings.torch_compile is False
+    assert settings.torch_compile_backend is None
+    assert settings.torch_compile_mode is None
+
+
 @pytest.mark.parametrize(
     "field", ["weight_decay", "warmup_ratio", "label_smoothing_factor", "min_lr_ratio"]
 )
@@ -320,6 +346,20 @@ def test_gradient_checkpointing_and_bf16_are_on_for_pretraining():
 def test_resumption_defaults_on():
     """§7.9: a 50-100B token run *will* be interrupted."""
     assert load_training_config(stage="pretrain").resume_from_checkpoint is True
+
+
+def test_torch_compile_is_on_for_pretraining_but_not_for_rehearsal():
+    """
+    Item 3: on for the long, fixed-shape, fixed-hardware run it was measured
+    for; left off for the short rehearsal (§7.8), which may run on different
+    hardware and gets little back for `torch.compile`'s startup cost.
+    """
+    pretrain = load_training_config(stage="pretrain")
+    assert pretrain.torch_compile is True
+    assert pretrain.torch_compile_mode == "reduce-overhead"
+
+    rehearsal = load_training_config(stage="rehearsal")
+    assert rehearsal.torch_compile is False
 
 
 def test_the_rehearsal_stage_builds_the_base_profile():

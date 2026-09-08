@@ -24,6 +24,32 @@ negative value where it is forbidden. `torch.finfo(dtype).min` is used rather
 than `-inf` so that a row which is entirely masked produces a uniform
 distribution instead of NaN — a fully-padded row is possible in a real batch
 and must not poison the whole loss.
+
+The attention kernel
+---------------------
+The core `matmul -> mask -> softmax -> dropout -> matmul` arithmetic runs
+through `torch.nn.functional.scaled_dot_product_attention` (SDPA) rather than
+those five lines written out by hand. SDPA dispatches to a fused CUDA kernel
+(flash attention or memory-efficient attention, whichever supports the given
+mask/dtype) when one is available, and falls back to mathematically the same
+computation otherwise — so this is a kernel-selection change, not an
+arithmetic one. It is given:
+
+  - `attn_mask` = `position_bias + attention_mask` (whichever of the two are
+    present, summed — the same value the manual version added to the scores
+    before its softmax, just computed once instead of via two `+=`);
+  - `scale=self.scale`, so SDPA's own default `1/sqrt(head_dim)` scaling is
+    replaced with T5's convention (see above): `1.0` normally, or
+    `d_kv^-0.5` when `scale_attention_scores` is on;
+  - `dropout_p=self.dropout.p if self.training else 0.0`, which is SDPA's own
+    dropout applied to the post-softmax weights — the same place
+    `self.dropout` used to be called, and off in eval for the same reason
+    `nn.Dropout` is a no-op in eval.
+
+Fused kernels accumulate the softmax in float32 internally regardless of the
+input dtype, which is what the old manual `.float()` upcast was doing by
+hand — so this is not a numerical-stability regression under bf16 training,
+it is the same safeguard moved into the kernel.
 """
 
 from __future__ import annotations
@@ -143,22 +169,39 @@ class MultiHeadAttention(nn.Module):
                 key = torch.cat([past_key, key], dim=2)
                 value = torch.cat([past_value, value], dim=2)
 
-        scores = torch.matmul(query, key.transpose(-1, -2))
-        if self.scale != 1.0:
-            scores = scores * self.scale
-        if position_bias is not None:
-            scores = scores + position_bias
-        if attention_mask is not None:
-            scores = scores + attention_mask
+        attn_mask = _combine_additive_masks(position_bias, attention_mask)
+        attended = F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout.p if self.training else 0.0,
+            scale=self.scale,
+        )
 
-        weights = F.softmax(scores.float(), dim=-1).to(scores.dtype)
-        weights = self.dropout(weights)
-
-        output = self.o_proj(self._merge_heads(torch.matmul(weights, value)))
+        output = self.o_proj(self._merge_heads(attended))
 
         if use_cache:
             return output, key, value
         return output, None, None
+
+
+def _combine_additive_masks(
+    position_bias: torch.Tensor | None,
+    attention_mask: torch.Tensor | None,
+) -> torch.Tensor | None:
+    """
+    Sum the two additive masks SDPA takes as a single `attn_mask` argument.
+
+    Order does not matter (addition commutes), and this is exactly what the
+    manual implementation did as two separate `scores +=` lines before its
+    softmax.
+    """
+    if position_bias is None:
+        return attention_mask
+    if attention_mask is None:
+        return position_bias
+    return position_bias + attention_mask
 
 
 def build_padding_mask(

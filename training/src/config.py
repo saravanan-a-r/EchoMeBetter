@@ -19,6 +19,7 @@ field's exact name and meaning**, for the same reason the model config uses
     weight_decay  adam_beta1  adam_beta2  adam_epsilon  max_grad_norm
     per_device_train_batch_size  gradient_accumulation_steps
     gradient_checkpointing  bf16  fp16  label_smoothing_factor
+    torch_compile  torch_compile_backend  torch_compile_mode
     logging_steps  eval_steps  save_steps  save_total_limit
     metric_for_best_model  greater_is_better  load_best_model_at_end
     resume_from_checkpoint
@@ -64,6 +65,15 @@ _STAGE_FIELDS = frozenset(
         "gradient_accumulation_steps",
         "model_profile",
         "output_dir",
+        # torch_compile is genuinely a per-stage choice, not a global one: the
+        # pretrain stage runs for weeks on a fixed GPU and shape, exactly where
+        # `torch.compile`'s startup recompilation cost pays for itself, while a
+        # short, small-shape rehearsal (§7.8) — sometimes run on a different
+        # card entirely — is exactly where forcing it on would be riskiest for
+        # the least benefit.
+        "torch_compile",
+        "torch_compile_backend",
+        "torch_compile_mode",
         # A short stage (the §7.8 rehearsal is 2,000 steps) would never reach a
         # 20,000-step master evaluation, so the cadences have to be settable
         # per stage or the rehearsal cannot rehearse the thing it exists to
@@ -71,6 +81,13 @@ _STAGE_FIELDS = frozenset(
         "quick_eval_steps",
         "master_eval_steps",
     }
+)
+
+# `torch.compile`'s own accepted `mode=` values (it validates these itself,
+# but only at the first forward call — see the `torch_compile_mode` check
+# below for why that is too late to be useful).
+TORCH_COMPILE_MODES = frozenset(
+    {"default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"}
 )
 
 # Fields this project has that `transformers.TrainingArguments` does not.
@@ -170,6 +187,19 @@ class TrainingConfig:
     # invite the two to disagree.
     quick_eval_steps: int = 1000
     master_eval_steps: int = 20000
+
+    # -- compilation (item 3: SDPA + torch.compile) ------------------------
+    # Shared with TrainingArguments (same names, same meaning, same defaults:
+    # off unless asked for), but defaulted here — unlike gradient_checkpointing
+    # and bf16 above — so every existing stage block and test fixture that
+    # predates this feature keeps loading unchanged. `loop.py`'s `Trainer`
+    # compiles only the forward path used for training/eval (see its own
+    # comment on `_forward_model`); checkpointing always addresses the
+    # uncompiled module, so a compiled run's checkpoint is byte-identical in
+    # shape to an uncompiled one's.
+    torch_compile: bool = False
+    torch_compile_backend: str | None = None
+    torch_compile_mode: str | None = None
 
     def __post_init__(self) -> None:
         positive = {
@@ -271,6 +301,16 @@ class TrainingConfig:
                 f"num_cycles must be positive, got {self.num_cycles}"
             )
 
+        if self.torch_compile_mode is not None and self.torch_compile_mode not in TORCH_COMPILE_MODES:
+            raise TrainingConfigError(
+                f"torch_compile_mode must be one of {sorted(TORCH_COMPILE_MODES)} or "
+                f"absent, got {self.torch_compile_mode!r}. `torch.compile` itself only "
+                f"raises this at the first forward call, not when it is constructed — "
+                f"catching it here means a typo fails before a single batch runs "
+                f"rather than after the model, optimizer and data pipeline have all "
+                f"already spun up."
+            )
+
         if self.load_best_model_at_end and not self.keep_best_checkpoint:
             raise TrainingConfigError(
                 "load_best_model_at_end needs keep_best_checkpoint: the best "
@@ -364,6 +404,9 @@ class TrainingConfig:
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "gradient_checkpointing": self.gradient_checkpointing,
             "bf16": self.bf16,
+            "torch_compile": self.torch_compile,
+            "torch_compile_backend": self.torch_compile_backend,
+            "torch_compile_mode": self.torch_compile_mode,
             "label_smoothing_factor": self.label_smoothing_factor,
             "logging_steps": self.logging_steps,
             "eval_steps": self.eval_steps,
@@ -476,4 +519,5 @@ __all__ = [
     "available_stages",
     "DEFAULT_CONFIG_PATH",
     "OURS_ALONE",
+    "TORCH_COMPILE_MODES",
 ]
