@@ -150,7 +150,17 @@ class RelativePositionBias(nn.Module):
             max_distance=self.max_distance,
         )
         # (q, k, heads) -> (1, heads, q, k)
-        return self.embedding(buckets).permute(2, 0, 1).unsqueeze(0)
+        #
+        # `.contiguous()` is not cosmetic. The permute alone leaves `heads`
+        # as the fastest-varying dimension, so the key axis has a stride of
+        # `num_heads` rather than 1 — and every additive mask built by
+        # summing this bias inherits that layout. SDPA's fused kernels
+        # require a stride of 1 along the key axis and quietly fall back to
+        # the unfused math path when they do not get it, which materialises
+        # the whole (batch, heads, query, key) score matrix. The copy costs
+        # one (1, heads, q, k) tensor once per stack and is reused by every
+        # layer in it.
+        return self.embedding(buckets).permute(2, 0, 1).unsqueeze(0).contiguous()
 
     def extra_repr(self) -> str:
         return (

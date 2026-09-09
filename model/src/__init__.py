@@ -37,7 +37,13 @@ without translation:
 
 from __future__ import annotations
 
-from .attention import LayerCache, MultiHeadAttention, build_causal_mask, build_padding_mask
+from .attention import (
+    LayerCache,
+    MultiHeadAttention,
+    attention_compute_dtype,
+    build_causal_mask,
+    build_padding_mask,
+)
 from .blocks import DecoderLayer, EncoderLayer
 from .config import (
     DEFAULT_CONFIG_PATH,
@@ -96,6 +102,7 @@ __all__ = [
     "RelativePositionBias",
     "relative_position_bucket",
     "LayerCache",
+    "attention_compute_dtype",
     "build_padding_mask",
     "build_causal_mask",
     # decoding

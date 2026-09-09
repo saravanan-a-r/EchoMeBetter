@@ -169,7 +169,9 @@ class MultiHeadAttention(nn.Module):
                 key = torch.cat([past_key, key], dim=2)
                 value = torch.cat([past_value, value], dim=2)
 
-        attn_mask = _combine_additive_masks(position_bias, attention_mask)
+        attn_mask = _combine_additive_masks(
+            position_bias, attention_mask, query.dtype
+        )
         attended = F.scaled_dot_product_attention(
             query,
             key,
@@ -186,22 +188,81 @@ class MultiHeadAttention(nn.Module):
         return output, None, None
 
 
+def attention_compute_dtype(hidden_states: torch.Tensor) -> torch.dtype:
+    """
+    The dtype attention will actually compute in for these hidden states.
+
+    Under `torch.autocast` the query/key/value projections are `nn.Linear`,
+    which autocast runs in the autocast dtype — so the scores, and therefore
+    the additive mask that has to match them, are in that dtype and not in
+    the hidden states' own. `nn.Embedding` is not an autocast op, so the
+    hidden states arriving from it are still float32 and answering with
+    `hidden_states.dtype` names a dtype attention never uses. Outside
+    autocast the two are the same.
+
+    Masks are the largest tensors attention touches and are built once per
+    stack, so building them in this dtype rather than casting them later is
+    what keeps SDPA on a fused kernel (see `_combine_additive_masks`) and
+    keeps a float32 `(batch, heads, query, key)` allocation from ever
+    existing.
+    """
+    device_type = hidden_states.device.type
+    if torch.is_autocast_enabled(device_type):
+        return torch.get_autocast_dtype(device_type)
+    return hidden_states.dtype
+
+
+def _to_mask_dtype(
+    mask: torch.Tensor | None,
+    dtype: torch.dtype,
+) -> torch.Tensor | None:
+    """
+    Cast an additive mask to `dtype`, keeping "forbidden" finite.
+
+    float32's `finfo.min` lies outside bfloat16's and float16's range and
+    converts to `-inf`. The module docstring explains why that sentinel has
+    to stay finite: a fully padded row is possible in a real batch, and a row
+    that is entirely `-inf` is what turns its softmax into NaN. Re-pinning to
+    the target dtype's own minimum restores the value the mask would have
+    held had it been built in `dtype` to begin with.
+    """
+    if mask is None or mask.dtype == dtype:
+        return mask
+    converted = mask.to(dtype)
+    if converted.dtype is not torch.float32:
+        converted = torch.nan_to_num(converted, neginf=torch.finfo(dtype).min)
+    return converted
+
+
 def _combine_additive_masks(
     position_bias: torch.Tensor | None,
     attention_mask: torch.Tensor | None,
+    dtype: torch.dtype,
 ) -> torch.Tensor | None:
     """
-    Sum the two additive masks SDPA takes as a single `attn_mask` argument.
+    Sum the two additive masks SDPA takes as a single `attn_mask` argument,
+    in the dtype attention computes in.
 
     Order does not matter (addition commutes), and this is exactly what the
     manual implementation did as two separate `scores +=` lines before its
     softmax.
+
+    `dtype` is the query's, and matching it is not cosmetic. SDPA rejects
+    every fused kernel when the mask's dtype differs from the query's
+    ("invalid dtype for bias") and falls back — silently, since a fallback
+    is not an error — to the unfused math path, which materialises the whole
+    `(batch, heads, query, key)` score matrix and runs it in float32.
+    Casting each operand *before* the broadcasting sum also means that
+    matrix is allocated once, in the narrow dtype, rather than once in
+    float32 and again as a copy.
     """
     if position_bias is None:
-        return attention_mask
+        return _to_mask_dtype(attention_mask, dtype)
     if attention_mask is None:
-        return position_bias
-    return position_bias + attention_mask
+        return _to_mask_dtype(position_bias, dtype)
+    return _to_mask_dtype(position_bias, dtype) + _to_mask_dtype(
+        attention_mask, dtype
+    )
 
 
 def build_padding_mask(

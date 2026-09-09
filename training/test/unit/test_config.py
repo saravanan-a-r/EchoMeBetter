@@ -521,18 +521,29 @@ def test_resumption_defaults_on():
     assert load_training_config(stage="pretrain").resume_from_checkpoint is True
 
 
-def test_torch_compile_is_on_for_pretraining_but_not_for_rehearsal():
+def test_torch_compile_is_off_for_every_stage():
     """
-    Item 3: on for the long, fixed-shape, fixed-hardware run it was measured
-    for; left off for the short rehearsal (§7.8), which may run on different
-    hardware and gets little back for `torch.compile`'s startup cost.
-    """
-    pretrain = load_training_config(stage="pretrain")
-    assert pretrain.torch_compile is True
-    assert pretrain.torch_compile_mode == "reduce-overhead"
+    Item 3's fused SDPA attention is unconditional; `torch.compile` is off.
 
-    rehearsal = load_training_config(stage="rehearsal")
-    assert rehearsal.torch_compile is False
+    It was once on for pretraining, justified as "a fixed shape, fixed
+    hardware" run. The shape premise is false: streaming the real corpus
+    produces 3,136 distinct (encoder width, decoder width) pairs, because
+    length bucketing sizes each batch to its contents and [S]-mode never
+    packs. Measured on the A100 40GB vGPU this trains on, every compiled
+    configuration runs out of memory before finishing a step — inductor and
+    reduce-overhead, batch 8 and 16, with and without gradient checkpointing,
+    and under both allocator tunings available here. The fragmentation remedy
+    (expandable_segments) needs CUDA virtual-memory APIs the vGPU does not
+    expose.
+
+    This asserts every stage, not just pretraining: turning it back on is a
+    decision that needs the measurement redone on the hardware of the day, not
+    a default that drifts back.
+    """
+    for stage in ("pretrain", "rehearsal", "sft"):
+        config = load_training_config(stage=stage)
+        assert config.torch_compile is False, stage
+        assert config.torch_compile_mode is None, stage
 
 
 def test_the_rehearsal_stage_builds_the_base_profile():

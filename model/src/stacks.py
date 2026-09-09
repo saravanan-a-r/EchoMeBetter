@@ -30,6 +30,7 @@ from torch.utils.checkpoint import checkpoint
 
 from .attention import (
     LayerCache,
+    attention_compute_dtype,
     build_causal_mask,
     build_padding_mask,
     build_segment_mask,
@@ -67,11 +68,12 @@ class Encoder(nn.Module):
         segment_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         hidden_states = self.dropout(self.embedding(input_ids))
+        mask_dtype = attention_compute_dtype(hidden_states)
 
         additive_mask = (
             None
             if attention_mask is None
-            else build_padding_mask(attention_mask, hidden_states.dtype)
+            else build_padding_mask(attention_mask, mask_dtype)
         )
 
         # Packed pretraining windows hold several independent documents
@@ -79,13 +81,13 @@ class Encoder(nn.Module):
         # the padding mask blocks a position when *either* forbids it, so a
         # token attends only inside its own document and never to padding.
         if segment_ids is not None:
-            segment_mask = build_segment_mask(segment_ids, hidden_states.dtype)
+            segment_mask = build_segment_mask(segment_ids, mask_dtype)
             additive_mask = (
                 segment_mask if additive_mask is None else additive_mask + segment_mask
             )
 
         length = input_ids.shape[1]
-        bias = self.position_bias(length, length, input_ids.device).to(hidden_states.dtype)
+        bias = self.position_bias(length, length, input_ids.device).to(mask_dtype)
 
         for layer in self.layers:
             if self.gradient_checkpointing and self.training:
@@ -128,7 +130,7 @@ class Decoder(nn.Module):
         use_cache: bool = False,
     ) -> tuple[torch.Tensor, list[LayerCache] | None]:
         hidden_states = self.dropout(self.embedding(input_ids))
-        dtype, device = hidden_states.dtype, input_ids.device
+        dtype, device = attention_compute_dtype(hidden_states), input_ids.device
 
         query_length = input_ids.shape[1]
         past_length = cache[0].self_length if cache else 0

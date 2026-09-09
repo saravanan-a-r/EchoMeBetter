@@ -105,7 +105,15 @@ defaults:
 
   # --- batching ---------------------------------------------------------------
   # Effective batch = per_device_train_batch_size x gradient_accumulation_steps
-  # x sequence length. §13 wants >=1M tokens/step; 16 x 32 x 2048 = 1,048,576.
+  # sequences per step: 16 x 32 = 512.
+  #
+  # The token count is NOT 16 x 32 x 2048. That figure assumes every row is
+  # padded to the 2048 maximum; length bucketing means almost none are. Measured
+  # over the real pretrain corpus, one step carries ~538,000 encoder slots
+  # (96.3% real tokens, the rest padding) and ~260,000 loss-bearing label
+  # tokens. Raising the batch to 32 was measured as ~9% faster per step but
+  # runs out of memory on the corpus's widest-decoder batches, so 16 stands:
+  # see the `pretrain` stage for the measurements behind that.
   per_device_train_batch_size: 16
   gradient_accumulation_steps: 32
 
@@ -367,13 +375,27 @@ stages:
       slimpajama: 9.30
       gutenberg_pg19: 3.69
       ebooks: 0.02
-    # Item 3: fused SDPA attention (model/src/attention.py) plus graph
-    # capture. "reduce-overhead" is the mode architecture_improvements.md
-    # recommends for training — it trades a one-time recompilation per shape
-    # for cudagraphs that cut per-step kernel-launch overhead, which is worth
-    # it exactly here: a fixed shape, fixed hardware, 200,000-step run.
-    torch_compile: true
-    torch_compile_mode: reduce-overhead
+    # Item 3's fused SDPA attention is in model/src/attention.py and is always
+    # on. `torch.compile` is deliberately NOT, and the reason is measured
+    # rather than assumed.
+    #
+    # The case for "reduce-overhead" rested on this being "a fixed shape"
+    # run. It is not. Streaming the real 220M-document corpus through the
+    # real pipeline produces 3,136 distinct (encoder width, decoder width)
+    # pairs, because length bucketing sizes every batch to its own contents
+    # and [S]-mode never packs. cudagraphs re-record per shape, so that
+    # premise inverts the conclusion.
+    #
+    # Measured on this GPU (A100 40GB vGPU), every compiled configuration
+    # runs out of memory before it can complete a step — inductor and
+    # reduce-overhead, at batch 16 and at batch 8, with and without
+    # gradient checkpointing, and with both max_split_size_mb and
+    # garbage_collection_threshold allocator tuning. The OOM reports several
+    # GiB "reserved but unallocated", i.e. fragmentation; the usual remedy,
+    # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, needs CUDA virtual
+    # memory APIs that this vGPU does not expose. Leaving this true does not
+    # make the run slower, it stops the run from starting.
+    torch_compile: false
 
   # architecture.md §8.1 — supervised fine-tuning on rephrase pairs.
   # Cosine here, not inverse_sqrt: an SFT run has a known, short horizon, and
