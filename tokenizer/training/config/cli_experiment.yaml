@@ -70,7 +70,7 @@ blend:
 
 trainer:
   model_type: unigram
-  vocab_size: 32832
+  vocab_size: 33728
 
   # -- fidelity-critical (NF1), do not change casually --
   byte_fallback: true

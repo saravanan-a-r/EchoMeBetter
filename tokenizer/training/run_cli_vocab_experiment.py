@@ -555,7 +555,7 @@ def build_comparison_report(
 
     lines.append(
         "\nNote: Gate 4 (fertility) is expected to WARN on gutenberg_pg19/stackexchange-style "
-        "text at every size -- `vocab_size` is fixed at 32,832 (frozen), and that gate's target "
+        "text at every size -- `vocab_size` is fixed at 33,728 (frozen), and that gate's target "
         "band reflects a fixed slot-count ceiling, not a corpus-size problem "
         "(see VOCAB_RESEARCH_MATRICS.MD). Expected, not a regression."
     )

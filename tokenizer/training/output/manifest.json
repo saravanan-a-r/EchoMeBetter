@@ -1,0 +1,2184 @@
+{
+  "timestamp": "2026-09-09T00:55:20.212934+00:00",
+  "elapsed_seconds": 2888.7,
+  "corpus": {
+    "scan": {
+      "files": 243,
+      "records_seen": 220099051,
+      "records_bad_json": 0,
+      "records_missing_text": 0,
+      "lines_eligible": 1437509704,
+      "lines_empty": 309099,
+      "lines_oversized": 0,
+      "bytes_eligible": 386288614062,
+      "drop_fraction": 0.0,
+      "per_source_lines": {
+        "c4": 165520782,
+        "cli_cheat_sheets": 4085,
+        "cli_helper_stack_exchange": 17801518,
+        "cli_man_pages": 477875,
+        "cli_nl2bash": 24632,
+        "cli_tldr": 69928,
+        "cosmopedia": 63887134,
+        "fineweb_edu": 528167297,
+        "gutenberg_pg19": 150373052,
+        "permissive_code": 279622524,
+        "slimpajama": 72540344,
+        "stackexchange": 159020533
+      },
+      "per_source_bytes": {
+        "c4": 76960436434,
+        "cli_cheat_sheets": 228566,
+        "cli_helper_stack_exchange": 2121051203,
+        "cli_man_pages": 40923117,
+        "cli_nl2bash": 1545174,
+        "cli_tldr": 3865657,
+        "cosmopedia": 41065911775,
+        "fineweb_edu": 203213219252,
+        "gutenberg_pg19": 10459939227,
+        "permissive_code": 11167696507,
+        "slimpajama": 19779366098,
+        "stackexchange": 21474431052
+      }
+    },
+    "eligible_lines": 1437509704,
+    "train_lines": 750000,
+    "eval_lines_available": 1436759704,
+    "blend_mode": "weighted",
+    "blend_target": {
+      "c4": 0.084,
+      "cli_cheat_sheets": 0.1,
+      "cli_helper_stack_exchange": 0.042,
+      "cli_man_pages": 0.1,
+      "cli_nl2bash": 0.1,
+      "cli_tldr": 0.13,
+      "cosmopedia": 0.045,
+      "fineweb_edu": 0.222,
+      "gutenberg_pg19": 0.066,
+      "permissive_code": 0.018,
+      "slimpajama": 0.066,
+      "stackexchange": 0.027
+    },
+    "blend_achieved_bytes": {
+      "c4": 0.1182,
+      "cli_cheat_sheets": 0.0021,
+      "cli_helper_stack_exchange": 0.0593,
+      "cli_man_pages": 0.141,
+      "cli_nl2bash": 0.014,
+      "cli_tldr": 0.0351,
+      "cosmopedia": 0.0631,
+      "fineweb_edu": 0.3165,
+      "gutenberg_pg19": 0.0933,
+      "permissive_code": 0.0254,
+      "slimpajama": 0.0936,
+      "stackexchange": 0.0384
+    },
+    "blend_notes": [
+      "BLEND NOT APPLIED (max deviation 9.8%): at least one source was exhausted before reaching its share. The vocabulary is fitted to the corpus as-is, not to the configured shares. Add more corpus or lower corpus.input_sentence_size to honour the blend."
+    ],
+    "train_lines_per_source": {
+      "c4": 28089,
+      "cli_cheat_sheets": 4085,
+      "cli_helper_stack_exchange": 54805,
+      "cli_man_pages": 181556,
+      "cli_nl2bash": 24632,
+      "cli_tldr": 69928,
+      "cosmopedia": 10885,
+      "fineweb_edu": 89709,
+      "gutenberg_pg19": 147519,
+      "permissive_code": 70072,
+      "slimpajama": 37634,
+      "stackexchange": 31086
+    },
+    "train_bytes_per_source": {
+      "c4": 13011221,
+      "cli_cheat_sheets": 228566,
+      "cli_helper_stack_exchange": 6528713,
+      "cli_man_pages": 15532586,
+      "cli_nl2bash": 1545174,
+      "cli_tldr": 3865657,
+      "cosmopedia": 6949906,
+      "fineweb_edu": 34856645,
+      "gutenberg_pg19": 10271146,
+      "permissive_code": 2793112,
+      "slimpajama": 10306912,
+      "stackexchange": 4231669
+    },
+    "eval_lines_per_source": {
+      "c4": 165492693,
+      "cli_cheat_sheets": 0,
+      "cli_helper_stack_exchange": 17746713,
+      "cli_man_pages": 296319,
+      "cli_nl2bash": 0,
+      "cli_tldr": 0,
+      "cosmopedia": 63876249,
+      "fineweb_edu": 528077588,
+      "gutenberg_pg19": 150225533,
+      "permissive_code": 279552452,
+      "slimpajama": 72502710,
+      "stackexchange": 158989447
+    },
+    "sampled_fraction": 0.000522,
+    "seed": 42,
+    "plan": {
+      "capacities": {
+        "c4": 165520782,
+        "cli_cheat_sheets": 4085,
+        "cli_helper_stack_exchange": 17801518,
+        "cli_man_pages": 477875,
+        "cli_nl2bash": 24632,
+        "cli_tldr": 69928,
+        "cosmopedia": 63887134,
+        "fineweb_edu": 528167297,
+        "gutenberg_pg19": 150373052,
+        "permissive_code": 279622524,
+        "slimpajama": 72540344,
+        "stackexchange": 159020533
+      },
+      "train_per_source": {
+        "c4": 28089,
+        "cli_cheat_sheets": 4085,
+        "cli_helper_stack_exchange": 54805,
+        "cli_man_pages": 181556,
+        "cli_nl2bash": 24632,
+        "cli_tldr": 69928,
+        "cosmopedia": 10885,
+        "fineweb_edu": 89709,
+        "gutenberg_pg19": 147519,
+        "permissive_code": 70072,
+        "slimpajama": 37634,
+        "stackexchange": 31086
+      },
+      "seed": 42,
+      "max_sentence_length": 8192,
+      "file_capacities": [
+        {
+          "c4": 4444522
+        },
+        {
+          "c4": 4412802
+        },
+        {
+          "c4": 4434589
+        },
+        {
+          "c4": 4419555
+        },
+        {
+          "c4": 4420031
+        },
+        {
+          "c4": 3030342
+        },
+        {
+          "c4": 4422368
+        },
+        {
+          "c4": 4422955
+        },
+        {
+          "c4": 4409531
+        },
+        {
+          "c4": 4407238
+        },
+        {
+          "c4": 3039137
+        },
+        {
+          "c4": 4433864
+        },
+        {
+          "c4": 4409319
+        },
+        {
+          "c4": 4405422
+        },
+        {
+          "c4": 4419366
+        },
+        {
+          "c4": 4408650
+        },
+        {
+          "c4": 3027121
+        },
+        {
+          "c4": 4403663
+        },
+        {
+          "c4": 4402524
+        },
+        {
+          "c4": 4392974
+        },
+        {
+          "c4": 4409356
+        },
+        {
+          "c4": 3034413
+        },
+        {
+          "c4": 4436299
+        },
+        {
+          "c4": 4400187
+        },
+        {
+          "c4": 4405773
+        },
+        {
+          "c4": 4409779
+        },
+        {
+          "c4": 4388021
+        },
+        {
+          "c4": 3031993
+        },
+        {
+          "c4": 4404677
+        },
+        {
+          "c4": 4395705
+        },
+        {
+          "c4": 4401792
+        },
+        {
+          "c4": 4407694
+        },
+        {
+          "c4": 3022537
+        },
+        {
+          "c4": 4426742
+        },
+        {
+          "c4": 3044470
+        },
+        {
+          "c4": 4422932
+        },
+        {
+          "c4": 4420497
+        },
+        {
+          "c4": 4417843
+        },
+        {
+          "c4": 4446176
+        },
+        {
+          "c4": 3027923
+        },
+        {
+          "cli_cheat_sheets": 1476
+        },
+        {
+          "cli_cheat_sheets": 719
+        },
+        {
+          "cli_cheat_sheets": 950
+        },
+        {
+          "cli_cheat_sheets": 940
+        },
+        {
+          "cli_helper_stack_exchange": 709245
+        },
+        {
+          "cli_helper_stack_exchange": 1108193
+        },
+        {
+          "cli_helper_stack_exchange": 5763478
+        },
+        {
+          "cli_helper_stack_exchange": 10220602
+        },
+        {
+          "cli_man_pages": 110723
+        },
+        {
+          "cli_man_pages": 126059
+        },
+        {
+          "cli_man_pages": 124379
+        },
+        {
+          "cli_man_pages": 116714
+        },
+        {
+          "cli_nl2bash": 6294
+        },
+        {
+          "cli_nl2bash": 6166
+        },
+        {
+          "cli_nl2bash": 6130
+        },
+        {
+          "cli_nl2bash": 6042
+        },
+        {
+          "cli_tldr": 17748
+        },
+        {
+          "cli_tldr": 17331
+        },
+        {
+          "cli_tldr": 17356
+        },
+        {
+          "cli_tldr": 17493
+        },
+        {
+          "cosmopedia": 3302729
+        },
+        {
+          "cosmopedia": 3301535
+        },
+        {
+          "cosmopedia": 1508846
+        },
+        {
+          "cosmopedia": 3305512
+        },
+        {
+          "cosmopedia": 3306451
+        },
+        {
+          "cosmopedia": 1516947
+        },
+        {
+          "cosmopedia": 3305681
+        },
+        {
+          "cosmopedia": 3303555
+        },
+        {
+          "cosmopedia": 1504754
+        },
+        {
+          "cosmopedia": 3310028
+        },
+        {
+          "cosmopedia": 3304614
+        },
+        {
+          "cosmopedia": 3314331
+        },
+        {
+          "cosmopedia": 970096
+        },
+        {
+          "cosmopedia": 3305219
+        },
+        {
+          "cosmopedia": 3310598
+        },
+        {
+          "cosmopedia": 966552
+        },
+        {
+          "cosmopedia": 1505184
+        },
+        {
+          "cosmopedia": 3309435
+        },
+        {
+          "cosmopedia": 3309592
+        },
+        {
+          "cosmopedia": 1508813
+        },
+        {
+          "cosmopedia": 3297060
+        },
+        {
+          "cosmopedia": 3306917
+        },
+        {
+          "cosmopedia": 1507923
+        },
+        {
+          "cosmopedia": 3304762
+        },
+        {
+          "fineweb_edu": 5907198
+        },
+        {
+          "fineweb_edu": 4373719
+        },
+        {
+          "fineweb_edu": 4255906
+        },
+        {
+          "fineweb_edu": 4295677
+        },
+        {
+          "fineweb_edu": 4438853
+        },
+        {
+          "fineweb_edu": 4461750
+        },
+        {
+          "fineweb_edu": 4425348
+        },
+        {
+          "fineweb_edu": 4392194
+        },
+        {
+          "fineweb_edu": 4488094
+        },
+        {
+          "fineweb_edu": 4441140
+        },
+        {
+          "fineweb_edu": 4482839
+        },
+        {
+          "fineweb_edu": 5329369
+        },
+        {
+          "fineweb_edu": 4277323
+        },
+        {
+          "fineweb_edu": 4350520
+        },
+        {
+          "fineweb_edu": 5457140
+        },
+        {
+          "fineweb_edu": 5582897
+        },
+        {
+          "fineweb_edu": 5378186
+        },
+        {
+          "fineweb_edu": 5045127
+        },
+        {
+          "fineweb_edu": 5198748
+        },
+        {
+          "fineweb_edu": 5431155
+        },
+        {
+          "fineweb_edu": 5191560
+        },
+        {
+          "fineweb_edu": 5047303
+        },
+        {
+          "fineweb_edu": 5308712
+        },
+        {
+          "fineweb_edu": 5327719
+        },
+        {
+          "fineweb_edu": 5385443
+        },
+        {
+          "fineweb_edu": 5182991
+        },
+        {
+          "fineweb_edu": 4881813
+        },
+        {
+          "fineweb_edu": 5314374
+        },
+        {
+          "fineweb_edu": 5165675
+        },
+        {
+          "fineweb_edu": 5266223
+        },
+        {
+          "fineweb_edu": 5176980
+        },
+        {
+          "fineweb_edu": 4672011
+        },
+        {
+          "fineweb_edu": 4732608
+        },
+        {
+          "fineweb_edu": 5308097
+        },
+        {
+          "fineweb_edu": 5508644
+        },
+        {
+          "fineweb_edu": 4833742
+        },
+        {
+          "fineweb_edu": 4951160
+        },
+        {
+          "fineweb_edu": 4902797
+        },
+        {
+          "fineweb_edu": 5246598
+        },
+        {
+          "fineweb_edu": 5056441
+        },
+        {
+          "fineweb_edu": 4776933
+        },
+        {
+          "fineweb_edu": 4910837
+        },
+        {
+          "fineweb_edu": 5128858
+        },
+        {
+          "fineweb_edu": 5089005
+        },
+        {
+          "fineweb_edu": 5144955
+        },
+        {
+          "fineweb_edu": 5789766
+        },
+        {
+          "fineweb_edu": 5065558
+        },
+        {
+          "fineweb_edu": 3962665
+        },
+        {
+          "fineweb_edu": 4863399
+        },
+        {
+          "fineweb_edu": 4985347
+        },
+        {
+          "fineweb_edu": 4771220
+        },
+        {
+          "fineweb_edu": 4950219
+        },
+        {
+          "fineweb_edu": 4733392
+        },
+        {
+          "fineweb_edu": 4714104
+        },
+        {
+          "fineweb_edu": 4897681
+        },
+        {
+          "fineweb_edu": 4742742
+        },
+        {
+          "fineweb_edu": 5693510
+        },
+        {
+          "fineweb_edu": 4763455
+        },
+        {
+          "fineweb_edu": 4775291
+        },
+        {
+          "fineweb_edu": 4965121
+        },
+        {
+          "fineweb_edu": 4682121
+        },
+        {
+          "fineweb_edu": 4847780
+        },
+        {
+          "fineweb_edu": 448495
+        },
+        {
+          "fineweb_edu": 4720458
+        },
+        {
+          "fineweb_edu": 4768535
+        },
+        {
+          "fineweb_edu": 4633252
+        },
+        {
+          "fineweb_edu": 4594414
+        },
+        {
+          "fineweb_edu": 5480803
+        },
+        {
+          "fineweb_edu": 4591561
+        },
+        {
+          "fineweb_edu": 4657136
+        },
+        {
+          "fineweb_edu": 4620090
+        },
+        {
+          "fineweb_edu": 4726692
+        },
+        {
+          "fineweb_edu": 4608541
+        },
+        {
+          "fineweb_edu": 4815491
+        },
+        {
+          "fineweb_edu": 4557094
+        },
+        {
+          "fineweb_edu": 4539055
+        },
+        {
+          "fineweb_edu": 4640610
+        },
+        {
+          "fineweb_edu": 368350
+        },
+        {
+          "fineweb_edu": 5633616
+        },
+        {
+          "fineweb_edu": 4780730
+        },
+        {
+          "fineweb_edu": 4722938
+        },
+        {
+          "fineweb_edu": 4627895
+        },
+        {
+          "fineweb_edu": 4515579
+        },
+        {
+          "fineweb_edu": 4648608
+        },
+        {
+          "fineweb_edu": 4523384
+        },
+        {
+          "fineweb_edu": 4609209
+        },
+        {
+          "fineweb_edu": 4537408
+        },
+        {
+          "fineweb_edu": 4556643
+        },
+        {
+          "fineweb_edu": 4608724
+        },
+        {
+          "fineweb_edu": 5724512
+        },
+        {
+          "fineweb_edu": 4473772
+        },
+        {
+          "fineweb_edu": 4601846
+        },
+        {
+          "fineweb_edu": 4503908
+        },
+        {
+          "fineweb_edu": 1830862
+        },
+        {
+          "fineweb_edu": 4471299
+        },
+        {
+          "fineweb_edu": 4369178
+        },
+        {
+          "fineweb_edu": 4483698
+        },
+        {
+          "fineweb_edu": 4419628
+        },
+        {
+          "fineweb_edu": 4568806
+        },
+        {
+          "fineweb_edu": 4523945
+        },
+        {
+          "fineweb_edu": 5790137
+        },
+        {
+          "fineweb_edu": 4430114
+        },
+        {
+          "fineweb_edu": 4586518
+        },
+        {
+          "fineweb_edu": 4362969
+        },
+        {
+          "fineweb_edu": 4460773
+        },
+        {
+          "fineweb_edu": 4511909
+        },
+        {
+          "fineweb_edu": 4525352
+        },
+        {
+          "fineweb_edu": 4455039
+        },
+        {
+          "fineweb_edu": 3701595
+        },
+        {
+          "fineweb_edu": 4268635
+        },
+        {
+          "fineweb_edu": 4491276
+        },
+        {
+          "fineweb_edu": 5348182
+        },
+        {
+          "gutenberg_pg19": 18167905
+        },
+        {
+          "gutenberg_pg19": 17944420
+        },
+        {
+          "gutenberg_pg19": 19119923
+        },
+        {
+          "gutenberg_pg19": 20018032
+        },
+        {
+          "gutenberg_pg19": 21132507
+        },
+        {
+          "gutenberg_pg19": 21007133
+        },
+        {
+          "gutenberg_pg19": 20750145
+        },
+        {
+          "gutenberg_pg19": 12232987
+        },
+        {
+          "permissive_code": 38141787
+        },
+        {
+          "permissive_code": 35554544
+        },
+        {
+          "permissive_code": 36572117
+        },
+        {
+          "permissive_code": 38698890
+        },
+        {
+          "permissive_code": 36903474
+        },
+        {
+          "permissive_code": 39110923
+        },
+        {
+          "permissive_code": 28242415
+        },
+        {
+          "permissive_code": 26398374
+        },
+        {
+          "slimpajama": 4526052
+        },
+        {
+          "slimpajama": 4519501
+        },
+        {
+          "slimpajama": 4514317
+        },
+        {
+          "slimpajama": 4563181
+        },
+        {
+          "slimpajama": 4572135
+        },
+        {
+          "slimpajama": 4536073
+        },
+        {
+          "slimpajama": 4590577
+        },
+        {
+          "slimpajama": 4605929
+        },
+        {
+          "slimpajama": 4539048
+        },
+        {
+          "slimpajama": 4510112
+        },
+        {
+          "slimpajama": 4560803
+        },
+        {
+          "slimpajama": 4497901
+        },
+        {
+          "slimpajama": 4503437
+        },
+        {
+          "slimpajama": 4518576
+        },
+        {
+          "slimpajama": 4505006
+        },
+        {
+          "slimpajama": 4477696
+        },
+        {
+          "stackexchange": 12744327
+        },
+        {
+          "stackexchange": 1043993
+        },
+        {
+          "stackexchange": 15440325
+        },
+        {
+          "stackexchange": 2842790
+        },
+        {
+          "stackexchange": 11639283
+        },
+        {
+          "stackexchange": 10270775
+        },
+        {
+          "stackexchange": 7289330
+        },
+        {
+          "stackexchange": 8694701
+        },
+        {
+          "stackexchange": 8403321
+        },
+        {
+          "stackexchange": 11437662
+        },
+        {
+          "stackexchange": 6637093
+        },
+        {
+          "stackexchange": 17282176
+        },
+        {
+          "stackexchange": 15499612
+        },
+        {
+          "stackexchange": 16188870
+        },
+        {
+          "stackexchange": 13606275
+        }
+      ],
+      "file_train": [
+        {
+          "c4": 754
+        },
+        {
+          "c4": 749
+        },
+        {
+          "c4": 753
+        },
+        {
+          "c4": 750
+        },
+        {
+          "c4": 750
+        },
+        {
+          "c4": 514
+        },
+        {
+          "c4": 750
+        },
+        {
+          "c4": 751
+        },
+        {
+          "c4": 748
+        },
+        {
+          "c4": 748
+        },
+        {
+          "c4": 516
+        },
+        {
+          "c4": 752
+        },
+        {
+          "c4": 748
+        },
+        {
+          "c4": 748
+        },
+        {
+          "c4": 750
+        },
+        {
+          "c4": 748
+        },
+        {
+          "c4": 514
+        },
+        {
+          "c4": 747
+        },
+        {
+          "c4": 747
+        },
+        {
+          "c4": 745
+        },
+        {
+          "c4": 748
+        },
+        {
+          "c4": 515
+        },
+        {
+          "c4": 753
+        },
+        {
+          "c4": 747
+        },
+        {
+          "c4": 748
+        },
+        {
+          "c4": 748
+        },
+        {
+          "c4": 745
+        },
+        {
+          "c4": 515
+        },
+        {
+          "c4": 747
+        },
+        {
+          "c4": 746
+        },
+        {
+          "c4": 747
+        },
+        {
+          "c4": 748
+        },
+        {
+          "c4": 513
+        },
+        {
+          "c4": 751
+        },
+        {
+          "c4": 517
+        },
+        {
+          "c4": 751
+        },
+        {
+          "c4": 750
+        },
+        {
+          "c4": 750
+        },
+        {
+          "c4": 754
+        },
+        {
+          "c4": 514
+        },
+        {
+          "cli_cheat_sheets": 1476
+        },
+        {
+          "cli_cheat_sheets": 719
+        },
+        {
+          "cli_cheat_sheets": 950
+        },
+        {
+          "cli_cheat_sheets": 940
+        },
+        {
+          "cli_helper_stack_exchange": 2183
+        },
+        {
+          "cli_helper_stack_exchange": 3412
+        },
+        {
+          "cli_helper_stack_exchange": 17744
+        },
+        {
+          "cli_helper_stack_exchange": 31466
+        },
+        {
+          "cli_man_pages": 42066
+        },
+        {
+          "cli_man_pages": 47893
+        },
+        {
+          "cli_man_pages": 47255
+        },
+        {
+          "cli_man_pages": 44342
+        },
+        {
+          "cli_nl2bash": 6294
+        },
+        {
+          "cli_nl2bash": 6166
+        },
+        {
+          "cli_nl2bash": 6130
+        },
+        {
+          "cli_nl2bash": 6042
+        },
+        {
+          "cli_tldr": 17748
+        },
+        {
+          "cli_tldr": 17331
+        },
+        {
+          "cli_tldr": 17356
+        },
+        {
+          "cli_tldr": 17493
+        },
+        {
+          "cosmopedia": 563
+        },
+        {
+          "cosmopedia": 563
+        },
+        {
+          "cosmopedia": 257
+        },
+        {
+          "cosmopedia": 563
+        },
+        {
+          "cosmopedia": 563
+        },
+        {
+          "cosmopedia": 259
+        },
+        {
+          "cosmopedia": 563
+        },
+        {
+          "cosmopedia": 563
+        },
+        {
+          "cosmopedia": 256
+        },
+        {
+          "cosmopedia": 564
+        },
+        {
+          "cosmopedia": 563
+        },
+        {
+          "cosmopedia": 565
+        },
+        {
+          "cosmopedia": 165
+        },
+        {
+          "cosmopedia": 563
+        },
+        {
+          "cosmopedia": 564
+        },
+        {
+          "cosmopedia": 165
+        },
+        {
+          "cosmopedia": 256
+        },
+        {
+          "cosmopedia": 564
+        },
+        {
+          "cosmopedia": 564
+        },
+        {
+          "cosmopedia": 257
+        },
+        {
+          "cosmopedia": 562
+        },
+        {
+          "cosmopedia": 563
+        },
+        {
+          "cosmopedia": 257
+        },
+        {
+          "cosmopedia": 563
+        },
+        {
+          "fineweb_edu": 1003
+        },
+        {
+          "fineweb_edu": 743
+        },
+        {
+          "fineweb_edu": 723
+        },
+        {
+          "fineweb_edu": 730
+        },
+        {
+          "fineweb_edu": 754
+        },
+        {
+          "fineweb_edu": 758
+        },
+        {
+          "fineweb_edu": 752
+        },
+        {
+          "fineweb_edu": 746
+        },
+        {
+          "fineweb_edu": 762
+        },
+        {
+          "fineweb_edu": 754
+        },
+        {
+          "fineweb_edu": 761
+        },
+        {
+          "fineweb_edu": 905
+        },
+        {
+          "fineweb_edu": 727
+        },
+        {
+          "fineweb_edu": 739
+        },
+        {
+          "fineweb_edu": 927
+        },
+        {
+          "fineweb_edu": 948
+        },
+        {
+          "fineweb_edu": 913
+        },
+        {
+          "fineweb_edu": 857
+        },
+        {
+          "fineweb_edu": 883
+        },
+        {
+          "fineweb_edu": 922
+        },
+        {
+          "fineweb_edu": 882
+        },
+        {
+          "fineweb_edu": 857
+        },
+        {
+          "fineweb_edu": 902
+        },
+        {
+          "fineweb_edu": 905
+        },
+        {
+          "fineweb_edu": 915
+        },
+        {
+          "fineweb_edu": 880
+        },
+        {
+          "fineweb_edu": 829
+        },
+        {
+          "fineweb_edu": 903
+        },
+        {
+          "fineweb_edu": 877
+        },
+        {
+          "fineweb_edu": 894
+        },
+        {
+          "fineweb_edu": 879
+        },
+        {
+          "fineweb_edu": 794
+        },
+        {
+          "fineweb_edu": 804
+        },
+        {
+          "fineweb_edu": 902
+        },
+        {
+          "fineweb_edu": 936
+        },
+        {
+          "fineweb_edu": 821
+        },
+        {
+          "fineweb_edu": 841
+        },
+        {
+          "fineweb_edu": 833
+        },
+        {
+          "fineweb_edu": 891
+        },
+        {
+          "fineweb_edu": 859
+        },
+        {
+          "fineweb_edu": 811
+        },
+        {
+          "fineweb_edu": 834
+        },
+        {
+          "fineweb_edu": 871
+        },
+        {
+          "fineweb_edu": 864
+        },
+        {
+          "fineweb_edu": 874
+        },
+        {
+          "fineweb_edu": 983
+        },
+        {
+          "fineweb_edu": 860
+        },
+        {
+          "fineweb_edu": 673
+        },
+        {
+          "fineweb_edu": 826
+        },
+        {
+          "fineweb_edu": 847
+        },
+        {
+          "fineweb_edu": 810
+        },
+        {
+          "fineweb_edu": 841
+        },
+        {
+          "fineweb_edu": 804
+        },
+        {
+          "fineweb_edu": 801
+        },
+        {
+          "fineweb_edu": 832
+        },
+        {
+          "fineweb_edu": 806
+        },
+        {
+          "fineweb_edu": 967
+        },
+        {
+          "fineweb_edu": 809
+        },
+        {
+          "fineweb_edu": 811
+        },
+        {
+          "fineweb_edu": 843
+        },
+        {
+          "fineweb_edu": 795
+        },
+        {
+          "fineweb_edu": 823
+        },
+        {
+          "fineweb_edu": 76
+        },
+        {
+          "fineweb_edu": 802
+        },
+        {
+          "fineweb_edu": 810
+        },
+        {
+          "fineweb_edu": 787
+        },
+        {
+          "fineweb_edu": 780
+        },
+        {
+          "fineweb_edu": 931
+        },
+        {
+          "fineweb_edu": 780
+        },
+        {
+          "fineweb_edu": 791
+        },
+        {
+          "fineweb_edu": 785
+        },
+        {
+          "fineweb_edu": 803
+        },
+        {
+          "fineweb_edu": 783
+        },
+        {
+          "fineweb_edu": 818
+        },
+        {
+          "fineweb_edu": 774
+        },
+        {
+          "fineweb_edu": 771
+        },
+        {
+          "fineweb_edu": 788
+        },
+        {
+          "fineweb_edu": 63
+        },
+        {
+          "fineweb_edu": 957
+        },
+        {
+          "fineweb_edu": 812
+        },
+        {
+          "fineweb_edu": 802
+        },
+        {
+          "fineweb_edu": 786
+        },
+        {
+          "fineweb_edu": 767
+        },
+        {
+          "fineweb_edu": 790
+        },
+        {
+          "fineweb_edu": 768
+        },
+        {
+          "fineweb_edu": 783
+        },
+        {
+          "fineweb_edu": 771
+        },
+        {
+          "fineweb_edu": 774
+        },
+        {
+          "fineweb_edu": 783
+        },
+        {
+          "fineweb_edu": 972
+        },
+        {
+          "fineweb_edu": 760
+        },
+        {
+          "fineweb_edu": 782
+        },
+        {
+          "fineweb_edu": 765
+        },
+        {
+          "fineweb_edu": 311
+        },
+        {
+          "fineweb_edu": 759
+        },
+        {
+          "fineweb_edu": 742
+        },
+        {
+          "fineweb_edu": 762
+        },
+        {
+          "fineweb_edu": 751
+        },
+        {
+          "fineweb_edu": 776
+        },
+        {
+          "fineweb_edu": 768
+        },
+        {
+          "fineweb_edu": 983
+        },
+        {
+          "fineweb_edu": 752
+        },
+        {
+          "fineweb_edu": 779
+        },
+        {
+          "fineweb_edu": 741
+        },
+        {
+          "fineweb_edu": 758
+        },
+        {
+          "fineweb_edu": 766
+        },
+        {
+          "fineweb_edu": 769
+        },
+        {
+          "fineweb_edu": 757
+        },
+        {
+          "fineweb_edu": 629
+        },
+        {
+          "fineweb_edu": 725
+        },
+        {
+          "fineweb_edu": 763
+        },
+        {
+          "fineweb_edu": 908
+        },
+        {
+          "gutenberg_pg19": 17823
+        },
+        {
+          "gutenberg_pg19": 17604
+        },
+        {
+          "gutenberg_pg19": 18757
+        },
+        {
+          "gutenberg_pg19": 19638
+        },
+        {
+          "gutenberg_pg19": 20731
+        },
+        {
+          "gutenberg_pg19": 20609
+        },
+        {
+          "gutenberg_pg19": 20356
+        },
+        {
+          "gutenberg_pg19": 12001
+        },
+        {
+          "permissive_code": 9558
+        },
+        {
+          "permissive_code": 8910
+        },
+        {
+          "permissive_code": 9165
+        },
+        {
+          "permissive_code": 9698
+        },
+        {
+          "permissive_code": 9248
+        },
+        {
+          "permissive_code": 9801
+        },
+        {
+          "permissive_code": 7077
+        },
+        {
+          "permissive_code": 6615
+        },
+        {
+          "slimpajama": 2348
+        },
+        {
+          "slimpajama": 2345
+        },
+        {
+          "slimpajama": 2342
+        },
+        {
+          "slimpajama": 2367
+        },
+        {
+          "slimpajama": 2372
+        },
+        {
+          "slimpajama": 2353
+        },
+        {
+          "slimpajama": 2382
+        },
+        {
+          "slimpajama": 2390
+        },
+        {
+          "slimpajama": 2355
+        },
+        {
+          "slimpajama": 2340
+        },
+        {
+          "slimpajama": 2366
+        },
+        {
+          "slimpajama": 2334
+        },
+        {
+          "slimpajama": 2336
+        },
+        {
+          "slimpajama": 2344
+        },
+        {
+          "slimpajama": 2337
+        },
+        {
+          "slimpajama": 2323
+        },
+        {
+          "stackexchange": 2491
+        },
+        {
+          "stackexchange": 204
+        },
+        {
+          "stackexchange": 3018
+        },
+        {
+          "stackexchange": 556
+        },
+        {
+          "stackexchange": 2275
+        },
+        {
+          "stackexchange": 2008
+        },
+        {
+          "stackexchange": 1425
+        },
+        {
+          "stackexchange": 1700
+        },
+        {
+          "stackexchange": 1643
+        },
+        {
+          "stackexchange": 2236
+        },
+        {
+          "stackexchange": 1297
+        },
+        {
+          "stackexchange": 3378
+        },
+        {
+          "stackexchange": 3030
+        },
+        {
+          "stackexchange": 3165
+        },
+        {
+          "stackexchange": 2660
+        }
+      ]
+    },
+    "corpus_path": "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/variants/variant_750K_recheck/output/corpus.txt",
+    "corpus_bytes": 110871307,
+    "corpus_sha256": "89d72a46d211d120bd595ca2bfef57f3c12404af01006c019c0f7929c854e718",
+    "source_files": [
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_10mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_11mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_12mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_13mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_14mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_15mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_16mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_17mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_18mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_19mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_20mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_21mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_22mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_23mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_24mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_25mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_26mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_27mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_28mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_29mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_30mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_31mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_32mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_33mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_34mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_35mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_36mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_37mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_38mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_39mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_4mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_5mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_6mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_7mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_8mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/c4_9mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_cheat_sheets_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_cheat_sheets_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_cheat_sheets_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_cheat_sheets_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_helper_stack_exchange_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_helper_stack_exchange_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_helper_stack_exchange_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_helper_stack_exchange_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_man_pages_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_man_pages_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_man_pages_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_man_pages_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_nl2bash_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_nl2bash_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_nl2bash_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_nl2bash_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_tldr_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_tldr_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_tldr_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cli_tldr_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_10mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_11mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_12mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_13mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_14mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_15mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_16mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_17mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_18mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_19mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_20mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_21mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_22mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_23mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_4mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_5mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_6mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_7mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_8mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/cosmopedia_9mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_100mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_101mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_102mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_103mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_104mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_105mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_106mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_107mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_108mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_109mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_10mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_110mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_111mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_11mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_12mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_13mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_14mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_15mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_16mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_17mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_18mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_19mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_20mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_21mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_22mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_23mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_24mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_25mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_26mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_27mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_28mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_29mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_30mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_31mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_32mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_33mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_34mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_35mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_36mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_37mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_38mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_39mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_40mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_41mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_42mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_43mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_44mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_45mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_46mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_47mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_48mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_49mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_4mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_50mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_51mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_52mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_53mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_54mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_55mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_56mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_57mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_58mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_59mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_5mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_60mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_61mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_62mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_63mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_64mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_65mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_66mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_67mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_68mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_69mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_6mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_70mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_71mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_72mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_73mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_74mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_75mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_76mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_77mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_78mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_79mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_7mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_80mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_81mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_82mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_83mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_84mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_85mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_86mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_87mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_88mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_89mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_8mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_90mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_91mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_92mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_93mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_94mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_95mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_96mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_97mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_98mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_99mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/fineweb_edu_9mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/gutenberg_pg19_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/gutenberg_pg19_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/gutenberg_pg19_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/gutenberg_pg19_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/gutenberg_pg19_4mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/gutenberg_pg19_5mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/gutenberg_pg19_6mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/gutenberg_pg19_7mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/permissive_code_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/permissive_code_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/permissive_code_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/permissive_code_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/permissive_code_4mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/permissive_code_5mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/permissive_code_6mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/permissive_code_7mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_10mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_11mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_12mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_13mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_14mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_15mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_4mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_5mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_6mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_7mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_8mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/slimpajama_9mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_0mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_10mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_11mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_12mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_13mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_14mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_1mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_2mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_3mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_4mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_5mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_6mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_7mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_8mb.jsonl",
+      "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/flattened_corpus/stackexchange_9mb.jsonl"
+    ]
+  },
+  "training": {
+    "trainer_kwargs": {
+      "input": "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/variants/variant_750K_recheck/output/corpus.txt",
+      "model_prefix": "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/variants/variant_750K_recheck/output/spm",
+      "model_type": "unigram",
+      "vocab_size": 33728,
+      "byte_fallback": true,
+      "character_coverage": 1.0,
+      "normalization_rule_name": "identity",
+      "remove_extra_whitespaces": false,
+      "allow_whitespace_only_pieces": true,
+      "add_dummy_prefix": false,
+      "split_digits": true,
+      "max_sentence_length": 8192,
+      "train_extremely_large_corpus": true,
+      "num_threads": 36,
+      "pad_id": 0,
+      "eos_id": 1,
+      "unk_id": 2,
+      "bos_id": -1,
+      "minloglevel": 2,
+      "input_sentence_size": 0,
+      "shuffle_input_sentence": false
+    },
+    "user_defined_symbols_count": 1269,
+    "model_path": "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/variants/variant_750K_recheck/output/spm.model",
+    "vocab_path": "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/variants/variant_750K_recheck/output/spm.vocab",
+    "elapsed_seconds": 127.97,
+    "sentencepiece_version": "0.2.2",
+    "model_sha256": "e9608233360d9d089327ad668b6719704019b7d0d3c779188d6c5e5600c54f1e"
+  },
+  "evaluation": {
+    "ran": true,
+    "scope": "all remaining corpus",
+    "lines_available": 1436759704,
+    "lines_evaluated": 1436759704,
+    "eval_sentence_size": 0,
+    "tokens_evaluated": 88546891631,
+    "elapsed_seconds": 2518.19,
+    "sample_saved": 20000,
+    "sample_path": "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/variants/variant_750K_recheck/output/tokenizer_evals_set.jsonl"
+  },
+  "config": {
+    "corpus": {
+      "input_sentence_size": 750000,
+      "max_sentence_length": 8192,
+      "max_drop_fraction": 0.01
+    },
+    "sampling": {
+      "seed": 42
+    },
+    "blend": {
+      "mode": "weighted",
+      "shares": {
+        "fineweb_edu": 0.222,
+        "c4": 0.084,
+        "cosmopedia": 0.045,
+        "gutenberg_pg19": 0.066,
+        "slimpajama": 0.066,
+        "stackexchange": 0.027,
+        "permissive_code": 0.018,
+        "cli_helper_stack_exchange": 0.042,
+        "cli_tldr": 0.13,
+        "cli_nl2bash": 0.1,
+        "cli_man_pages": 0.1,
+        "cli_cheat_sheets": 0.1
+      }
+    },
+    "trainer": {
+      "model_type": "unigram",
+      "vocab_size": 33728,
+      "byte_fallback": true,
+      "character_coverage": 1.0,
+      "normalization_rule_name": "identity",
+      "remove_extra_whitespaces": false,
+      "allow_whitespace_only_pieces": true,
+      "add_dummy_prefix": false,
+      "split_digits": true,
+      "train_extremely_large_corpus": true,
+      "num_threads": 36,
+      "pad_id": 0,
+      "eos_id": 1,
+      "unk_id": 2,
+      "bos_id": -1
+    },
+    "output": {
+      "dir": "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/variants/variant_750K_recheck/output",
+      "model_prefix": "spm"
+    },
+    "validation": {
+      "run_after_training": true,
+      "eval_sentence_size": 0,
+      "eval_sample_save": 20000,
+      "length_reservoir_size": 200000,
+      "rare_token_max_count": 10,
+      "fertility_target_min": 1.25,
+      "fertility_target_max": 1.4,
+      "fertility_code_warn_above": 2.5,
+      "byte_fallback_rate_warn_above": 0.005,
+      "chars_per_token_warn_below": 3.0,
+      "vocab_utilization_warn_below": 0.9
+    },
+    "runtime": {
+      "workers": 36
+    }
+  },
+  "config_path": "/home/admin1/projects/EchoMeBetter/tokenizer_experiment/variants/variant_750K/config.yaml",
+  "gates": [
+    {
+      "gate": 1,
+      "name": "Byte-exact round-trip",
+      "hard": true,
+      "passed": true,
+      "detail": "1,436,759,704/1,436,759,704 records satisfy decode(encode(x)) == x",
+      "metrics": {
+        "records": 1436759704,
+        "passed": 1436759704,
+        "failed": 0
+      },
+      "examples": []
+    },
+    {
+      "gate": 2,
+      "name": "No <unk> emitted",
+      "hard": true,
+      "passed": true,
+      "detail": "0 <unk> token(s) across 1,436,759,704 records (rate 0.00000000)",
+      "metrics": {
+        "unk_tokens": 0,
+        "rate": 0.0,
+        "per_slice": {
+          "c4": 0.0,
+          "cli_helper_stack_exchange": 0.0,
+          "cli_man_pages": 0.0,
+          "cosmopedia": 0.0,
+          "fineweb_edu": 0.0,
+          "gutenberg_pg19": 0.0,
+          "permissive_code": 0.0,
+          "slimpajama": 0.0,
+          "stackexchange": 0.0
+        }
+      },
+      "examples": []
+    },
+    {
+      "gate": 3,
+      "name": "Reserved tokens are atomic and resolvable",
+      "hard": true,
+      "passed": true,
+      "detail": "1272/1272 reserved names OK",
+      "metrics": {
+        "checked": 1272,
+        "failed": 0
+      },
+      "examples": []
+    },
+    {
+      "gate": 4,
+      "name": "Fertility per slice",
+      "hard": false,
+      "passed": false,
+      "detail": "overall 1.4371 tokens/word; target [1.25, 1.4]",
+      "metrics": {
+        "overall": 1.4371,
+        "per_slice": {
+          "c4": 1.3631,
+          "cli_helper_stack_exchange": 1.712,
+          "cli_man_pages": 1.8418,
+          "cosmopedia": 1.3071,
+          "fineweb_edu": 1.3868,
+          "gutenberg_pg19": 1.4266,
+          "permissive_code": 3.4565,
+          "slimpajama": 1.481,
+          "stackexchange": 1.7388
+        },
+        "target": [
+          1.25,
+          1.4
+        ]
+      },
+      "examples": [
+        "cli_helper_stack_exchange fertility 1.712 outside target [1.25, 1.4]",
+        "cli_man_pages fertility 1.8418 outside target [1.25, 1.4]",
+        "gutenberg_pg19 fertility 1.4266 outside target [1.25, 1.4]",
+        "permissive_code fertility 3.4565 exceeds 2.5",
+        "slimpajama fertility 1.481 outside target [1.25, 1.4]",
+        "stackexchange fertility 1.7388 outside target [1.25, 1.4]"
+      ]
+    },
+    {
+      "gate": 5,
+      "name": "Byte-fallback rate",
+      "hard": false,
+      "passed": true,
+      "detail": "0.001378 of emitted tokens are byte pieces (warn above 0.005)",
+      "metrics": {
+        "rate": 0.00137813,
+        "threshold": 0.005,
+        "per_slice": {
+          "c4": 0.000135,
+          "cli_helper_stack_exchange": 4.1e-05,
+          "cli_man_pages": 7.3e-05,
+          "cosmopedia": 5.1e-05,
+          "fineweb_edu": 0.000139,
+          "gutenberg_pg19": 3.9e-05,
+          "permissive_code": 0.030056,
+          "slimpajama": 0.000524,
+          "stackexchange": 9.2e-05
+        }
+      },
+      "examples": []
+    },
+    {
+      "gate": 6,
+      "name": "URL and markdown-link survival",
+      "hard": true,
+      "passed": true,
+      "detail": "213,733/213,733 unique URL/link fragments round-trip (fragment collection hit its cap)",
+      "metrics": {
+        "fragments": 213733,
+        "failed": 0,
+        "capped": true
+      },
+      "examples": []
+    },
+    {
+      "gate": 7,
+      "name": "Vocabulary sanity (manual review)",
+      "hard": false,
+      "passed": true,
+      "detail": "vocab_size=33,728; see report for top-500 and random-500 pieces",
+      "metrics": {
+        "vocab_size": 33728
+      },
+      "examples": []
+    },
+    {
+      "gate": 8,
+      "name": "Characters per token",
+      "hard": false,
+      "passed": true,
+      "detail": "overall 4.3558 chars/token (warn below 3.0)",
+      "metrics": {
+        "overall": 4.3558,
+        "per_slice": {
+          "c4": 4.3548,
+          "cli_helper_stack_exchange": 3.6561,
+          "cli_man_pages": 4.2206,
+          "cosmopedia": 5.4389,
+          "fineweb_edu": 4.4291,
+          "gutenberg_pg19": 3.9584,
+          "permissive_code": 3.0507,
+          "slimpajama": 4.1201,
+          "stackexchange": 3.648
+        },
+        "warn_below": 3.0
+      },
+      "examples": []
+    },
+    {
+      "gate": 9,
+      "name": "Sequence length distribution",
+      "hard": false,
+      "passed": true,
+      "detail": "mean 61.6296, P50 20, P90 135, P99 648, max 3019 tokens/sentence",
+      "metrics": {
+        "mean": 61.6296,
+        "p50": 20,
+        "p90": 135,
+        "p95": 277,
+        "p99": 648,
+        "max": 3019,
+        "reservoir_size": 200000,
+        "estimated": true
+      },
+      "examples": []
+    },
+    {
+      "gate": 10,
+      "name": "Vocabulary utilization",
+      "hard": false,
+      "passed": true,
+      "detail": "98.48% of 33,728 pieces used (warn below 90.00%)",
+      "metrics": {
+        "vocab_size": 33728,
+        "used": 33214,
+        "dead": 514,
+        "utilization": 0.9848,
+        "warn_below": 0.9,
+        "meaningful": true,
+        "tokens_scanned": 88546891631
+      },
+      "examples": []
+    },
+    {
+      "gate": 11,
+      "name": "Token frequency distribution",
+      "hard": false,
+      "passed": true,
+      "detail": "top 1% of vocab carries 56.4% of tokens; 26 piece(s) used <= 10 times",
+      "metrics": {
+        "rare_pieces": 26,
+        "rare_threshold": 10,
+        "concentration": {
+          "top_1pct": 0.5638,
+          "top_5pct": 0.7228,
+          "top_10pct": 0.7975,
+          "top_25pct": 0.8959,
+          "top_50pct": 0.9627
+        }
+      },
+      "examples": []
+    }
+  ],
+  "environment": {
+    "python": "3.12.3",
+    "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.39"
+  }
+}
