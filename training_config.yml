@@ -167,7 +167,12 @@ defaults:
   label_smoothing_factor: 0.0  # §13: no label smoothing during pretraining
 
   # --- cadence ----------------------------------------------------------------
-  logging_steps: 50
+  # 1 = print a progress line every step. Cheap: the log call itself is a
+  # string-format plus a file write, milliseconds against a ~37s/step run —
+  # per_mode_loss_steps (below) is the one cadence here with real compute
+  # cost, and it is set explicitly to 100, not derived from this value, so
+  # this change does not add extra forward passes.
+  logging_steps: 1
   eval_steps: 1000
   save_steps: 1000
 
