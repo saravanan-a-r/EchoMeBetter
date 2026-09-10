@@ -125,7 +125,29 @@ defaults:
   gradient_accumulation_steps: 32
 
   # --- memory and precision ---------------------------------------------------
-  gradient_checkpointing: true # §13: on. ~30% slower, much less activation memory
+  # §13: on. Recomputes the forward pass during backward instead of holding
+  # its activations, trading ~25% more compute for far less memory.
+  #
+  # Turning it off was measured on this GPU (A100 40GB vGPU) with the pretrain
+  # stage's capacity-based micro-batching, and it is not worth it. Without
+  # checkpointing the pretrain budgets (e40960/d20480) run out of memory, and so
+  # do e20480/d10240, e12288/d6144 and e8192/d4096. Only budgets small enough
+  # to need ~130-210 micro-batches per step fit, and the fixed dispatch cost of
+  # each one eats the compute saved:
+  #
+  #   checkpointing ON,  e40960/d20480   0.14300 s/1k tokens  31.5 GiB reserved
+  #   checkpointing OFF, e6144/d3072     0.14174 s/1k tokens  37.1 GiB reserved
+  #   checkpointing OFF, e5120/d2560     0.15287              35.4 GiB
+  #   checkpointing OFF, e6144/d2048     0.17150              35.1 GiB
+  #   checkpointing OFF, e4096/d2048     0.17052              32.6 GiB
+  #
+  # The one faster point is 0.9% ahead (~0.35 days over 90k steps), from a
+  # single short run, and it leaves under 3 GiB of headroom. That is not safe
+  # here: this vGPU has OOM'd with 9.2 GiB reserved but unusable to
+  # fragmentation, and it cannot use expandable_segments. Its neighbours are
+  # 8-21% slower. Revisit only on a GPU with more memory or working
+  # expandable_segments.
+  gradient_checkpointing: true
   bf16: true                   # §13: bf16 mixed precision
   fp16: false                  # rejected by the loader; see config.py for why
 
