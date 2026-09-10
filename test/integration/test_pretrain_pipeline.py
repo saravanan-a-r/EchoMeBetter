@@ -607,3 +607,96 @@ def test_a_run_without_eval_tiers_ignores_the_master_cadence(
         ]
     )
     assert exit_code == 0
+
+
+# -- the progress log and the run log ---------------------------------------
+
+
+def test_the_progress_log_never_raises_on_a_record_it_cannot_format():
+    """
+    `ProgressLog` runs inside the training loop as `Trainer.on_log`, so an
+    exception from it would end a multi-week run over a log line. A record
+    whose keys or values it does not expect -- someone renames a key in
+    `loop.py`, a value arrives as the wrong type -- must be written out raw
+    instead, and the next record must still format normally.
+    """
+    lines = []
+    log = pretrain.ProgressLog(
+        max_steps=100, warmup_steps=1, cooldown_start_step=90, save_steps=50,
+        output_dir="runs/x", device_type="cpu", write=lines.append,
+    )
+    log.start(0, 0)
+    log({"step": 10, "loss": "not a number"})
+    log({"no_step_at_all": True})
+    log({"step": 20, "loss": 2.0, "perplexity": 7.39, "learning_rate": 1e-4,
+         "grad_norm": 0.5, "tokens_seen": 1000})
+
+    assert "could not be formatted" in lines[1]
+    assert "could not be formatted" in lines[2]
+    assert "step     20/100" in lines[3] and "loss 2.0000" in lines[3]
+
+
+def test_the_run_log_captures_the_whole_run_and_restores_the_terminal(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, tmp_path
+):
+    """
+    `--log-file` has to capture what an operator needs after the fact -- the
+    banner naming what actually ran, a progress line per logging step, the
+    checkpoint writes, and how the run ended -- and it must hand stdout and
+    stderr back afterwards, or everything printed after `run` returns would
+    keep going to a file that is now closed.
+    """
+    log_path = tmp_path / "logs" / "pretrain.log"
+    stdout, stderr = __import__("sys").stdout, __import__("sys").stderr
+
+    exit_code = pretrain.main(
+        [
+            "--corpus", str(mini_corpus_dir),
+            "--stage", "tiny",
+            "--device", "cpu",
+            "--model-config", str(tiny_model_config_path),
+            "--training-config", str(tiny_training_config_path),
+            "--log-file", str(log_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert __import__("sys").stdout is stdout and __import__("sys").stderr is stderr
+    text = log_path.read_text()
+    assert "pretrain.py started" in text
+    assert "model profile: tiny" in text
+    assert "training from step 0" in text
+    assert "step      1/4" in text
+    assert "checkpoint: saving" in text
+    assert "finished at step 4 (max_steps)" in text
+    assert "exited with status 0" in text
+    # stdout and stderr are both mirrored; each line must land exactly once.
+    assert text.count("pretrain.py started") == 1
+    assert text.count("step      1/4") == 1
+
+
+def test_a_run_log_is_appended_to_not_overwritten(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, tmp_path
+):
+    """
+    A resumed run must continue the same log. Overwriting it would erase the
+    record of everything before the interruption -- which is exactly what
+    someone reading the log after a crash is looking for.
+    """
+    log_path = tmp_path / "pretrain.log"
+    log_path.write_text("an earlier session\n")
+
+    pretrain.main(
+        [
+            "--corpus", str(mini_corpus_dir),
+            "--stage", "tiny",
+            "--device", "cpu",
+            "--model-config", str(tiny_model_config_path),
+            "--training-config", str(tiny_training_config_path),
+            "--log-file", str(log_path),
+        ]
+    )
+
+    text = log_path.read_text()
+    assert text.startswith("an earlier session\n")
+    assert "pretrain.py started" in text

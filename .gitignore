@@ -31,6 +31,8 @@ pretrain_corpus/output/*
 pretrain_corpus/data/pii_registry.json
 pretrain_corpus/data/pii_registry.json.lock
 pretrain_corpus/data/pii_audit.jsonl
+# Run logs written by `pretrain.py --log-file`. Run state, not source.
+pretrain_corpus/logs/
 
 # ---------------------------------------------------------------------------
 # Training runs and checkpoints

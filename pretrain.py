@@ -40,9 +40,15 @@ from __future__ import annotations
 import argparse
 import functools
 import importlib.util
+import os
 import random
+import socket
 import sys
+import time
+import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Mapping, Sequence
@@ -754,10 +760,352 @@ def load_configs(
     return training_config, model_config
 
 
+# -- what a run reports while it runs -----------------------------------------
+
+
+def _human_duration(seconds: float) -> str:
+    """`38d 01h`, `10h54m` or `3m07s` -- the two units that matter at that scale."""
+    seconds = max(0, int(seconds))
+    days, rest = divmod(seconds, 86_400)
+    hours, rest = divmod(rest, 3_600)
+    minutes, secs = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours:02d}h"
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    return f"{minutes}m{secs:02d}s"
+
+
+def _human_count(value: float) -> str:
+    for suffix, size in (("B", 1e9), ("M", 1e6), ("k", 1e3)):
+        if abs(value) >= size:
+            return f"{value / size:.2f}{suffix}"
+    return f"{value:.0f}"
+
+
+class ProgressLog:
+    """
+    One readable line per `Trainer` record, so a run shows what it is doing.
+
+    `Trainer` already builds a record every `logging_steps` -- loss, per-mode
+    loss, learning rate, gradient norm, tokens seen -- and hands it to
+    `on_log`. Nothing was listening, so a multi-week run printed its banner and
+    then nothing at all until it finished: from the outside, a healthy run and
+    a hung one looked identical.
+
+    Speed and time remaining are computed here, from the wall clock between
+    consecutive records, rather than taken from the trainer: they describe the
+    run as an operator experiences it, including data building, evaluation and
+    checkpoint writes, which is what a time-remaining figure has to include to
+    be worth reading.
+
+    GPU memory is the window's peak, *allocated* and *reserved*. The gap
+    between them is allocator fragmentation, which is what has run this GPU
+    out of memory before with room still nominally free -- a gap that grows
+    over days is the early warning.
+
+    It never raises. It runs inside the training loop, so a formatting bug in a
+    log line must not be what ends a multi-week run: a record it cannot format
+    is written out raw, with the reason, and training carries on.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_steps: int,
+        warmup_steps: int,
+        cooldown_start_step: int | None,
+        save_steps: int,
+        output_dir: str | Path,
+        device_type: str,
+        clock: Any = time.monotonic,
+        now: Any = datetime.now,
+        write: Any = print,
+    ) -> None:
+        self.max_steps = max_steps
+        self.warmup_steps = warmup_steps
+        self.cooldown_start_step = cooldown_start_step
+        self.save_steps = save_steps
+        self.output_dir = Path(output_dir)
+        self.device_type = device_type
+        self._clock = clock
+        self._now = now
+        self._write = write
+        self._start_step: int | None = None
+        self._start_time: float | None = None
+        self._last: tuple[int, float, float] | None = None
+
+    def start(self, step: int, tokens_seen: float) -> None:
+        """Mark where this process begins, which is not step 0 after a resume."""
+        moment = self._clock()
+        self._start_step, self._start_time = step, moment
+        self._last = (step, moment, float(tokens_seen))
+        how = "resumed" if step else "fresh start"
+        self._emit(
+            f"{self._stamp()} | training from step {step:,} of {self.max_steps:,} ({how})"
+        )
+
+    def __call__(self, record: Mapping[str, Any]) -> None:
+        try:
+            text = self.format(record)
+        except Exception as exc:  # see the class docstring: never end the run
+            text = (
+                f"{self._stamp()} | log record could not be formatted "
+                f"({type(exc).__name__}: {exc}): {dict(record)!r}"
+            )
+        self._emit(text)
+
+    def format(self, record: Mapping[str, Any]) -> str:
+        if record.get("eval"):
+            return self._format_eval(record)
+        if record.get("finished"):
+            return self._format_finished(record)
+        return self._format_step(record)
+
+    # -- the three kinds of record -------------------------------------------
+
+    def _format_step(self, record: Mapping[str, Any]) -> str:
+        step = int(record["step"])
+        moment = self._clock()
+        tokens_seen = float(record.get("tokens_seen", 0.0))
+
+        parts = [
+            self._stamp(),
+            f"step {step:>6,}/{self.max_steps:,} ({100 * step / self.max_steps:5.2f}%) "
+            f"{self._phase(step)}",
+            self._losses(record),
+            f"lr {float(record['learning_rate']):.2e}  gnorm {float(record['grad_norm']):.3f}",
+        ]
+
+        if self._last is not None:
+            last_step, last_time, last_tokens = self._last
+            steps, seconds = step - last_step, moment - last_time
+            if steps > 0 and seconds > 0:
+                parts.append(
+                    f"{seconds / steps:6.2f} s/step  "
+                    f"{(tokens_seen - last_tokens) / seconds:,.0f} tok/s"
+                )
+        parts.append(f"seen {_human_count(tokens_seen)} tok")
+
+        memory = self._memory()
+        if memory:
+            parts.append(memory)
+        if record.get("skipped_steps"):
+            parts.append(f"skipped {int(record['skipped_steps'])}")
+        if self._start_time is not None and self._start_step is not None:
+            done = step - self._start_step
+            elapsed = moment - self._start_time
+            timing = f"elapsed {_human_duration(elapsed)}"
+            if done > 0:
+                remaining = (self.max_steps - step) * elapsed / done
+                timing += f"  eta {_human_duration(remaining)}"
+            parts.append(timing)
+
+        self._last = (step, moment, tokens_seen)
+        line = " | ".join(parts)
+
+        # Written after the trainer logs this step, so the line says what is
+        # about to happen rather than what has: a failed write shows up next
+        # in the log as a traceback, directly under this line.
+        if self.save_steps and step % self.save_steps == 0:
+            line += (
+                f"\n{self._stamp()} | checkpoint: saving "
+                f"{self.output_dir / f'checkpoint-{step}'}"
+            )
+        return line
+
+    def _format_eval(self, record: Mapping[str, Any]) -> str:
+        tier = record.get("eval_tier", "eval")
+        return (
+            f"{self._stamp()} | eval [{tier}] at step {int(record['step']):,} | "
+            f"{self._losses(record)}"
+        )
+
+    def _format_finished(self, record: Mapping[str, Any]) -> str:
+        elapsed = (
+            f" | ran {_human_duration(self._clock() - self._start_time)}"
+            if self._start_time is not None
+            else ""
+        )
+        return (
+            f"{self._stamp()} | finished at step {int(record['step']):,} "
+            f"({record.get('reason', 'unknown')}) | "
+            f"seen {_human_count(float(record.get('tokens_seen', 0)))} tok | "
+            f"skipped {int(record.get('skipped_steps', 0))}{elapsed}"
+        )
+
+    # -- pieces --------------------------------------------------------------
+
+    def _losses(self, record: Mapping[str, Any]) -> str:
+        text = f"loss {float(record['loss']):.4f}  ppl {float(record['perplexity']):,.1f}"
+        modes = [
+            f"{mode} {float(record[f'loss_{mode}']):.4f}"
+            for mode in ("R", "X", "S")
+            if f"loss_{mode}" in record
+        ]
+        return f"{text}  [{'  '.join(modes)}]" if modes else text
+
+    def _phase(self, step: int) -> str:
+        if step <= self.warmup_steps:
+            return "warmup"
+        if self.cooldown_start_step is not None and step > self.cooldown_start_step:
+            return "cooldown"
+        return "stable"
+
+    def _memory(self) -> str:
+        if self.device_type != "cuda":
+            return ""
+        import torch
+
+        allocated = torch.cuda.max_memory_allocated() / 2**30
+        reserved = torch.cuda.max_memory_reserved() / 2**30
+        torch.cuda.reset_peak_memory_stats()
+        return f"gpu peak {allocated:.1f} alloc / {reserved:.1f} reserved GiB"
+
+    def _stamp(self) -> str:
+        return self._now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _emit(self, text: str) -> None:
+        try:
+            self._write(text)
+        except OSError:
+            # Nowhere left to report it: the terminal itself is gone. The run
+            # is worth more than the line.
+            pass
+
+
+class _LogFile:
+    """
+    The run's log file, appended to and flushed on every write.
+
+    Flushed every time because the moment the log matters most is the moment
+    the process dies, and a buffer that was never written is exactly the part
+    that explains why. It is a few writes every half hour; the cost is nil.
+
+    A write that fails -- a full disk, a removed mount -- disables the file and
+    says so once on the real stderr. Losing the log is bad; letting a logging
+    failure raise out of a `print` inside the training loop and end the run is
+    worse.
+    """
+
+    def __init__(self, path: Path, stderr: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self._stderr = stderr
+        self._handle: Any = open(path, "a", encoding="utf-8")
+
+    def write(self, text: str) -> None:
+        if self._handle is None:
+            return
+        try:
+            self._handle.write(text)
+            self._handle.flush()
+        except OSError as exc:
+            self._handle = None
+            try:
+                self._stderr.write(f"\n[run log] writing {self.path} failed ({exc}); "
+                                   f"continuing without it\n")
+            except OSError:
+                pass
+
+    def flush(self) -> None:
+        if self._handle is not None:
+            try:
+                self._handle.flush()
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+
+
+class _Tee:
+    """A text stream that writes to the terminal and to the run log."""
+
+    def __init__(self, stream: Any, log: _LogFile) -> None:
+        self._stream = stream
+        self._log = log
+
+    def write(self, text: str) -> int:
+        written = self._stream.write(text)
+        self._log.write(text)
+        return written
+
+    def flush(self) -> None:
+        self._stream.flush()
+        self._log.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+class _RunOutcome:
+    """How the run ended, filled in by `run` for the log's closing line."""
+
+    def __init__(self) -> None:
+        self.text = "ended"
+
+
+@contextmanager
+def run_log(path: str | Path | None, argv: Sequence[str]):
+    """
+    Mirror everything the run prints -- stdout and stderr -- into `path`.
+
+    Everything, rather than only the progress lines, because the lines that
+    explain a failure are rarely the ones anybody chose to log: the startup
+    banner saying which stage and corpus actually ran, a warning from torch, a
+    traceback. The file is appended to, so a resumed run continues the same
+    log, and every session inside it is bracketed by a header and a closing
+    line saying how it ended.
+
+    `None` leaves output alone, which is what every test and the smoke test
+    rely on.
+    """
+    outcome = _RunOutcome()
+    if path is None:
+        yield outcome
+        return
+
+    stdout, stderr = sys.stdout, sys.stderr
+    log = _LogFile(Path(path), stderr)
+    rule = "=" * 100
+    log.write(
+        f"\n{rule}\n"
+        f"pretrain.py started {datetime.now():%Y-%m-%d %H:%M:%S}  "
+        f"(pid {os.getpid()}, host {socket.gethostname()})\n"
+        f"cwd: {os.getcwd()}\n"
+        f"command: {' '.join(argv)}\n"
+        f"{rule}\n"
+    )
+    sys.stdout, sys.stderr = _Tee(stdout, log), _Tee(stderr, log)
+    try:
+        yield outcome
+    except KeyboardInterrupt:
+        outcome.text = "interrupted (KeyboardInterrupt)"
+        raise
+    except BaseException as exc:
+        outcome.text = f"stopped by {type(exc).__name__}: {exc}"
+        log.write(traceback.format_exc())
+        raise
+    finally:
+        sys.stdout, sys.stderr = stdout, stderr
+        log.write(f"{rule}\n{datetime.now():%Y-%m-%d %H:%M:%S} | {outcome.text}\n{rule}\n")
+        log.close()
+
+
 # -- the run ------------------------------------------------------------------
 
 
 def run(args: argparse.Namespace) -> int:
+    with run_log(args.log_file, sys.argv) as outcome:
+        status = _run(args)
+        outcome.text = f"exited with status {status}"
+        return status
+
+
+def _run(args: argparse.Namespace) -> int:
     training_config, model_config = load_configs(
         training_config_path=args.training_config,
         model_config_path=args.model_config,
@@ -937,6 +1285,15 @@ def run(args: argparse.Namespace) -> int:
     )
 
     trainer = training_pkg.Trainer(pipeline.model, training_config, device=args.device)
+    progress = ProgressLog(
+        max_steps=training_config.max_steps,
+        warmup_steps=training_config.resolved_warmup_steps,
+        cooldown_start_step=training_config.cooldown_start_step,
+        save_steps=training_config.save_steps,
+        output_dir=training_config.output_dir,
+        device_type=trainer.device.type,
+    )
+    trainer.on_log = progress
 
     if training_config.resume_from_checkpoint and training_pkg.latest_checkpoint(
         training_config.output_dir
@@ -944,6 +1301,7 @@ def run(args: argparse.Namespace) -> int:
         trainer.resume(data=batch_source)
         print(f"resumed from step {trainer.state.global_step}")
 
+    progress.start(trainer.state.global_step, trainer.state.tokens_seen)
     trainer.train(
         batch_source,
         evaluate=evaluate,
@@ -1036,6 +1394,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "torch device (cpu/cuda/mps). Default: auto-detect. On Apple Silicon, "
             "prefer --device cpu explicitly — training/src/metrics.py accumulates "
             "loss statistics in float64, which MPS does not support."
+        ),
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help=(
+            "Append everything the run prints -- banner, a progress line every "
+            "logging_steps, evaluations, tracebacks -- to this file as well as the "
+            "terminal, e.g. pretrain_corpus/logs/pretrain.log. Default: terminal only."
         ),
     )
     parser.add_argument("--tokenizer-dir", default=str(DEFAULT_TOKENIZER_DIR))
