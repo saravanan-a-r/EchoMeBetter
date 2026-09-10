@@ -19,7 +19,10 @@ committing real compute, not to a suite that runs on every change.
 
 from __future__ import annotations
 
+import json
+
 import pytest
+import yaml
 
 import pretrain
 import pretrain_smoke_test
@@ -274,6 +277,166 @@ def test_smoke_test_passes_on_a_sound_tiny_pipeline(
     assert exit_code == 0
 
 
+@pytest.fixture
+def cooldown_stage_config(tiny_training_config_path, tmp_path):
+    """
+    A stage shaped like `pretrain`: warmup_stable_decay, a cooldown mixture
+    and the rewrite task, with the decay phase declared as a *ratio* of a long
+    run — exactly the shape whose cooldown a short rehearsal would never
+    reach unless the smoke test rescales it.
+    """
+    document = yaml.safe_load(tiny_training_config_path.read_text(encoding="utf-8"))
+    document["stages"]["like_pretrain"] = dict(
+        model_profile="tiny",
+        output_dir=str(tmp_path / "runs"),
+        max_steps=200,
+        lr_scheduler_type="warmup_stable_decay",
+        warmup_ratio=0.01,
+        lr_decay_ratio=0.1,
+        lr_decay_type="linear",
+        cooldown_blend={"special": 1.0},
+        # The real stage's share, and a real accumulation width. Both matter
+        # to what this test proves: the length-bucketing pools are filled
+        # before the boundary, so the cooldown mixture only starts delivering
+        # once they drain, which takes a realistic number of micro-batches
+        # per step rather than the one a tiny fixture would otherwise use.
+        rewrite_share=0.2,
+        rewrite_blend={"bulk": 1.0},
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=16,
+    )
+    path = tiny_training_config_path.with_name("cooldown_training_config.yml")
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def sourced_corpus_dir(tmp_path):
+    """One directory per source, the way `pretrain_corpus/` lays the corpus out."""
+    documents = [
+        "The quarterly report showed strong growth in the European market.",
+        "The server crashed because the backup connection failed to respond.",
+        "The committee reviewed the roadmap and agreed on next quarter's plans.",
+        "A small encoder-decoder transformer can still learn fluent English.",
+    ]
+    root = tmp_path / "sourced_corpus"
+    for source in ("bulk", "special"):
+        directory = root / source
+        directory.mkdir(parents=True)
+        (directory / f"{source}-w00-00000.jsonl").write_text(
+            "\n".join(json.dumps({"text": f"{source}: {text}"}) for text in documents * 30)
+            + "\n",
+            encoding="utf-8",
+        )
+    return root
+
+
+def test_the_smoke_test_reaches_a_stages_cooldown_and_rewrite_task(
+    sourced_corpus_dir, tiny_model_config_path, cooldown_stage_config, tmp_path, capsys
+):
+    """
+    The gap that made the smoke test unable to de-risk the real run.
+
+    `pretrain`'s cooldown starts at step 180,000 of 200,000, so a rehearsal of
+    a few steps used to end long before the mixture switch or the rewrite task
+    executed — the two newest pieces of the pipeline, unreachable by the check
+    that exists to reach them. The smoke test now compresses the schedule so
+    both run, and fails if either does not.
+    """
+    exit_code = pretrain_smoke_test.main(
+        [
+            "--corpus", str(sourced_corpus_dir),
+            "--stage", "like_pretrain",
+            "--steps", "8",
+            "--device", "cpu",
+            "--model-config", str(tiny_model_config_path),
+            "--training-config", str(cooldown_stage_config),
+            "--output-dir", str(tmp_path / "smoke_cooldown"),
+            "--keep",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert exit_code == 0, out
+
+    # The schedule was compressed, not skipped: the boundary lands inside the run.
+    assert "cooldown boundary placed at step 4" in out
+    assert "cooldown mixture delivered" in out
+    assert "rewrite task produced" in out
+
+
+def test_the_smoke_test_exercises_both_eval_tiers_when_given_them(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, tmp_path, capsys
+):
+    """
+    Held-out evaluation is optional on the command line, so it was never
+    rehearsed. Supplying either eval flag now builds both tiers, runs them on
+    their own cadences and requires the selecting tier to reach `best_step` —
+    the mechanism that decides which checkpoint the whole run keeps.
+    """
+    eval_corpus = tmp_path / "heldout.jsonl"
+    eval_corpus.write_text(
+        "\n".join(
+            json.dumps({"text": f"Held-out sentence number {index} about servers and logs."})
+            for index in range(40)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = pretrain_smoke_test.main(
+        [
+            "--corpus", str(mini_corpus_dir),
+            "--steps", "4",
+            "--device", "cpu",
+            "--model-config", str(tiny_model_config_path),
+            "--training-config", str(tiny_training_config_path),
+            "--quick-eval-corpus", str(eval_corpus),
+            "--master-eval-corpus", str(eval_corpus),
+            "--output-dir", str(tmp_path / "smoke_eval"),
+            "--keep",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert exit_code == 0, out
+    assert "eval tiers scored: ['master', 'quick']" in out
+    assert "best checkpoint selected at step" in out
+
+
+def test_the_smoke_test_reports_a_blend_naming_a_missing_source(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, tmp_path
+):
+    """
+    `build_pipeline` refuses this, and the smoke test has to surface it as
+    "could not run" rather than as a failed check — it is a typo in the
+    configuration, not a broken pipeline. In the real run the same refusal is
+    what stops a bad blend being discovered at step 180,000.
+    """
+    document = yaml.safe_load(tiny_training_config_path.read_text(encoding="utf-8"))
+    document["stages"]["bad_blend"] = dict(
+        model_profile="tiny",
+        output_dir=str(tmp_path / "runs"),
+        max_steps=200,
+        lr_scheduler_type="warmup_stable_decay",
+        lr_decay_ratio=0.1,
+        cooldown_blend={"a_source_that_does_not_exist": 1.0},
+    )
+    path = tiny_training_config_path.with_name("bad_blend_config.yml")
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    exit_code = pretrain_smoke_test.main(
+        [
+            "--corpus", str(mini_corpus_dir),
+            "--stage", "bad_blend",
+            "--steps", "4",
+            "--device", "cpu",
+            "--model-config", str(tiny_model_config_path),
+            "--training-config", str(path),
+            "--output-dir", str(tmp_path / "smoke_bad"),
+        ]
+    )
+    assert exit_code == 2
+
+
 def test_smoke_test_fails_loudly_on_a_missing_tokenizer(
     mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, tmp_path
 ):
@@ -288,3 +451,159 @@ def test_smoke_test_fails_loudly_on_a_missing_tokenizer(
         ]
     )
     assert exit_code == 2
+
+
+def _capacity_source(mini_corpus_dir, tiny_model_config_path, tiny_training_config_path,
+                     capacity):
+    doc = yaml.safe_load(tiny_training_config_path.read_text())
+    training_config = pretrain.training_pkg.build_training_config(doc, stage="tiny")
+    model_config = pretrain.rephrase_model.load_model_config(
+        tiny_model_config_path, profile="tiny"
+    )
+    specials = pretrain.ul2.SpecialTokens.from_token_map(
+        pretrain.DEFAULT_TOKENIZER_DIR / "token_map.json"
+    )
+    ul2_config = pretrain.ul2.UL2Config(
+        max_source_length=model_config.max_encoder_length,
+        max_target_length=model_config.max_decoder_length,
+    )
+    objective = pretrain.ul2.UL2Objective(ul2_config, specials)
+    sp = pretrain.corpus_pkg.tokenizer_interop.load_processor(
+        pretrain.DEFAULT_TOKENIZER_DIR / "spm.model"
+    )
+    files = pretrain.corpus_pkg.discover_corpus_files(mini_corpus_dir)
+    corpus = pretrain.corpus_pkg.TokenizedCorpus(files, sp, seed=training_config.data_seed)
+    return pretrain.PretrainBatchSource(
+        corpus, objective, specials, batch_size=2,
+        data_seed=training_config.data_seed, capacity=capacity,
+    )
+
+
+def test_a_capacity_bounds_the_batches_the_real_pipeline_emits(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path
+):
+    """
+    The bound has to hold on batches the assembled pipeline actually produces,
+    not only on synthetic examples: it is what stands between a multi-week run
+    and an out-of-memory failure on a shape the corpus produced and no sample
+    happened to contain.
+
+    Both budgets are checked against the *padded* widths, because those are
+    the rectangles that get allocated.
+    """
+    capacity = pretrain.ul2.BatchCapacity(
+        max_encoder_tokens=512,
+        max_decoder_tokens=512,
+        pad_to_multiple_of=pretrain.PAD_TO_MULTIPLE_OF,
+    )
+    source = _capacity_source(
+        mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, capacity
+    )
+    sizes = set()
+    for _ in range(40):
+        batch = next(source)
+        rows = len(batch["encoder_input_ids"])
+        encoder_width = len(batch["encoder_input_ids"][0])
+        decoder_width = len(batch["labels"][0])
+        assert rows * encoder_width <= capacity.max_encoder_tokens
+        assert rows * decoder_width <= capacity.max_decoder_tokens
+        assert len(batch["modes"]) == rows
+        sizes.add(rows)
+
+    # The mechanism is only doing anything if the row count moves with the
+    # width; a single size would mean it had collapsed to a fixed batch.
+    assert len(sizes) > 1
+
+
+def test_a_capacity_pipeline_is_still_resumable(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path
+):
+    """
+    Resumption is what a multi-week run rests on, and a capacity changes the
+    batcher's cut -- so the round trip is checked again here rather than
+    assumed to carry over from the fixed-size case.
+    """
+    capacity = pretrain.ul2.BatchCapacity(
+        max_encoder_tokens=512,
+        max_decoder_tokens=512,
+        pad_to_multiple_of=pretrain.PAD_TO_MULTIPLE_OF,
+    )
+    make = lambda: _capacity_source(
+        mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, capacity
+    )
+    straight = make()
+    expected = [next(straight)["encoder_input_ids"] for _ in range(6)]
+
+    crashed = make()
+    before = [next(crashed)["encoder_input_ids"] for _ in range(3)]
+    state = crashed.state_dict()
+
+    resumed = make()
+    resumed.load_state_dict(state)
+    after = [next(resumed)["encoder_input_ids"] for _ in range(3)]
+
+    assert before + after == expected
+
+
+def test_a_master_cadence_longer_than_the_run_is_refused(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, tmp_path
+):
+    """
+    The master tier is the only thing that selects a checkpoint, so a cadence
+    longer than the run means none is ever selected — and the run still
+    finishes, still logs, and still leaves checkpoints behind. Whichever one
+    happened to be last is then kept, which is exactly the silent
+    wrong-weights failure the tiering exists to prevent.
+
+    Caught before any compute is spent rather than discovered at the end of
+    one, which for the real stage is weeks later.
+    """
+    doc = yaml.safe_load(tiny_training_config_path.read_text())
+    # `save_steps` is a shared setting, not a per-stage one, and the master
+    # cadence has to stay a multiple of it.
+    doc["stages"]["tiny"]["master_eval_steps"] = 999
+    doc["defaults"]["save_steps"] = 999
+    path = tmp_path / "long_master.yml"
+    path.write_text(yaml.safe_dump(doc))
+
+    with pytest.raises(pretrain.PipelineError, match="master_eval_steps"):
+        pretrain.main(
+            [
+                "--corpus", str(mini_corpus_dir),
+                "--master-eval-corpus", str(mini_corpus_dir),
+                "--master-eval-max-examples", "8",
+                "--stage", "tiny",
+                "--device", "cpu",
+                "--model-config", str(tiny_model_config_path),
+                "--training-config", str(path),
+            ]
+        )
+
+
+def test_a_run_without_eval_tiers_ignores_the_master_cadence(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, tmp_path
+):
+    """
+    The other half of the rule above: with no master corpus the cadence
+    governs nothing, so it must not be refused. `pretrain_smoke_test.py`
+    depends on this — it shrinks a run to a handful of steps and leaves the
+    stage's own master cadence far above it.
+    """
+    doc = yaml.safe_load(tiny_training_config_path.read_text())
+    # `save_steps` is a shared setting, not a per-stage one, and the master
+    # cadence has to stay a multiple of it.
+    doc["stages"]["tiny"]["master_eval_steps"] = 999
+    doc["defaults"]["save_steps"] = 999
+    path = tmp_path / "no_tiers.yml"
+    path.write_text(yaml.safe_dump(doc))
+
+    exit_code = pretrain.main(
+        [
+            "--corpus", str(mini_corpus_dir),
+            "--stage", "tiny",
+            "--device", "cpu",
+            "--model-config", str(tiny_model_config_path),
+            "--training-config", str(path),
+        ]
+    )
+    assert exit_code == 0

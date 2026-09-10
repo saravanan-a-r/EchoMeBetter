@@ -614,3 +614,74 @@ def test_our_own_fields_are_declared_as_ours():
     """
     for name in OURS_ALONE:
         assert name in TrainingConfig.__dataclass_fields__, name
+
+
+# -- capacity-based micro-batching ------------------------------------------
+#
+# The three settings are one mechanism. Any subset of them is a run that looks
+# configured and is not, which is the class of mistake this file exists to
+# catch before a multi-week run starts rather than after it finishes.
+
+
+def test_capacity_is_absent_by_default():
+    """A run that says nothing keeps fixed-row micro-batching."""
+    settings = config()
+    assert settings.tokens_per_step is None
+    assert settings.max_batch_encoder_tokens is None
+    assert settings.max_batch_decoder_tokens is None
+    assert settings.max_batch_rows is None
+
+
+def test_a_full_capacity_is_accepted():
+    settings = config(
+        tokens_per_step=260_000,
+        max_batch_encoder_tokens=32_768,
+        max_batch_decoder_tokens=16_384,
+    )
+    assert settings.tokens_per_step == 260_000
+
+
+def test_one_token_budget_alone_is_refused():
+    """
+    The two rectangles are padded independently, so one budget cannot bound
+    the other: an encoder budget alone leaves decoder memory unbounded, which
+    is the failure the mechanism exists to remove.
+    """
+    with pytest.raises(TrainingConfigError, match="max_batch_decoder_tokens"):
+        config(tokens_per_step=1000, max_batch_encoder_tokens=32_768)
+
+
+def test_budgets_without_tokens_per_step_are_refused():
+    """
+    Micro-batches would vary in size while the window still closed on a count
+    of them, so the effective batch size would drift with whatever lengths the
+    corpus served -- a silent change to training, not a throughput setting.
+    """
+    with pytest.raises(TrainingConfigError, match="tokens_per_step"):
+        config(max_batch_encoder_tokens=32_768, max_batch_decoder_tokens=16_384)
+
+
+def test_tokens_per_step_without_budgets_is_refused():
+    with pytest.raises(TrainingConfigError, match="tokens_per_step"):
+        config(tokens_per_step=260_000)
+
+
+def test_max_batch_rows_needs_the_budgets():
+    with pytest.raises(TrainingConfigError, match="max_batch_rows"):
+        config(max_batch_rows=128)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["tokens_per_step", "max_batch_encoder_tokens", "max_batch_decoder_tokens"],
+)
+@pytest.mark.parametrize("bad", [0, -1, True])
+def test_capacity_counts_must_be_positive(field, bad):
+    settings = {
+        "tokens_per_step": 260_000,
+        "max_batch_encoder_tokens": 32_768,
+        "max_batch_decoder_tokens": 16_384,
+    }
+    settings[field] = bad
+    with pytest.raises(TrainingConfigError):
+        config(**settings)

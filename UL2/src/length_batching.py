@@ -41,6 +41,27 @@ both padded dimensions cost real FLOPs -- and is settled by measurement in
 Returns flatten past ~16-32 batches, and the pool has to be carried in every
 checkpoint (below), so the default sits at the knee rather than the asymptote.
 
+The second cut: capacity, not row count
+---------------------------------------
+Pooling removes padding *within* a batch but leaves every batch holding the
+same number of rows, and rows differ in length by more than a hundredfold
+here. Two costs survive it, both measured on this model and GPU:
+
+  - a micro-batch costs ~0.31 s before it does any arithmetic at all -- the
+    dispatch of 48 layers' worth of kernels. A 16-row `[S]` batch is 296
+    tokens wide and takes 0.39 s, so four fifths of it is launch overhead with
+    the GPU idle. Raising the rows to 48 at that width costs 1.6% more time
+    for six times the work.
+  - peak memory of a fixed-row batch is set by the widest row that turns up,
+    so it is bounded by the corpus rather than by configuration. That is why
+    raising the row count globally is unsafe -- 32 rows survives a sample and
+    then meets a 1216x1504 window later in the run.
+
+`BatchCapacity` bounds `rows x padded width` instead, separately for the two
+padded rectangles. Narrow rows then get many to a batch and wide rows few, and
+peak memory stops depending on which shapes the corpus happens to contain.
+`capacity=None` keeps the fixed-`batch_size` cut exactly as it was.
+
 Why this does not weaken shuffling
 ----------------------------------
 Sorting is an ordering operation, and the whole value of a shuffled stream is
@@ -103,6 +124,7 @@ and nothing else about the pipeline.
 from __future__ import annotations
 
 import random
+from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from .denoise import Example, example_from_dict, example_to_dict
@@ -112,6 +134,92 @@ from .errors import UL2Error
 # a pool four times larger. The remaining 0.9 points are not worth quadrupling
 # what every checkpoint has to carry.
 DEFAULT_POOL_BATCHES = 16
+
+
+@dataclass(frozen=True)
+class BatchCapacity:
+    """
+    How much padded work one micro-batch may hold.
+
+    A batch of a fixed number of rows holds an amount of work that varies with
+    the rows' length -- over this corpus, by more than a hundredfold, since a
+    `[S]` row is one ~300-token document and an `[R]` row is a packed
+    2048-token window. Two consequences were measured on this model and GPU,
+    and this class exists to remove both:
+
+      - a 16x296 micro-batch spends 0.31 s of its 0.39 s on kernel dispatch
+        with the GPU essentially idle, because there is not enough work in it
+        to cover the launch cost of 48 layers;
+      - peak memory of a fixed-row batch is unbounded, since it is set by the
+        widest row that turns up. That is why raising the row count is unsafe:
+        a batch size that survives a sample of the corpus still meets a wider
+        shape later and runs out of memory mid-run.
+
+    Bounding `rows x padded width` instead fixes both at once: narrow rows get
+    many to a batch and wide rows get few, and peak memory is bounded by
+    construction rather than by whichever shape the corpus happens to hold.
+
+    Encoder and decoder are bounded separately because they cost differently.
+    Fitting measured peak memory over all 3,136 real shapes gives ~1.6 MiB per
+    encoder token against ~5.6 MiB per decoder token: a decoder position
+    carries cross-attention and, above all, a 33,728-wide logit row, so one
+    combined budget would have to be set by the decoder and would leave
+    encoder capacity unused.
+
+    `max_rows` is an optional backstop; the token budgets already bound the row
+    count, so it is only there for a caller that wants a hard ceiling as well.
+    `pad_to_multiple_of` mirrors the argument of the same name in `pad_batch`,
+    so the width this counts is the width that will actually be allocated
+    rather than one rounding step below it.
+    """
+
+    max_encoder_tokens: int
+    max_decoder_tokens: int
+    max_rows: int | None = None
+    pad_to_multiple_of: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("max_encoder_tokens", "max_decoder_tokens"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise UL2Error(f"{name} must be a positive integer, got {value!r}")
+        if self.max_rows is not None and (
+            not isinstance(self.max_rows, int)
+            or isinstance(self.max_rows, bool)
+            or self.max_rows < 1
+        ):
+            raise UL2Error(
+                f"max_rows must be a positive integer or absent, got {self.max_rows!r}"
+            )
+        if self.pad_to_multiple_of is not None and self.pad_to_multiple_of < 1:
+            raise UL2Error(
+                f"pad_to_multiple_of must be >= 1 or absent, got {self.pad_to_multiple_of}"
+            )
+
+    def width(self, length: int) -> int:
+        """The width `pad_batch` will allocate for a row of `length` tokens."""
+        multiple = self.pad_to_multiple_of
+        if multiple is None or multiple <= 1:
+            return length
+        remainder = length % multiple
+        return length if remainder == 0 else length + (multiple - remainder)
+
+    def admits(self, rows: int, encoder_length: int, target_length: int) -> bool:
+        """Whether `rows` rows of this padded size stay inside every budget."""
+        return (
+            (self.max_rows is None or rows <= self.max_rows)
+            and rows * self.width(encoder_length) <= self.max_encoder_tokens
+            and rows * self.width(target_length) <= self.max_decoder_tokens
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "max_encoder_tokens": self.max_encoder_tokens,
+            "max_decoder_tokens": self.max_decoder_tokens,
+            "max_rows": self.max_rows,
+            "pad_to_multiple_of": self.pad_to_multiple_of,
+        }
+
 
 # Key standing in for `mode=None`, which is what an unpacked run passes. A
 # dict cannot be keyed by None and also JSON-serialized, and JSON object keys
@@ -138,6 +246,7 @@ class LengthBucketedBatcher:
         *,
         batch_size: int,
         pool_batches: int = DEFAULT_POOL_BATCHES,
+        capacity: BatchCapacity | None = None,
         seed: int = 0,
     ) -> None:
         if batch_size < 1:
@@ -148,6 +257,7 @@ class LengthBucketedBatcher:
         self.produce = produce
         self.batch_size = batch_size
         self.pool_batches = pool_batches
+        self.capacity = capacity
         self.rng = random.Random(seed)
 
         # Cut batches waiting to be emitted, per mode, in shuffled order.
@@ -185,10 +295,12 @@ class LengthBucketedBatcher:
         pool = self._pools.setdefault(key, [])
         target = self.batch_size * self.pool_batches
 
+        exhausted = False
         while len(pool) < target:
             try:
                 pool.append(self.produce(mode))
             except StopIteration:
+                exhausted = True
                 break
 
         if not pool:
@@ -200,17 +312,84 @@ class LengthBucketedBatcher:
         pool.sort(key=_example_width)
 
         # When `produce` was exhausted the pool is short, so the final cut may
-        # hold fewer than `batch_size` examples. It is kept rather than
+        # hold fewer examples than a full batch. It is kept rather than
         # trimmed: those examples were already read, and dropping them is the
         # silent loss this class exists to avoid.
-        batches = [pool[i : i + self.batch_size] for i in range(0, len(pool), self.batch_size)]
-        self._pools[key] = []
+        batches = self._cut(pool)
+
+        # A greedy cut ends on a partly-filled batch, and under a capacity a
+        # pool yields only a handful of batches -- so emitting that remainder
+        # would make a noticeable share of all batches short ones, which is
+        # the padding waste this module exists to remove, reintroduced at the
+        # pool boundary. It goes back into the pool to be re-sorted with the
+        # next fill instead, and is checkpointed there like any other pooled
+        # example.
+        #
+        # Only under a capacity. The fixed cut divides a pool of
+        # `batch_size * pool_batches` exactly and has no remainder to carry,
+        # so holding its last batch back would change the stream a run
+        # without a capacity produces -- and that stream must not move.
+        # Not when the source is exhausted either: there is no next fill then,
+        # and holding it would be the silent loss above. Nor when it is the
+        # only batch, or `next_batch` would have nothing to emit after a
+        # refill.
+        if self.capacity is not None and not exhausted and len(batches) > 1:
+            self._pools[key] = batches.pop()
+        else:
+            self._pools[key] = []
 
         # Shuffled so the model does not see one short-to-long sweep per pool.
         # `next_batch` pops from the end, which is as arbitrary as any other
         # position once the list is shuffled.
         self.rng.shuffle(batches)
         self._queues.setdefault(key, []).extend(batches)
+
+    def _cut(self, pool: list[Example]) -> list[list[Example]]:
+        """
+        Divide a sorted pool into batches.
+
+        Without a `capacity` this is a fixed `batch_size` rows per batch, which
+        is what the class did before capacities existed. With one, rows are
+        added while the batch still fits every budget (`BatchCapacity.admits`),
+        so a batch of short rows holds many and a batch of long rows holds few.
+
+        The pool arrives sorted by length, so each batch is cut from rows that
+        are already near each other -- the greedy pass never has to look ahead
+        to find a good grouping, and a row that is admitted keeps the batch's
+        padded width almost unchanged.
+
+        A row that exceeds a budget on its own is still emitted, in a batch of
+        one. Refusing it here would silently drop an example the corpus
+        produced, which is the failure this module and `pack_documents` both
+        take care never to commit; keeping it means the trainer sees the same
+        examples whatever the capacity is set to.
+        """
+        if self.capacity is None:
+            return [
+                pool[i : i + self.batch_size] for i in range(0, len(pool), self.batch_size)
+            ]
+
+        batches: list[list[Example]] = []
+        current: list[Example] = []
+        encoder_length = 0
+        target_length = 0
+        for example in pool:
+            widest_encoder = max(encoder_length, example.encoder_length)
+            widest_target = max(target_length, example.target_length)
+            if current and not self.capacity.admits(
+                len(current) + 1, widest_encoder, widest_target
+            ):
+                batches.append(current)
+                current = [example]
+                encoder_length = example.encoder_length
+                target_length = example.target_length
+                continue
+            current.append(example)
+            encoder_length = widest_encoder
+            target_length = widest_target
+        if current:
+            batches.append(current)
+        return batches
 
     # -- introspection ------------------------------------------------------
 
@@ -227,6 +406,7 @@ class LengthBucketedBatcher:
         return {
             "batch_size": self.batch_size,
             "pool_batches": self.pool_batches,
+            "capacity": None if self.capacity is None else self.capacity.to_dict(),
             "rng": [version, list(internal_state), gauss_next],
             "queues": {
                 key: [[example_to_dict(e) for e in batch] for batch in queue]
@@ -241,10 +421,20 @@ class LengthBucketedBatcher:
         }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        # Whatever cut the queued batches has to still be in force, or the
+        # buffered batches would be emitted at a size this run never asked
+        # for. Which setting did the cutting depends on the mode: a capacity
+        # governs it when set, and `batch_size` alone when it is not.
+        saved_capacity = state.get("capacity")
+        current_capacity = None if self.capacity is None else self.capacity.to_dict()
+        if saved_capacity != current_capacity:
+            raise UL2Error(
+                f"checkpoint cut its buffered batches to capacity {saved_capacity!r} "
+                f"but this run uses {current_capacity!r}; the buffered batches cannot "
+                f"be reshaped without either dropping or duplicating examples"
+            )
         saved_batch_size = int(state.get("batch_size", self.batch_size))
-        if saved_batch_size != self.batch_size:
-            # The queued batches were cut to the old size; emitting them now
-            # would hand the trainer batches of a width it did not ask for.
+        if self.capacity is None and saved_batch_size != self.batch_size:
             raise UL2Error(
                 f"checkpoint holds batches of {saved_batch_size} examples but this "
                 f"run uses batch_size={self.batch_size}; the buffered batches cannot "

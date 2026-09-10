@@ -145,12 +145,42 @@ class LossTracker:
         modes: Sequence[str] | None = None,
     ) -> None:
         """
-        Add one batch, given per-row loss sums and token counts.
+        Add one batch to the overall mean and, when `modes` is given, to the
+        per-mode means.
 
         `modes` is the `modes` list `UL2/src/batching.pad_batch` already puts
         in every batch — this consumes it unchanged, which is why nothing
         translates between the two modules.
         """
+        self._ingest(totals, counts, modes, overall=True)
+
+    def update_by_mode(
+        self,
+        totals: torch.Tensor,
+        counts: torch.Tensor,
+        modes: Sequence[str],
+    ) -> None:
+        """
+        Add one batch to the per-mode means **only**.
+
+        For the caller that already has the overall loss from a cheaper
+        source. `Trainer` is exactly that caller: the training pass it just
+        ran produced the overall loss for free, and the second forward pass
+        behind the per-mode split is sampled on its own, slower cadence
+        (`per_mode_loss_steps`). Feeding `overall` from both would count the
+        sampled steps twice and quietly bias the logged loss curve towards
+        whichever steps happened to be sampled.
+        """
+        self._ingest(totals, counts, modes, overall=False)
+
+    def _ingest(
+        self,
+        totals: torch.Tensor,
+        counts: torch.Tensor,
+        modes: Sequence[str] | None,
+        *,
+        overall: bool,
+    ) -> None:
         totals = totals.detach().to(torch.float64).cpu()
         counts = counts.detach().to(torch.float64).cpu()
         if totals.shape != counts.shape:
@@ -165,7 +195,8 @@ class LossTracker:
                 f"the wrong denoiser"
             )
 
-        self.overall.add(float(totals.sum()), float(counts.sum()))
+        if overall:
+            self.overall.add(float(totals.sum()), float(counts.sum()))
 
         if modes is None:
             return

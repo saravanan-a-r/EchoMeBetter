@@ -64,7 +64,7 @@ from .errors import (
     UL2Error,
 )
 from .frozen_eval import FrozenEvalSet, build_frozen_eval_set
-from .length_batching import DEFAULT_POOL_BATCHES, LengthBucketedBatcher
+from .length_batching import BatchCapacity, DEFAULT_POOL_BATCHES, LengthBucketedBatcher
 from .mixture import ModeSampler, deterministic_schedule
 from .objective import UL2Objective
 from .packing import (
@@ -111,6 +111,7 @@ __all__ = [
     # batching, measurement, evaluation
     "pad_batch",
     "LengthBucketedBatcher",
+    "BatchCapacity",
     "DEFAULT_POOL_BATCHES",
     "example_to_dict",
     "example_from_dict",

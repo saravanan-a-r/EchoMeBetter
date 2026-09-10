@@ -500,6 +500,81 @@ def test_per_mode_losses_are_reported_when_asked_for(tiny_model, training_config
     assert {"loss_R", "loss_X", "loss_S"} <= set(entry)
 
 
+def test_the_per_mode_split_is_sampled_on_its_own_cadence(tiny_model, training_config):
+    """
+    The split costs a second forward pass over the whole accumulation window
+    — ~22% of a step. It must run on `per_mode_loss_steps`, not on every step.
+
+    This is a cost regression with no functional symptom: measuring it every
+    step produces exactly the same numbers, just far more slowly, so nothing
+    but a count catches it. Left unguarded it was 13 of the pretrain run's
+    ~61 days.
+    """
+    config = training_config.with_(
+        max_steps=8, gradient_accumulation_steps=1, logging_steps=2,
+        log_per_mode_loss=True, per_mode_loss_steps=4,
+    )
+    seen = []
+    driver = trainer(tiny_model, config, on_log=seen.append)
+
+    passes = []
+    sample = driver._sample_per_mode_loss
+    driver._sample_per_mode_loss = lambda *a, **k: (
+        passes.append(driver.state.global_step), sample(*a, **k)
+    )[1]
+
+    driver.train(make_batches(tiny_model.config, 8))
+
+    assert passes == [4, 8], f"sampled at {passes}, expected only steps 4 and 8"
+
+    logged = [entry for entry in seen if "loss" in entry]
+    assert len(logged) == 4, "logging cadence should be untouched by the sampling one"
+
+    # Which modes appear depends on what the batch held; that a split appears
+    # at all is what the cadence decides.
+    split_at = [
+        entry["step"]
+        for entry in logged
+        if any(key.startswith("loss_") for key in entry)
+    ]
+    assert split_at == [4, 8]
+
+
+def test_the_aggregate_loss_does_not_depend_on_the_per_mode_diagnostic(
+    tiny_model, model_config, training_config
+):
+    """
+    `loss` must come from the training pass, whatever the diagnostic is doing.
+
+    Two ways this breaks, both silent. If the sampled pass also writes
+    `overall`, the sampled steps are counted twice and the curve tilts towards
+    them. If `overall` is written *only* by the sampled pass, the curve is
+    built from one step in every n while claiming to summarize all of them.
+    Either way the loss still looks plausible, which is why this is pinned by
+    equality rather than by inspection.
+    """
+    batches = lambda: [  # noqa: E731 - rebuilt per run so each starts identically
+        make_batch(model_config, batch_size=3, modes=["R", "X", "S"], seed=seed)
+        for seed in range(6)
+    ]
+
+    def losses(**overrides) -> list[float]:
+        torch.manual_seed(0)
+        model = rephrase_model.build_model(model_config, verify=False)
+        config = training_config.with_(
+            max_steps=6, gradient_accumulation_steps=1, logging_steps=1, **overrides
+        )
+        seen = []
+        trainer(model, config, on_log=seen.append).train(batches())
+        return [entry["loss"] for entry in seen if "loss" in entry]
+
+    without = losses(log_per_mode_loss=False)
+    every_step = losses(log_per_mode_loss=True, per_mode_loss_steps=None)
+    sampled = losses(log_per_mode_loss=True, per_mode_loss_steps=3)
+
+    assert without == every_step == sampled
+
+
 # -- evaluation ------------------------------------------------------------
 
 
@@ -1027,3 +1102,115 @@ def test_a_run_with_no_data_object_announces_nothing(
     config = training_config.with_(max_steps=2, gradient_accumulation_steps=1)
     state = trainer(tiny_model, config).train(make_batches(model_config, count=2))
     assert state.global_step == 2
+
+
+# -- token-closed accumulation windows --------------------------------------
+#
+# With a `BatchCapacity` the micro-batches stop being the same size, so a
+# window of a fixed *count* of them no longer holds a fixed number of tokens.
+# These pin the replacement: windows closed on tokens, and the gradient left
+# untouched by the regrouping underneath.
+
+
+def test_a_token_window_closes_once_the_target_is_reached(model_config):
+    """
+    Each window holds at least `tokens_per_step` loss-bearing tokens, and stops
+    as soon as it does -- so the effective batch size stays put while the
+    micro-batches under it vary.
+    """
+    # `make_batch` masks the tail of row 1, so 2 rows x 8 target positions
+    # carry 14 loss-bearing tokens, not 16 -- exactly the difference between
+    # counting padded slots and counting what the loss is computed over.
+    batches = make_batches(model_config, count=9, batch_size=2, target_length=8)
+    windows = list(_micro_batches(batches, 3, tokens_per_step=42))
+
+    assert [len(window) for window in windows] == [3, 3, 3]
+
+
+def test_a_token_window_adapts_to_uneven_micro_batches(model_config):
+    """
+    The case a fixed count gets wrong: micro-batches of different sizes.
+
+    Counting micro-batches here would put 3 and then 3 into two windows
+    holding very different token counts. Counting tokens puts as many as each
+    window needs, which is the whole point.
+    """
+    wide = make_batch(model_config, batch_size=8, target_length=8, seed=1)   # 64
+    narrow = make_batch(model_config, batch_size=1, target_length=8, seed=2)  # 8
+
+    stream = [narrow, narrow, wide, narrow, narrow, narrow, narrow, wide]
+    windows = list(_micro_batches(stream, 4, tokens_per_step=64))
+
+    def tokens(window):
+        return sum(int((b["labels"] != -100).sum()) for b in window)
+
+    assert all(tokens(window) >= 64 for window in windows)
+    assert [len(window) for window in windows] == [3, 5]
+
+
+def test_a_short_trailing_token_window_is_discarded(model_config):
+    """
+    Same policy the counted window has: a window that never reaches its target
+    is dropped rather than stepped on, so the last step of a run is not
+    quietly a different size from every other one.
+    """
+    batches = make_batches(model_config, count=4, batch_size=2, target_length=8)
+    windows = list(_micro_batches(batches, 2, tokens_per_step=42))
+
+    assert [len(window) for window in windows] == [3]
+
+
+def test_a_token_window_counts_plain_lists(model_config):
+    """
+    Batches reach the trainer as the nested lists `pad_batch` returns, not as
+    tensors -- the window has to close before anything is moved to the device,
+    so it cannot rely on the tensor path.
+    """
+    batch = make_batch(model_config, batch_size=2, target_length=8, seed=3)
+    listed = {
+        key: value.tolist() if hasattr(value, "tolist") else value
+        for key, value in batch.items()
+    }
+    windows = list(_micro_batches([listed] * 4, 4, tokens_per_step=28))
+
+    assert [len(window) for window in windows] == [2, 2]
+
+
+def test_regrouping_the_same_examples_does_not_change_the_gradient(
+    model_config, training_config
+):
+    """
+    The claim that makes capacity-based micro-batching safe.
+
+    A capacity changes how examples are grouped into micro-batches and nothing
+    else -- not which examples a step sees, not their number, not their
+    tokens. If the gradient depended on the grouping, that would be a silent
+    change to training dressed up as a throughput optimisation, so it is
+    checked directly: the same four rows, split 2+2 and then 1+3, must give
+    the same gradients.
+    """
+    torch.manual_seed(0)
+    even = rephrase_model.build_model(model_config, verify=False)
+    torch.manual_seed(0)
+    uneven = rephrase_model.build_model(model_config, verify=False)
+
+    rows = [
+        make_batch(model_config, batch_size=1, target_length=6, seed=index)
+        for index in range(4)
+    ]
+    pad = model_config.pad_token_id
+    two_two = [_concatenate(rows[0], rows[1], pad_id=pad), _concatenate(rows[2], rows[3], pad_id=pad)]
+    one_three = [
+        rows[0],
+        _concatenate(_concatenate(rows[1], rows[2], pad_id=pad), rows[3], pad_id=pad),
+    ]
+
+    config = training_config.with_(max_grad_norm=1e9)
+    trainer(even, config).accumulate(two_two)
+    trainer(uneven, config).accumulate(one_three)
+
+    left = gradients(even)
+    right = gradients(uneven)
+    assert set(left) == set(right)
+    for name, tensor in left.items():
+        assert torch.allclose(tensor, right[name], atol=1e-6, rtol=1e-5), name

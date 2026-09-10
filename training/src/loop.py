@@ -47,6 +47,16 @@ rather than being an unexplained plateau.
 Not micro-batches. The learning-rate schedule, the eval cadence and the save
 cadence are all in these units, which is what makes them comparable between
 runs that used different accumulation to reach the same effective batch size.
+
+**5. The overall loss is free; the per-mode split is not.**
+
+`train_step` already computed the loss, so the aggregate is recorded every
+step at no cost. Splitting it by UL2 mode is a different matter: the training
+pass discards its logits, so the split needs a *second* forward pass over the
+whole accumulation window — measured at ~22% of a step. It is therefore
+sampled on `per_mode_loss_steps` rather than measured continuously, and only
+ever writes `by_mode`; the aggregate never comes from the sampled pass, or
+the logged loss curve would be built from one step in every n.
 """
 
 from __future__ import annotations
@@ -201,9 +211,10 @@ class Trainer:
         # `strict=False` load absorbs the mismatch without erroring, so the
         # model would keep its random init and nothing would say why). Only
         # `_forward_model`, used solely inside `accumulate`/`evaluate`/
-        # `_track` to run the model, is ever compiled; `.train()`/`.eval()`
-        # called on `self.model` still governs it correctly, since compiling
-        # wraps the same module instance rather than copying it.
+        # `_sample_per_mode_loss` to run the model, is ever compiled;
+        # `.train()`/`.eval()` called on `self.model` still governs it
+        # correctly, since compiling wraps the same module instance rather
+        # than copying it.
         self._forward_model = self.model
         if config.torch_compile:
             compile_kwargs: dict[str, Any] = {}
@@ -377,7 +388,12 @@ class Trainer:
         """
         tiers = self._resolve_eval_tiers(evaluate, eval_tiers)
         limit = max_steps if max_steps is not None else self.config.max_steps
-        source = _micro_batches(batches, self.config.gradient_accumulation_steps)
+        source = _micro_batches(
+            batches,
+            self.config.gradient_accumulation_steps,
+            tokens_per_step=self.config.tokens_per_step,
+            label_pad_token_id=self._label_pad_token_id(),
+        )
         window = LossTracker()
         started = time.monotonic()
         exhausted = False
@@ -393,13 +409,17 @@ class Trainer:
             report = self.train_step(micro_batches)
             self.state.global_step += 1
             self.state.tokens_seen += report.tokens
-
-            if self.config.log_per_mode_loss and not report.skipped:
-                self._track(window, micro_batches)
-            elif not report.skipped:
-                window.overall.add(report.loss * report.tokens, report.tokens)
-
             step = self.state.global_step
+
+            if not report.skipped:
+                # The aggregate comes from the training pass that just ran, so
+                # it costs nothing and is recorded for *every* step. The
+                # per-mode split needs a second forward pass, so it is sampled
+                # (see `_should_sample_modes`) and adds to `by_mode` alone.
+                window.overall.add(report.loss * report.tokens, report.tokens)
+                if self._should_sample_modes(step):
+                    self._sample_per_mode_loss(window, micro_batches)
+
             if step % self.config.logging_steps == 0:
                 self._log(
                     {
@@ -625,16 +645,37 @@ class Trainer:
 
     # -- plumbing ---------------------------------------------------------
 
-    def _track(self, tracker: LossTracker, micro_batches: Sequence[Batch]) -> None:
+    def _should_sample_modes(self, step: int) -> bool:
+        """
+        Whether this step pays for the per-mode split.
+
+        Sampling, not measuring every step: the split needs a second forward
+        pass over the whole accumulation window, which is ~22% of a step's
+        cost — so running it every step spends a fifth of a multi-week run on
+        a diagnostic that is read once per log line. The cadence is
+        `per_mode_loss_steps`, a multiple of `logging_steps`, so every sample
+        lands on the log line that prints it.
+        """
+        if not self.config.log_per_mode_loss:
+            return False
+        return step % self.config.resolved_per_mode_loss_steps == 0
+
+    def _sample_per_mode_loss(
+        self, tracker: LossTracker, micro_batches: Sequence[Batch]
+    ) -> None:
         """
         Per-mode training loss, recomputed from the batches just stepped on.
 
         A second forward pass, under `no_grad`, because the training pass
         already discarded its logits — keeping them alive to avoid this would
         hold a `(batch, length, 33728)` tensor through the backward pass,
-        which is the single largest activation in the model. Paying one
-        inference pass per logging window is cheaper than that, and the window
-        is `logging_steps` wide.
+        which is the single largest activation in the model. So the split is
+        measured on `per_mode_loss_steps` rather than continuously.
+
+        Only `by_mode` is written. The overall loss for this step was already
+        recorded by `train` from the training pass itself; adding it again
+        here would count the sampled steps twice and pull the logged aggregate
+        towards whichever steps happened to be sampled.
         """
         was_training = self.model.training
         self.model.eval()
@@ -658,7 +699,7 @@ class Trainer:
                         ignore_index=self._label_pad_token_id(),
                         label_smoothing=self.config.label_smoothing_factor,
                     )
-                    tracker.update(totals, counts, micro_batch["modes"])
+                    tracker.update_by_mode(totals, counts, micro_batch["modes"])
         finally:
             self.model.train(was_training)
 
@@ -735,10 +776,31 @@ class Trainer:
 
 
 def _micro_batches(
-    batches: Iterable[Batch], accumulation_steps: int
+    batches: Iterable[Batch],
+    accumulation_steps: int,
+    *,
+    tokens_per_step: int | None = None,
+    label_pad_token_id: int = -100,
 ) -> Iterator[list[Batch]]:
     """
     Group a batch stream into accumulation windows.
+
+    Two ways to close a window, and which one is right depends on whether the
+    micro-batches are all the same size:
+
+      - **by count** (`tokens_per_step=None`): a window is `accumulation_steps`
+        micro-batches. Correct when every micro-batch holds the same number of
+        rows, which is what a fixed `per_device_train_batch_size` produces.
+      - **by tokens**: a window closes once it holds `tokens_per_step`
+        loss-bearing tokens. This is what a run with a `BatchCapacity` needs,
+        because there a micro-batch holds as many rows as fit its width and a
+        fixed count of them would make the effective batch size swing with the
+        lengths the corpus happened to serve.
+
+    The distinction matters because the effective batch size — tokens per
+    optimizer step — is a hyperparameter the learning rate is tuned against,
+    not an implementation detail. Counting tokens keeps it fixed while the
+    grouping underneath it changes; counting micro-batches would not.
 
     A trailing partial window is **discarded**, not stepped on. Stepping a
     short window is not wrong numerically — the token weighting handles it —
@@ -748,11 +810,38 @@ def _micro_batches(
     ever bites the final step of a fixed slice.
     """
     window: list[Batch] = []
+    if tokens_per_step is None:
+        for batch in batches:
+            window.append(batch)
+            if len(window) == accumulation_steps:
+                yield window
+                window = []
+        return
+
+    tokens = 0
     for batch in batches:
         window.append(batch)
-        if len(window) == accumulation_steps:
+        tokens += _count_label_tokens(batch["labels"], label_pad_token_id)
+        if tokens >= tokens_per_step:
             yield window
             window = []
+            tokens = 0
+
+
+def _count_label_tokens(labels: Any, label_pad_token_id: int) -> int:
+    """
+    Loss-bearing positions in a batch's labels.
+
+    Runs on the host, once per micro-batch, before the batch is moved to the
+    device — `accumulate` needs the same count on the device anyway, but the
+    window has to be closed before the batch is handed over, so it cannot wait
+    for that one. `list.count` keeps the padded case out of the interpreter;
+    over a real accumulation window this is well under a millisecond against a
+    step of tens of seconds.
+    """
+    if isinstance(labels, torch.Tensor):
+        return int((labels != label_pad_token_id).sum().item())
+    return sum(len(row) - row.count(label_pad_token_id) for row in labels)
 
 
 def _as_tensor(value: Any) -> torch.Tensor:

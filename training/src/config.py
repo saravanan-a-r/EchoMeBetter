@@ -82,6 +82,14 @@ _STAGE_FIELDS = frozenset(
         "label_smoothing_factor",
         "per_device_train_batch_size",
         "gradient_accumulation_steps",
+        # Capacity-based micro-batching, per-stage for the same reason the two
+        # above are: the budgets bound memory, and how much a batch of a given
+        # size costs depends on the model profile the stage runs. Values
+        # measured for Large would be wrong for a rehearsal on a smaller one.
+        "tokens_per_step",
+        "max_batch_encoder_tokens",
+        "max_batch_decoder_tokens",
+        "max_batch_rows",
         "model_profile",
         "output_dir",
         # torch_compile is genuinely a per-stage choice, not a global one: the
@@ -99,6 +107,11 @@ _STAGE_FIELDS = frozenset(
         # rehearse.
         "quick_eval_steps",
         "master_eval_steps",
+        # Same argument as the two cadences above: what a per-mode sample is
+        # worth depends on how long the stage runs. A 2,000-step rehearsal
+        # wants it often enough to see the curve at all; a 200,000-step
+        # pretraining run does not, and pays for every extra sample.
+        "per_mode_loss_steps",
     }
 )
 
@@ -128,8 +141,13 @@ OURS_ALONE = (
     "eval_max_batches",
     "keep_best_checkpoint",
     "log_per_mode_loss",
+    "per_mode_loss_steps",
     "quick_eval_steps",
     "master_eval_steps",
+    "tokens_per_step",
+    "max_batch_encoder_tokens",
+    "max_batch_decoder_tokens",
+    "max_batch_rows",
 )
 
 
@@ -202,7 +220,47 @@ class TrainingConfig:
     num_cycles: float = 0.5
     eval_max_batches: int | None = None
     keep_best_checkpoint: bool = True
+
+    # Report [R]/[X]/[S] losses separately (§7.6). The split is a *diagnostic*,
+    # not a training signal, and it is not free: it is measured by a second
+    # forward pass over the whole accumulation window, which costs ~22% of a
+    # step. `per_mode_loss_steps` is how often that pass runs.
+    #
+    # `None` means "every logging step", which is what the cadence was always
+    # documented to be. An explicit value samples more rarely than the log
+    # line and must be a multiple of `logging_steps`, so every sample lands on
+    # a log line and the split always describes the step it is printed next
+    # to. Overhead falls as 1/n: at `logging_steps` it is already under half a
+    # percent of the run, and there is nothing left to save below that.
     log_per_mode_loss: bool = True
+    per_mode_loss_steps: int | None = None
+
+    # Capacity-based micro-batching (`UL2/src/length_batching.BatchCapacity`).
+    #
+    # `per_device_train_batch_size` puts a fixed number of *rows* in every
+    # micro-batch. Rows here differ in length by more than a hundredfold, so
+    # that fixes the row count and lets the work vary: narrow micro-batches
+    # spend most of their time on kernel dispatch with the GPU idle, and peak
+    # memory is set by the widest shape the corpus happens to hold rather than
+    # by anything configured. The two token budgets below bound
+    # `rows x padded width` instead — separately, because a decoder position
+    # costs ~3.6x an encoder one in memory (cross-attention, and a 33,728-wide
+    # logit row).
+    #
+    # `tokens_per_step` then closes the accumulation window on loss-bearing
+    # tokens rather than on a count of micro-batches. That is what keeps the
+    # effective batch size — the hyperparameter the learning rate is tuned
+    # against — fixed while the grouping underneath it changes. Setting the
+    # budgets without it would let the effective batch size drift with the
+    # lengths the corpus served, which is a silent change to training.
+    #
+    # All absent: micro-batching behaves exactly as it did before, at
+    # `per_device_train_batch_size` rows and `gradient_accumulation_steps`
+    # micro-batches per step.
+    tokens_per_step: int | None = None
+    max_batch_encoder_tokens: int | None = None
+    max_batch_decoder_tokens: int | None = None
+    max_batch_rows: int | None = None
 
     # Cadences for the two-tier held-out evaluation (`EvalTier` in loop.py).
     # `quick_eval_steps` is the frequent, cheap trend signal; `master_eval_steps`
@@ -379,6 +437,8 @@ class TrainingConfig:
                 f"already spun up."
             )
 
+        self._check_per_mode_loss_cadence()
+        self._check_batch_capacity()
         self._check_decay_phase()
         self._check_cooldown_blend()
         self._check_rewrite_task()
@@ -389,6 +449,103 @@ class TrainingConfig:
                 "checkpoint cannot be loaded at the end if retention was allowed "
                 "to delete it"
             )
+
+    # -- capacity-based micro-batching, validated -------------------------
+
+    def _check_batch_capacity(self) -> None:
+        """
+        Refuse a half-configured capacity.
+
+        The three settings are one mechanism, and any subset of them is a
+        misconfiguration with no useful meaning:
+
+          - budgets without `tokens_per_step` would leave the window closing
+            on a count of micro-batches whose sizes now vary, so the effective
+            batch size would drift with the corpus. That is a silent change to
+            training, which is the class of bug this file exists to refuse.
+          - `tokens_per_step` without budgets would close windows on tokens
+            while every micro-batch still holds a fixed row count. Harmless,
+            but it means one of the two was forgotten, and guessing which is
+            not this module's job.
+        """
+        budgets = {
+            "max_batch_encoder_tokens": self.max_batch_encoder_tokens,
+            "max_batch_decoder_tokens": self.max_batch_decoder_tokens,
+        }
+        named = {name: value for name, value in budgets.items() if value is not None}
+        for name, value in ({**named, "max_batch_rows": self.max_batch_rows,
+                             "tokens_per_step": self.tokens_per_step}).items():
+            if value is None:
+                continue
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise TrainingConfigError(
+                    f"{name} must be a positive integer or absent, got {value!r}"
+                )
+        if named and len(named) != len(budgets):
+            missing = sorted(set(budgets) - set(named))
+            raise TrainingConfigError(
+                f"capacity-based micro-batching needs both token budgets; "
+                f"{missing} {'is' if len(missing) == 1 else 'are'} absent. The encoder "
+                f"and decoder rectangles are padded independently, so one budget "
+                f"cannot bound the other."
+            )
+        if named and self.tokens_per_step is None:
+            raise TrainingConfigError(
+                "max_batch_encoder_tokens/max_batch_decoder_tokens need "
+                "tokens_per_step: with variable-size micro-batches, a window of "
+                "gradient_accumulation_steps of them holds a token count that "
+                "drifts with the corpus, silently changing the effective batch size"
+            )
+        if self.tokens_per_step is not None and not named:
+            raise TrainingConfigError(
+                "tokens_per_step needs max_batch_encoder_tokens and "
+                "max_batch_decoder_tokens: without them every micro-batch still "
+                "holds a fixed number of rows, and closing the window on tokens "
+                "instead of on a count changes nothing"
+            )
+        if self.max_batch_rows is not None and not named:
+            raise TrainingConfigError(
+                "max_batch_rows only bounds a capacity-based cut; it needs "
+                "max_batch_encoder_tokens and max_batch_decoder_tokens"
+            )
+
+    # -- the per-mode diagnostic, validated -------------------------------
+
+    def _check_per_mode_loss_cadence(self) -> None:
+        """
+        Refuse a per-mode cadence that would not line up with the log.
+
+        The split is printed as part of a log line, so sampling it on a
+        cadence that is not a multiple of `logging_steps` puts the two out of
+        phase: the numbers still appear, but next to a *different* step's
+        aggregate loss, and a reader comparing `loss` against `loss_X` on one
+        line would be comparing two different moments in the run.
+        """
+        value = self.per_mode_loss_steps
+        if value is None:
+            return
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise TrainingConfigError(
+                f"per_mode_loss_steps must be a positive integer or absent, "
+                f"got {value!r}"
+            )
+        if value % self.logging_steps != 0:
+            raise TrainingConfigError(
+                f"per_mode_loss_steps ({value}) must be a multiple of logging_steps "
+                f"({self.logging_steps}): the per-mode split is printed on a log "
+                f"line, so a cadence that does not land on one would report it "
+                f"beside a different step's aggregate loss"
+            )
+
+    @property
+    def resolved_per_mode_loss_steps(self) -> int:
+        """
+        How often the per-mode forward pass runs, in optimizer steps.
+
+        `per_mode_loss_steps` if set, else every logging step — the cadence
+        `log_per_mode_loss` was always documented to have.
+        """
+        return self.per_mode_loss_steps or self.logging_steps
 
     # -- the decay phase, validated ---------------------------------------
 

@@ -120,6 +120,30 @@ def _tiny_training_config_document(output_dir: Path) -> dict:
     }
 
 
+@pytest.fixture(scope="session", autouse=True)
+def bounded_torch_threads():
+    """
+    Cap PyTorch's intra-op threads for this suite.
+
+    Every model here is tiny by design (see the module docstring), and PyTorch
+    defaults to one thread per core — 42 on this machine. Splitting a
+    1.1M-parameter matmul across 42 threads costs far more in synchronization
+    than it saves in arithmetic: the same eight-step smoke run measured 409s
+    at the default against 9.9s on two threads.
+
+    Restored afterwards, so a process that runs this suite alongside something
+    else does not inherit the cap.
+    """
+    import torch
+
+    previous = torch.get_num_threads()
+    torch.set_num_threads(2)
+    try:
+        yield
+    finally:
+        torch.set_num_threads(previous)
+
+
 @pytest.fixture
 def tiny_model_config_path(tmp_path: Path) -> Path:
     path = tmp_path / "model_config.yml"

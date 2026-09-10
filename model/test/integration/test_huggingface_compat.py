@@ -22,7 +22,7 @@ Two tiers of test:
 
 The strongest assertion in this file is
 `test_huggingface_builds_a_model_of_exactly_our_size`: HuggingFace,
-independently, from our config.json alone, must arrive at 750,971,904
+independently, from our config.json alone, must arrive at 751,889,408
 parameters. Nothing else establishes that our config really is a T5 config.
 """
 
@@ -355,12 +355,17 @@ def test_huggingface_builds_a_model_of_our_size_tiny():
 @pytest.mark.huggingface
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    "profile,expected", [("base", 223_444_224), ("large", 750_971_904)]
+    "profile,expected", [("base", 224_132_352), ("large", 751_889_408)]
 )
 def test_huggingface_builds_a_model_of_exactly_our_size(profile, expected):
     """
     architecture.md §4.3's frozen totals, reached by HuggingFace from our
     exported config.json alone.
+
+    The totals are §4.3's originals (223,444,224 / 750,971,904) plus the
+    896 x d_model the CLI reserved vocabulary added when vocab_size moved
+    32,832 -> 33,728; `test_architecture_contract.py` pins that delta
+    against the old baseline explicitly.
     """
     config = load_model_config(MODEL_CONFIG_PATH, profile=profile)
     hf_model = T5ForConditionalGeneration(T5Config(**config.to_huggingface_config()))

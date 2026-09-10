@@ -115,6 +115,13 @@ defaults:
   # runs out of memory on the corpus's widest-decoder batches, so 16 stands:
   # see the `pretrain` stage for the measurements behind that.
   per_device_train_batch_size: 16
+
+  # SUPERSEDED IN THE `pretrain` STAGE. This counts micro-batches per
+  # optimizer step, which is the right unit only while every micro-batch
+  # holds the same number of rows. The pretrain stage sets `tokens_per_step`
+  # (see there), which closes the window on loss-bearing tokens instead and
+  # makes this value inert for that stage — tuning it there changes nothing.
+  # It still governs every stage that does not set `tokens_per_step`.
   gradient_accumulation_steps: 32
 
   # --- memory and precision ---------------------------------------------------
@@ -243,10 +250,27 @@ defaults:
   # in the run once it is old enough (§13).
   keep_best_checkpoint: true
 
-  # NOT a TrainingArguments field. Report [R]/[X]/[S] losses separately, which
+  # NOT TrainingArguments fields. Report [R]/[X]/[S] losses separately, which
   # §7.6 requires: "An aggregate can look healthy while one objective silently
-  # fails to learn." Costs one extra inference pass per logging window.
+  # fails to learn."
+  #
+  # WHY THIS HAS A CADENCE OF ITS OWN. The overall loss is free — the training
+  # pass already computed it. The split is not: the training pass discards its
+  # logits, so the split needs a second forward pass over the whole
+  # accumulation window, measured at ~22% of a step. Run every step, that is
+  # 13 of the pretrain run's ~61 days spent on a diagnostic nobody reads at
+  # step resolution.
+  #
+  # 100 steps costs 0.22% (~3 hours over the full run) and still gives 2,000
+  # points — a mode that stops learning shows up within ~45 minutes. One
+  # sample is a whole optimizer step, so it carries ~200 examples of each
+  # mode; the number is not noisy for being sampled.
+  #
+  # Must be a multiple of logging_steps, so the split always lands on a log
+  # line and describes the step it is printed beside. `null` means "every
+  # logging step", which is the cadence this was always documented to have.
   log_per_mode_loss: true
+  per_mode_loss_steps: 100
 
 
 # -----------------------------------------------------------------------------
@@ -258,7 +282,20 @@ stages:
 
   # architecture.md §7 — UL2 mixture-of-denoisers pretraining on Large.
   pretrain:
-    max_steps: 200000
+    # The run's horizon, and the only number that has to change to retarget
+    # it. Everything schedule-shaped below is expressed as a *ratio* of this
+    # (`warmup_ratio`, `lr_decay_ratio`), so warmup, the decay phase, the
+    # cooldown data mixture and the synthetic rewrite task all move with it:
+    # at any step count the decay phase is the last 10% and warmup the first
+    # 1%. Verified at 30k/90k/150k/200k.
+    #
+    # The eval and save cadences below are deliberately NOT ratios — a
+    # checkpoint every 1,000 steps means the same thing whatever the horizon,
+    # and making it proportional would make crash exposure vary with run
+    # length. The one consequence is that `master_eval_steps` must stay at or
+    # below `max_steps` or the selecting tier never runs; `pretrain.py`
+    # refuses that combination rather than letting it pass silently.
+    max_steps: 90000
     learning_rate: 0.0003
     # Item 2. Warmup (1%) -> flat peak (89%) -> linear decay to zero over the
     # final 10%, on the upweighted mixture below.
@@ -287,6 +324,62 @@ stages:
     dropout_rate: 0.0
     label_smoothing_factor: 0.0
     output_dir: runs/pretrain
+
+    # Capacity-based micro-batching. `per_device_train_batch_size` above puts a
+    # fixed 16 rows in every micro-batch, but rows differ in length by more than
+    # a hundredfold, so the *work* in one varies just as much. A 16-row [S]
+    # micro-batch is 296 tokens wide and takes 0.39s, of which 0.31s is kernel
+    # dispatch with the GPU idle -- measured, along with the fact that raising
+    # the rows to 48 at that width costs 1.6% more time for six times the work.
+    #
+    # These budgets bound rows x padded width instead, so narrow batches hold
+    # many rows and wide ones few. Encoder and decoder are bounded separately
+    # because a decoder position costs ~3.6x an encoder one in memory: it
+    # carries cross-attention and a 33,728-wide logit row.
+    #
+    # The values are the measured optimum, not a round number. Larger budgets
+    # were tried and are worse in both directions: e49152/d24576 is no faster
+    # and reserves 35.8 GiB against this one's 31.5, e65536/d24576 is *slower*
+    # (wider batches pay quadratic attention), and e65536/d32768 and
+    # e98304/d24576 both run out of memory -- the second with only 25.5 GiB
+    # allocated against 9.2 GiB of reserved-but-unusable fragmentation, which
+    # this vGPU cannot fix with expandable_segments.
+    #
+    # Measured over 4 alternating 60-step runs on the real corpus: 3.1% faster
+    # per loss-bearing token (0.14744 -> 0.14300 s/1k), reproducing to four
+    # decimal places across independent launches, at 31,548 MiB reserved
+    # against the fixed-row 32,162 -- so slightly *less* memory pressure, not
+    # more.
+    max_batch_encoder_tokens: 40960
+    max_batch_decoder_tokens: 20480
+
+    # Closes the accumulation window on loss-bearing tokens rather than on a
+    # count of micro-batches. With variable-size micro-batches a fixed count
+    # would let the effective batch size drift with whatever lengths the corpus
+    # served -- and effective batch size is the hyperparameter the learning rate
+    # is tuned against, not an implementation detail. Set to what the fixed-row
+    # configuration above actually delivers, so this changes how tokens are
+    # grouped and not how many a step holds: measured 261,825 tokens/step
+    # against the fixed-row 264,143, a 0.9% difference.
+    tokens_per_step: 255000
+
+    # A backstop, not a tuning knob. The budgets above bound memory on their
+    # own, but they bound rows x width -- so a pool of minimum-length
+    # documents (8 tokens, padded to 16) would admit 2,560 rows, an aspect
+    # ratio nothing on this GPU has ever been timed at. Measured over 15,000
+    # real batches the largest was 109 rows ([S], the narrow mode; [R] and [X]
+    # peak at 32 and 28), so this leaves more than twice the observed
+    # headroom and never binds in practice. It exists so the untested regime
+    # stays unreachable during a multi-week unattended run.
+    max_batch_rows: 256
+
+    # FIXED FOR THE LIFE OF A RUN. The three budgets above decide how the
+    # batcher cuts its pool, and a checkpoint carries the batches that cut
+    # already produced. Changing any of them and resuming is therefore
+    # refused, not absorbed: reshaping buffered batches to a new capacity
+    # would mean dropping or duplicating examples the corpus has already been
+    # read for. Choose them before the run starts; changing them later means
+    # starting a new run.
 
     # The data half of item 2: for the 20,000 decay steps only, draw from
     # these sources in these proportions instead of reading the corpus as it
@@ -425,6 +518,12 @@ stages:
     # multiple of save_steps (1000), as the trainer requires.
     quick_eval_steps: 100
     master_eval_steps: 1000
+    # Scaled for the same reason the two cadences above are. At the defaults'
+    # 100 a 2,000-step rehearsal would sample the per-mode split 20 times,
+    # which is too coarse to show that all three denoisers are learning —
+    # which is one of the things the rehearsal exists to show. `null` means
+    # "every log line"; the ~22% it costs is minutes on a run this short.
+    per_mode_loss_steps: null
     learning_rate: 0.0003
     # Same schedule as `pretrain`, and for the reason §7.8 exists at all: a
     # code path the rehearsal never runs is a code path the real run debugs.

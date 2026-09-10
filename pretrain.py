@@ -42,6 +42,7 @@ import functools
 import importlib.util
 import random
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Mapping, Sequence
@@ -84,6 +85,13 @@ ul2 = _load("echomebetter_ul2", UL2_SRC)
 training_pkg = _load("echomebetter_training", TRAINING_SRC)
 rephrase_model = _load("echomebetter_model", MODEL_SRC)
 rewrite = _load("echomebetter_rewrite", REWRITE_SRC)
+
+
+# Both sequence dimensions are padded up to a multiple of this, which keeps
+# the tensor-core kernels on their fast path. Named rather than repeated
+# because `BatchCapacity` has to count against the same rounding the batches
+# are actually padded to.
+PAD_TO_MULTIPLE_OF = 8
 
 
 # -- gluing corpus + UL2 into what the trainer needs -------------------------
@@ -158,10 +166,11 @@ class PretrainBatchSource:
         *,
         batch_size: int,
         data_seed: int,
-        pad_to_multiple_of: int | None = 8,
+        pad_to_multiple_of: int | None = PAD_TO_MULTIPLE_OF,
         pack: bool = True,
         bucket_batches: bool = True,
         pool_batches: int = ul2.DEFAULT_POOL_BATCHES,
+        capacity: "ul2.BatchCapacity | None" = None,
         cooldown_corpus: Any | None = None,
         cooldown_start_step: int | None = None,
         rewrite_source: Any | None = None,
@@ -208,11 +217,18 @@ class PretrainBatchSource:
         # an independent stream from the corruption draws rather than
         # interleaved with them — one less way for a change here to move the
         # corruption a run would otherwise have produced.
+        if capacity is not None and not bucket_batches:
+            raise ValueError(
+                "capacity needs bucket_batches: a capacity is applied when a pool "
+                "is cut into batches, and there is no pool without bucketing"
+            )
+        self.capacity = capacity
         self._batcher = (
             ul2.LengthBucketedBatcher(
                 self._produce_example,
                 batch_size=batch_size,
                 pool_batches=pool_batches,
+                capacity=capacity,
                 seed=data_seed + 7919,
             )
             if bucket_batches
@@ -520,28 +536,83 @@ def build_frozen_eval_batches(
     ]
 
 
-# -- the run ------------------------------------------------------------------
+# -- assembling a run ---------------------------------------------------------
 
 
-def run(args: argparse.Namespace) -> int:
-    tokenizer_dir = Path(args.tokenizer_dir)
+class PipelineError(RuntimeError):
+    """
+    A run that cannot be assembled as configured.
+
+    Carries an operator-facing message, because every case is something a
+    person has to go and fix: a tokenizer that was never built, a blend naming
+    a corpus source that is not there. `run` prints it and exits 2; the smoke
+    test reports it as "could not run" rather than as a failed check.
+    """
+
+
+@dataclass(frozen=True)
+class Pipeline:
+    """
+    Everything a pretraining run needs, built and cross-checked.
+
+    This exists so `pretrain.py` and `pretrain_smoke_test.py` assemble the run
+    through *one* piece of code. They used to assemble it twice, and the two
+    drifted: the smoke test built the rehearsal stage on CPU with no cooldown,
+    no rewrite task and no evaluation, so passing it said nothing about the
+    stage that was actually about to run for weeks. A pre-flight check that
+    exercises a different pipeline from the flight is not a pre-flight check.
+    """
+
+    training_config: Any
+    model_config: Any
+    specials: Any
+    ul2_config: Any
+    telemetry: Any
+    objective: Any
+    sp: Any
+    corpus_files: list[Path]
+    batch_source: "PretrainBatchSource"
+    cooldown_corpus: Any | None
+    rewrite_source: Any | None
+    cooldown_start_step: int | None
+    model: Any
+
+
+def build_pipeline(
+    *,
+    training_config: Any,
+    model_config: Any,
+    corpus: str | Path,
+    tokenizer_dir: str | Path,
+) -> Pipeline:
+    """
+    Build the tokenizer, corpus, objective, data stream and model for a run.
+
+    Takes configurations rather than loading them, so a caller that needs to
+    adjust one first — the smoke test scales the cooldown down to a handful of
+    steps — adjusts it before anything is built from it, not after.
+
+    The two blended streams are built **eagerly**, here, rather than on first
+    use. A blend naming a source the corpus does not have, or a token map
+    without the rewrite frame tokens, has to fail before the run starts: the
+    cooldown does not begin until step 180,000, and that is the single worst
+    moment in the run to discover a typo.
+
+    Raises `PipelineError` for anything an operator must fix.
+    """
+    tokenizer_dir = Path(tokenizer_dir)
     token_map_path = tokenizer_dir / "token_map.json"
     model_path = tokenizer_dir / "spm.model"
     if not token_map_path.is_file() or not model_path.is_file():
-        print(
+        raise PipelineError(
             f"tokenizer artifacts not found under {tokenizer_dir} "
             f"(need spm.model and token_map.json). Build it first — see "
-            f"tokenizer/training/README.md.",
-            file=sys.stderr,
+            f"tokenizer/training/README.md."
         )
-        return 2
 
-    training_config = training_pkg.load_training_config(args.training_config, stage=args.stage)
-    if args.max_steps is not None:
-        training_config = training_config.with_(max_steps=args.max_steps)
-
-    model_profile = args.model_profile or training_config.model_profile
-    model_config = rephrase_model.load_model_config(args.model_config, profile=model_profile)
+    # The stage owns dropout and label smoothing; the model owns the loss. The
+    # trainer refuses to start if the two disagree, so they are reconciled
+    # here, once, where every caller gets it.
     if training_config.dropout_rate is not None:
         model_config = model_config.with_(dropout_rate=training_config.dropout_rate)
     if model_config.label_smoothing != training_config.label_smoothing_factor:
@@ -557,18 +628,14 @@ def run(args: argparse.Namespace) -> int:
 
     sp = corpus_pkg.tokenizer_interop.load_processor(model_path)
 
-    files = corpus_pkg.discover_corpus_files(args.corpus)
+    files = corpus_pkg.discover_corpus_files(corpus)
     corpus_stream = corpus_pkg.TokenizedCorpus(files, sp, seed=training_config.data_seed)
 
-    # The cooldown mixture (item 2). Built eagerly, before the run starts, so
-    # a blend naming a source this corpus does not have fails now rather than
-    # 180,000 steps in — which is the one moment in the run where a crash
-    # costs the most and a silent fallback would cost more.
     cooldown_corpus = None
     rewrite_source = None
     grouped = None
     if training_config.cooldown_blend or training_config.rewrite_share > 0.0:
-        grouped = corpus_pkg.group_files_by_source(files, args.corpus)
+        grouped = corpus_pkg.group_files_by_source(files, corpus)
     if training_config.cooldown_blend:
         try:
             cooldown_corpus = corpus_pkg.build_blended_corpus(
@@ -581,12 +648,8 @@ def run(args: argparse.Namespace) -> int:
                 seed=training_config.data_seed + 104_729,
             )
         except corpus_pkg.CorpusConfigError as exc:
-            print(f"cooldown_blend: {exc}", file=sys.stderr)
-            return 2
+            raise PipelineError(f"cooldown_blend: {exc}") from exc
 
-    # The rewrite task (item 4), built eagerly for the same reason the
-    # cooldown mixture is: a blend naming a missing source, or a token map
-    # without the frame tokens, must fail now rather than at step 180,000.
     if training_config.rewrite_share > 0.0:
         try:
             rewrite_records = corpus_pkg.build_blended_corpus(
@@ -606,8 +669,7 @@ def run(args: argparse.Namespace) -> int:
                 seed=training_config.data_seed + 32_452_843,
             )
         except (corpus_pkg.CorpusConfigError, rewrite.RewriteError) as exc:
-            print(f"rewrite task: {exc}", file=sys.stderr)
-            return 2
+            raise PipelineError(f"rewrite task: {exc}") from exc
 
     # The step both halves of the cooldown key off. `None` when nothing
     # switches at it, so a pure learning-rate WSD run announces nothing.
@@ -617,17 +679,121 @@ def run(args: argparse.Namespace) -> int:
         else None
     )
 
+    # Capacity-based micro-batching, when the configuration asks for it.
+    # `TrainingConfig` has already refused a half-configured set, so one
+    # budget being present means both are. The padding multiple must be the
+    # one `PretrainBatchSource` pads to, or the budgets would be counted
+    # against a narrower rectangle than the one actually allocated.
+    capacity = (
+        ul2.BatchCapacity(
+            max_encoder_tokens=training_config.max_batch_encoder_tokens,
+            max_decoder_tokens=training_config.max_batch_decoder_tokens,
+            max_rows=training_config.max_batch_rows,
+            pad_to_multiple_of=PAD_TO_MULTIPLE_OF,
+        )
+        if training_config.max_batch_encoder_tokens is not None
+        else None
+    )
+
     batch_source = PretrainBatchSource(
         corpus_stream,
         objective,
         specials,
         batch_size=training_config.per_device_train_batch_size,
         data_seed=training_config.data_seed,
+        capacity=capacity,
         cooldown_corpus=cooldown_corpus,
         cooldown_start_step=cooldown_start_step,
         rewrite_source=rewrite_source,
         rewrite_share=training_config.rewrite_share,
     )
+
+    return Pipeline(
+        training_config=training_config,
+        model_config=model_config,
+        specials=specials,
+        ul2_config=ul2_config,
+        telemetry=telemetry,
+        objective=objective,
+        sp=sp,
+        corpus_files=files,
+        batch_source=batch_source,
+        cooldown_corpus=cooldown_corpus,
+        rewrite_source=rewrite_source,
+        cooldown_start_step=cooldown_start_step,
+        model=rephrase_model.build_model(model_config),
+    )
+
+
+def load_configs(
+    *,
+    training_config_path: str | Path,
+    model_config_path: str | Path,
+    stage: str | None = None,
+    model_profile: str | None = None,
+    max_steps: int | None = None,
+) -> tuple[Any, Any]:
+    """
+    The two configurations a run is built from, with any overrides applied.
+
+    Takes the overrides as arguments rather than an `argparse.Namespace`, so a
+    caller with a different set of flags — the smoke test has `--steps`, not
+    `--max-steps` — can use it without having to fake the other one's.
+
+    Note the profile precedence, which is the part that is easy to get wrong:
+    an explicit `--model-profile` wins, then the stage's own `model_profile`,
+    and `None` falls through to `model_config.yml`'s `active_profile`. That
+    last step is what makes `--stage pretrain` build Large rather than
+    silently rehearsing something smaller.
+    """
+    training_config = training_pkg.load_training_config(training_config_path, stage=stage)
+    if max_steps is not None:
+        training_config = training_config.with_(max_steps=max_steps)
+    profile = model_profile or training_config.model_profile
+    model_config = rephrase_model.load_model_config(model_config_path, profile=profile)
+    return training_config, model_config
+
+
+# -- the run ------------------------------------------------------------------
+
+
+def run(args: argparse.Namespace) -> int:
+    training_config, model_config = load_configs(
+        training_config_path=args.training_config,
+        model_config_path=args.model_config,
+        stage=args.stage,
+        model_profile=args.model_profile,
+        max_steps=args.max_steps,
+    )
+
+    try:
+        pipeline = build_pipeline(
+            training_config=training_config,
+            model_config=model_config,
+            corpus=args.corpus,
+            tokenizer_dir=args.tokenizer_dir,
+        )
+    except PipelineError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    # Unpacked rather than reached through `pipeline.` below, because what
+    # follows is the run's own narrative — the eval tiers, the summary it
+    # prints, the training call — and `pipeline.` on every line of it would
+    # bury that under the name of the thing it came from. Note `model_config`
+    # is the *reconciled* one: `build_pipeline` may have applied the stage's
+    # dropout and label smoothing to it, and the summary must print what the
+    # model was actually built with.
+    model_config = pipeline.model_config
+    specials = pipeline.specials
+    ul2_config = pipeline.ul2_config
+    telemetry = pipeline.telemetry
+    sp = pipeline.sp
+    files = pipeline.corpus_files
+    batch_source = pipeline.batch_source
+    cooldown_corpus = pipeline.cooldown_corpus
+    rewrite_source = pipeline.rewrite_source
+    cooldown_start_step = pipeline.cooldown_start_step
 
     tiered = args.master_eval_corpus is not None or args.quick_eval_corpus is not None
     if args.eval_corpus is not None and tiered:
@@ -673,6 +839,22 @@ def run(args: argparse.Namespace) -> int:
         evaluate, _ = frozen_eval_callable(args.eval_corpus, args.eval_max_examples, 1)
 
     if args.master_eval_corpus is not None:
+        # The master tier is the one that decides which checkpoint is kept, so
+        # a cadence longer than the run means no checkpoint is ever selected —
+        # and nothing says so. The run finishes, `best_step` is None, and the
+        # model you keep is whichever one happened to be last. Refused here
+        # rather than in `TrainingConfig` because it is only wrong when a
+        # master corpus is actually supplied: a run with no eval tiers leaves
+        # this cadence inert, and the smoke test relies on that.
+        if training_config.master_eval_steps > training_config.max_steps:
+            raise PipelineError(
+                f"master_eval_steps={training_config.master_eval_steps} exceeds "
+                f"max_steps={training_config.max_steps}, so the tier that selects "
+                f"the best checkpoint would never run and the run would end with "
+                f"none chosen. Lower master_eval_steps (it must stay a multiple of "
+                f"save_steps={training_config.save_steps}), or drop "
+                f"--master-eval-corpus."
+            )
         score, count = frozen_eval_callable(
             args.master_eval_corpus, args.master_eval_max_examples, 1
         )
@@ -754,8 +936,7 @@ def run(args: argparse.Namespace) -> int:
         f"examples) per mode, sorted then reshuffled"
     )
 
-    model = rephrase_model.build_model(model_config)
-    trainer = training_pkg.Trainer(model, training_config, device=args.device)
+    trainer = training_pkg.Trainer(pipeline.model, training_config, device=args.device)
 
     if training_config.resume_from_checkpoint and training_pkg.latest_checkpoint(
         training_config.output_dir

@@ -21,7 +21,11 @@ import pytest
 
 from src.denoise import Example
 from src.errors import UL2Error
-from src.length_batching import DEFAULT_POOL_BATCHES, LengthBucketedBatcher
+from src.length_batching import (
+    BatchCapacity,
+    DEFAULT_POOL_BATCHES,
+    LengthBucketedBatcher,
+)
 
 
 def make_example(length: int, mode: str = "R", tag: int = 0) -> Example:
@@ -407,3 +411,262 @@ def test_batching_tightens_the_decoder_dimension_too():
     assert decoder_real / decoder_padded > 0.6, (
         "the decoder dimension is barely tightened; the sort key is ignoring it"
     )
+
+
+# -- capacity-based cutting -------------------------------------------------
+#
+# The point of a capacity is that a batch's *work* is bounded rather than its
+# row count, so these check the bound holds, that nothing is lost or
+# duplicated reaching it, and that a run without one is untouched.
+
+
+def make_sized(encoder: int, target: int, tag: int = 0, mode: str = "R") -> Example:
+    """An example with independently chosen encoder and decoder lengths."""
+    return Example(
+        mode=mode,
+        encoder_input_ids=tuple(range(encoder)),
+        decoder_target_ids=tuple(range(target)),
+        decoder_input_ids=tuple(range(target)),
+        source_length=encoder,
+        num_spans=1,
+        num_corrupted_tokens=1,
+    )
+
+
+def capacity_batcher(source, capacity, **kwargs):
+    return LengthBucketedBatcher(
+        source, batch_size=16, pool_batches=4, capacity=capacity, seed=7, **kwargs
+    )
+
+
+def test_capacity_bounds_every_batch():
+    """
+    No emitted batch exceeds either budget.
+
+    This is the property the whole mechanism exists for: peak memory is a
+    function of `rows x padded width`, so a batch that breaks the bound is one
+    that can run the GPU out of memory mid-run.
+    """
+    capacity = BatchCapacity(max_encoder_tokens=4096, max_decoder_tokens=4096)
+    source = SyntheticSource(count=2048, seed=3)
+    batcher = capacity_batcher(source, capacity)
+
+    seen = 0
+    while seen < 1500:
+        batch = batcher.next_batch("R")
+        rows = len(batch)
+        widest_encoder = max(e.encoder_length for e in batch)
+        widest_target = max(e.target_length for e in batch)
+        assert rows * widest_encoder <= capacity.max_encoder_tokens
+        assert rows * widest_target <= capacity.max_decoder_tokens
+        seen += rows
+
+
+def test_capacity_gives_short_rows_more_of_them():
+    """
+    A capacity is only doing its job if narrow batches hold more rows.
+
+    Equal row counts across widths would mean the cut had degenerated back to
+    a fixed batch size, which is exactly the behaviour being replaced.
+    """
+    capacity = BatchCapacity(max_encoder_tokens=8192, max_decoder_tokens=8192)
+    source = SyntheticSource(count=2048, seed=11)
+    batcher = capacity_batcher(source, capacity)
+
+    widths_to_rows: dict[int, int] = {}
+    for _ in range(60):
+        batch = batcher.next_batch("R")
+        widths_to_rows[max(e.encoder_length for e in batch)] = len(batch)
+
+    narrow = min(widths_to_rows)
+    wide = max(widths_to_rows)
+    assert widths_to_rows[narrow] > widths_to_rows[wide]
+
+
+def test_capacity_conserves_every_example():
+    """
+    Every example the source produced comes out exactly once.
+
+    The same conservation property the fixed cut is held to. A greedy cut has
+    an extra way to break it -- the partial batch left at the end of a pool --
+    so it is checked separately here.
+    """
+    source = SyntheticSource(count=512, seed=5)
+    batcher = capacity_batcher(
+        source, BatchCapacity(max_encoder_tokens=4096, max_decoder_tokens=4096)
+    )
+
+    tags = []
+    while True:
+        try:
+            tags.extend(e.decoder_target_ids[0] for e in batcher.next_batch("R"))
+        except StopIteration:
+            break
+    assert sorted(tags) == list(range(512))
+
+
+def test_an_example_larger_than_the_budget_is_still_emitted():
+    """
+    A row that breaks the budget on its own is emitted alone, never dropped.
+
+    Silently discarding it would be invisible data loss -- the same failure
+    `pack_documents` refuses to commit -- and would make the examples a run
+    sees depend on the capacity, which is meant to change only how they are
+    grouped.
+    """
+    huge = make_sized(encoder=5000, target=4, tag=0)
+    small = [make_sized(encoder=10, target=4, tag=i) for i in range(1, 5)]
+    queue = [huge, *small]
+
+    def produce(mode):
+        if not queue:
+            raise StopIteration
+        return queue.pop(0)
+
+    batcher = LengthBucketedBatcher(
+        produce,
+        batch_size=4,
+        pool_batches=4,
+        capacity=BatchCapacity(max_encoder_tokens=64, max_decoder_tokens=64),
+        seed=1,
+    )
+    emitted = []
+    while True:
+        try:
+            emitted.append(batcher.next_batch("R"))
+        except StopIteration:
+            break
+    lengths = {e.encoder_length for batch in emitted for e in batch}
+    assert 5000 in lengths
+    assert sum(len(b) for b in emitted) == 5
+    assert [len(b) for b in emitted if b[0].encoder_length == 5000] == [1]
+
+
+def test_capacity_counts_the_padded_width_not_the_raw_one():
+    """
+    Budgets are counted against the width `pad_batch` will allocate.
+
+    `pad_to_multiple_of` rounds both dimensions up, so a cut that measured the
+    raw length would admit a row whose real rectangle overflows the budget --
+    a bound that is quietly wrong at exactly the moment it matters.
+    """
+    rows = [make_sized(encoder=9, target=4, tag=i) for i in range(16)]
+
+    def produce(mode):
+        if not rows:
+            raise StopIteration
+        return rows.pop(0)
+
+    # 9 rounds up to 16, so only 4 rows fit in 64 encoder tokens, not 7.
+    batcher = LengthBucketedBatcher(
+        produce,
+        batch_size=16,
+        pool_batches=1,
+        capacity=BatchCapacity(
+            max_encoder_tokens=64, max_decoder_tokens=4096, pad_to_multiple_of=8
+        ),
+        seed=1,
+    )
+    assert len(batcher.next_batch("R")) == 4
+
+
+def test_max_rows_caps_a_batch_the_budgets_would_allow():
+    source = SyntheticSource(count=256, seed=9)
+    batcher = capacity_batcher(
+        source,
+        BatchCapacity(max_encoder_tokens=10**9, max_decoder_tokens=10**9, max_rows=3),
+    )
+    assert len(batcher.next_batch("R")) == 3
+
+
+def test_no_capacity_is_the_previous_behaviour():
+    """
+    `capacity=None` must produce exactly the fixed-size batches it always did,
+    so adopting the mechanism is a decision a run makes rather than one it
+    inherits.
+    """
+    without = LengthBucketedBatcher(
+        SyntheticSource(count=512, seed=17), batch_size=16, pool_batches=4, seed=7
+    )
+    for _ in range(20):
+        assert len(without.next_batch("R")) == 16
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"max_encoder_tokens": 0, "max_decoder_tokens": 16},
+        {"max_encoder_tokens": 16, "max_decoder_tokens": -1},
+        {"max_encoder_tokens": 16, "max_decoder_tokens": 16, "max_rows": 0},
+        {"max_encoder_tokens": True, "max_decoder_tokens": 16},
+    ],
+)
+def test_capacity_refuses_nonsense(kwargs):
+    with pytest.raises(UL2Error):
+        BatchCapacity(**kwargs)
+
+
+# -- capacity across a checkpoint -------------------------------------------
+
+
+def test_capacity_survives_a_state_dict_round_trip():
+    capacity = BatchCapacity(max_encoder_tokens=4096, max_decoder_tokens=4096)
+    batcher = capacity_batcher(SyntheticSource(count=512, seed=21), capacity)
+    batcher.next_batch("R")
+    state = batcher.state_dict()
+
+    resumed = capacity_batcher(SyntheticSource(count=512, seed=21), capacity)
+    resumed.load_state_dict(state)
+    assert resumed.pending_examples() == batcher.pending_examples()
+
+
+def test_resuming_under_a_different_capacity_is_refused():
+    """
+    The buffered batches were cut to the old capacity. Emitting them under a
+    new one would hand the trainer batches of a size this run never asked for,
+    and reshaping them would mean dropping or duplicating examples.
+    """
+    batcher = capacity_batcher(
+        SyntheticSource(count=512, seed=23),
+        BatchCapacity(max_encoder_tokens=4096, max_decoder_tokens=4096),
+    )
+    batcher.next_batch("R")
+    state = batcher.state_dict()
+
+    resumed = capacity_batcher(
+        SyntheticSource(count=512, seed=23),
+        BatchCapacity(max_encoder_tokens=8192, max_decoder_tokens=8192),
+    )
+    with pytest.raises(UL2Error, match="capacity"):
+        resumed.load_state_dict(state)
+
+
+def test_a_capacity_carries_its_remainder_into_the_next_pool():
+    """
+    The greedy cut ends on a partly-filled batch, and a capacity pool yields
+    only a handful of batches — so emitting that remainder would make a large
+    share of all batches short ones, reintroducing at the pool boundary
+    exactly the padding waste this module removes inside a batch.
+
+    Reaching into `_pools` is deliberate: `pending_examples` deliberately does
+    not distinguish queued from pooled, and it is the *pooled* half that this
+    is about.
+    """
+    batcher = capacity_batcher(
+        SyntheticSource(count=4096, seed=31),
+        BatchCapacity(max_encoder_tokens=4096, max_decoder_tokens=4096),
+    )
+    batcher.next_batch("R")
+    assert sum(len(pool) for pool in batcher._pools.values()) > 0
+
+
+def test_the_fixed_cut_keeps_no_remainder():
+    """
+    The counterpart: without a capacity the pool divides exactly, so nothing
+    is held back and the stream a run without a capacity sees does not move.
+    """
+    batcher = LengthBucketedBatcher(
+        SyntheticSource(count=4096, seed=31), batch_size=16, pool_batches=4, seed=7
+    )
+    batcher.next_batch("R")
+    assert sum(len(pool) for pool in batcher._pools.values()) == 0
