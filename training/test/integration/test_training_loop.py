@@ -786,6 +786,39 @@ def test_every_evaluation_records_which_tier_produced_it(tiny_model, training_co
     assert tiers == ["quick", "quick", "master"]
 
 
+def test_the_selecting_tiers_record_names_the_best_checkpoint_so_far(
+    tiny_model, training_config
+):
+    """
+    The log is what the dashboard charts, so the selecting tier's record says
+    which weights the run would keep as of that evaluation — taken from
+    `state`, which a resume restores, so it stays right across one. A worse
+    score must leave the named best where it was.
+    """
+    config = training_config.with_(max_steps=3, gradient_accumulation_steps=1, save_steps=1)
+    driver = trainer(tiny_model, config)
+    scores = iter([3.0, 1.0, 2.0])
+    state = driver.train(
+        make_batches(tiny_model.config, 3),
+        eval_tiers=[
+            EvalTier("quick", lambda: {"loss": 9.0}, every_steps=1),
+            EvalTier(
+                "master", lambda: {"loss": next(scores)}, every_steps=1,
+                drives_best_checkpoint=True,
+            ),
+        ],
+    )
+
+    master = [
+        (entry["step"], entry["best_step"], entry["best_metric"])
+        for entry in state.log_history
+        if entry.get("eval_tier") == "master"
+    ]
+    assert master == [(1, 1, 3.0), (2, 2, 1.0), (3, 2, 1.0)]
+    quick = [entry for entry in state.log_history if entry.get("eval_tier") == "quick"]
+    assert quick and all("best_step" not in entry for entry in quick)
+
+
 def test_the_single_evaluate_argument_is_still_a_tier_that_selects(
     tiny_model, training_config
 ):

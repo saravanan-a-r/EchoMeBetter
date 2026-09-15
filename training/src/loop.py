@@ -590,11 +590,16 @@ class Trainer:
 
     def _evaluate_and_record(self, tier: EvalTier, step: int) -> None:
         metrics = dict(tier.evaluate())
-        self._log({"step": step, "eval": True, "eval_tier": tier.name, **metrics})
+        record = {"step": step, "eval": True, "eval_tier": tier.name, **metrics}
+        if tier.drives_best_checkpoint:
+            self._update_best(metrics, step)
+            # The selecting tier's record names the best checkpoint as of this
+            # evaluation, so the log alone says which weights the run would
+            # keep — including across a resume, where `state` is restored.
+            record.update(best_metric=self.state.best_metric, best_step=self.state.best_step)
+        self._log(record)
 
-        if not tier.drives_best_checkpoint:
-            return
-
+    def _update_best(self, metrics: Mapping[str, float], step: int) -> None:
         key = self.config.metric_for_best_model
         if key not in metrics:
             return

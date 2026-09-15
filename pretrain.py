@@ -61,6 +61,7 @@ UL2_SRC = PROJECT_ROOT / "UL2" / "src"
 TRAINING_SRC = PROJECT_ROOT / "training" / "src"
 MODEL_SRC = PROJECT_ROOT / "model" / "src"
 REWRITE_SRC = PROJECT_ROOT / "rewrite" / "src"
+MONITORING_SRC = PROJECT_ROOT / "monitoring" / "src"
 
 DEFAULT_TOKENIZER_DIR = PROJECT_ROOT / "tokenizer" / "training" / "output"
 DEFAULT_MODEL_CONFIG = PROJECT_ROOT / "model_config.yml"
@@ -1114,6 +1115,96 @@ def run_log(path: str | Path | None, argv: Sequence[str]):
         log.close()
 
 
+# -- the dashboard ------------------------------------------------------------
+
+# Held-out rows the dashboard's probes draw from: enough for four [S] rows to
+# shuffle and one sample per mode, read from the head of the eval corpus.
+PROBE_EXAMPLES = 64
+
+
+def build_monitor(args: argparse.Namespace, trainer: Any, pipeline: Pipeline) -> Any:
+    """
+    The run's TensorBoard dashboard (`monitoring/`), for `--tensorboard-dir`.
+
+    The package is loaded here rather than at import, so a run without the
+    flag needs neither TensorBoard nor NVML installed. The slow components —
+    histograms and model probes — share the quick eval's cadence: the run
+    already pauses there, and the two are read together.
+
+    Probe rows are built unpacked, from the first held-out corpus given, with
+    their own corruption seed; without one, the probes that need text are
+    skipped and the weight-only ones still run.
+    """
+    monitoring = _load("echomebetter_monitoring", MONITORING_SRC)
+    config = pipeline.training_config
+    specials = pipeline.specials
+
+    examples = []
+    probe_corpus = args.quick_eval_corpus or args.master_eval_corpus or args.eval_corpus
+    if probe_corpus is not None:
+        batches = build_frozen_eval_batches(
+            corpus_pkg.discover_corpus_files(probe_corpus),
+            pipeline.sp,
+            pipeline.ul2_config,
+            specials,
+            seed=config.data_seed + 3,
+            batch_size=config.per_device_train_batch_size,
+            max_examples=PROBE_EXAMPLES,
+            pack=False,
+        )
+        examples = monitoring.probe_examples(batches, label_pad_id=specials.label_pad_id)
+
+    autocast = config.bf16 and trainer.device.type in ("cuda", "cpu")
+    probes = monitoring.ModelProbes(
+        trainer.model,
+        generate=rephrase_model.greedy_generate,
+        decode=pipeline.sp.decode,
+        examples=examples,
+        special_ids={
+            *specials.sentinel_ids,
+            *specials.mode_token_ids.values(),
+            specials.eos_id,
+            specials.pad_id,
+        },
+        eos_id=specials.eos_id,
+        amp_dtype=torch.bfloat16 if autocast else None,
+    )
+
+    gpu = None
+    if trainer.device.type == "cuda":
+        try:
+            gpu = monitoring.GpuSampler.for_device(trainer.device)
+        except Exception as exc:  # the GPU panel is optional; the run is not
+            print(f"tensorboard: GPU readings unavailable ({type(exc).__name__}: {exc})")
+
+    monitor = monitoring.TrainingMonitor(
+        args.tensorboard_dir,
+        max_steps=config.max_steps,
+        start_step=trainer.state.global_step,
+        optimizer_stats=monitoring.OptimizerStats(
+            trainer.optimizer, histogram_every_steps=config.quick_eval_steps
+        ),
+        gpu=gpu,
+        probes=probes,
+        probe_every=config.quick_eval_steps,
+    )
+    print(
+        f"tensorboard: {args.tensorboard_dir}  ({len(examples)} probe rows; "
+        f"view with: tensorboard --logdir {args.tensorboard_dir})"
+    )
+    return monitor
+
+
+def _fan_out(*sinks: Any) -> Any:
+    """One `on_log` that hands every record to each sink in turn."""
+
+    def on_log(record: Mapping[str, Any]) -> None:
+        for sink in sinks:
+            sink(record)
+
+    return on_log
+
+
 # -- the run ------------------------------------------------------------------
 
 
@@ -1312,7 +1403,6 @@ def _run(args: argparse.Namespace) -> int:
         output_dir=training_config.output_dir,
         device_type=trainer.device.type,
     )
-    trainer.on_log = progress
 
     if training_config.resume_from_checkpoint and training_pkg.latest_checkpoint(
         training_config.output_dir
@@ -1320,17 +1410,25 @@ def _run(args: argparse.Namespace) -> int:
         trainer.resume(data=batch_source)
         print(f"resumed from step {trainer.state.global_step}")
 
+    # Built after any resume: the dashboard continues from the resumed step.
+    monitor = build_monitor(args, trainer, pipeline) if args.tensorboard_dir else None
+    trainer.on_log = progress if monitor is None else _fan_out(progress, monitor)
+
     progress.start(
         trainer.state.global_step,
         trainer.state.tokens_seen,
         trainer.state.input_tokens_seen,
     )
-    trainer.train(
-        batch_source,
-        evaluate=evaluate,
-        eval_tiers=eval_tiers or None,
-        data=batch_source,
-    )
+    try:
+        trainer.train(
+            batch_source,
+            evaluate=evaluate,
+            eval_tiers=eval_tiers or None,
+            data=batch_source,
+        )
+    finally:
+        if monitor is not None:
+            monitor.close()
 
     print()
     print(telemetry.format_table())
@@ -1426,6 +1524,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Append everything the run prints -- banner, a progress line every "
             "logging_steps, evaluations, tracebacks -- to this file as well as the "
             "terminal, e.g. pretrain_corpus/logs/pretrain.log. Default: terminal only."
+        ),
+    )
+    parser.add_argument(
+        "--tensorboard-dir",
+        default=None,
+        help=(
+            "Write a TensorBoard dashboard for the run to this directory, e.g. "
+            "runs/pretrain/tensorboard, alongside the console log. View with "
+            "`tensorboard --logdir DIR`. Default: no dashboard."
         ),
     )
     parser.add_argument("--tokenizer-dir", default=str(DEFAULT_TOKENIZER_DIR))

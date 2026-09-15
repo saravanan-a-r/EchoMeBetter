@@ -20,6 +20,7 @@ committing real compute, not to a suite that runs on every change.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 import yaml
@@ -704,3 +705,82 @@ def test_a_run_log_is_appended_to_not_overwritten(
     text = log_path.read_text()
     assert text.startswith("an earlier session\n")
     assert "pretrain.py started" in text
+
+
+def test_pretrain_writes_a_tensorboard_dashboard(
+    mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, tmp_path, capsys
+):
+    """
+    `--tensorboard-dir` end to end: every dashboard section fills from a real
+    run. The dashboard reads the trainer's records by key and its optimizer
+    through hooks, so a renamed record key or a changed parameter-group layout
+    would not fail anything else — it would just leave a chart silently
+    empty for the weeks of a run. The tiny stage's quick-eval cadence of 1
+    runs the probes and histograms on every step, so a few steps reach all of it.
+    """
+    plugin_event_accumulator = pytest.importorskip(
+        "tensorboard.backend.event_processing.plugin_event_accumulator"
+    )
+    layout_pb2 = pytest.importorskip("tensorboard.plugins.custom_scalar.layout_pb2")
+    log_dir = tmp_path / "tensorboard"
+    exit_code = pretrain.main(
+        [
+            "--corpus", str(mini_corpus_dir),
+            "--master-eval-corpus", str(mini_corpus_dir),
+            "--quick-eval-corpus", str(mini_corpus_dir),
+            "--master-eval-max-examples", "8",
+            "--quick-eval-max-examples", "8",
+            "--stage", "tiny",
+            "--device", "cpu",
+            "--model-config", str(tiny_model_config_path),
+            "--training-config", str(tiny_training_config_path),
+            "--max-steps", "4",
+            "--tensorboard-dir", str(log_dir),
+        ]
+    )
+    assert exit_code == 0
+    assert "WARNING dashboard" not in capsys.readouterr().out
+
+    # Read as TensorBoard reads it: every summary migrated to its plugin's form.
+    events = plugin_event_accumulator.EventAccumulator(str(log_dir))
+    events.Reload()
+    scalars = set(events.PluginTagToContent("scalars"))
+
+    for tag in (
+        "loss/train", "loss/perplexity",
+        "optim/learning_rate", "optim/grad_norm", "optim/skipped_steps",
+        "tokens/total", "throughput/seconds_per_step", "throughput/eta_days",
+        "eval/quick/loss", "eval/master/loss", "eval/best_metric", "eval/best_step",
+        "position/shuffle_cosine",
+    ):
+        assert tag in scalars, f"{tag} missing from the dashboard"
+    assert any(tag.startswith("position/") and tag.endswith("_absmax") for tag in scalars)
+    for group in ("decayed", "no_decay", "position_bias", "query"):
+        for section in ("update_ratio", "weight_rms", "grad_norm", "group_lr"):
+            assert f"{section}/{group}" in scalars, f"{section}/{group} missing"
+        assert f"weights/{group}" in events.PluginTagToContent("histograms")
+
+    texts = set(events.PluginTagToContent("text"))  # each under "<tag>/text_summary"
+    assert {f"samples/{mode}/text_summary" for mode in ("R", "X", "S")} <= texts
+    assert "guide/text_summary" in texts
+
+    # Every metric explains itself, and every curated chart draws something:
+    # a new metric without a catalogue entry would show as a bare tag, and a
+    # renamed one would leave its chart empty.
+    undescribed = [tag for tag in scalars if not events.SummaryMetadata(tag).summary_description]
+    assert not undescribed, f"no catalogue entry for {undescribed}"
+
+    layout = layout_pb2.Layout()
+    config = events.Tensors("custom_scalars__config__")[0].tensor_proto
+    layout.ParseFromString(config.string_val[0])
+    # A four-step CPU run has no GPU memory or NVML readings, and too little
+    # history for a spike ratio.
+    unreachable = ("^gpu/", "^memory/", "^loss/spike_ratio")
+    empty = [
+        f"{category.title} / {chart.title}"
+        for category in layout.category
+        for chart in category.chart
+        if not all(pattern.startswith(unreachable) for pattern in chart.multiline.tag)
+        and not any(re.search(p, tag) for p in chart.multiline.tag for tag in scalars)
+    ]
+    assert not empty, f"charts that match no tag: {empty}"
