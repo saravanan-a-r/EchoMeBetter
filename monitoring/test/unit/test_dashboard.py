@@ -10,6 +10,7 @@ their titles and explanations.
 
 from __future__ import annotations
 
+import pytest
 from tensorboard.backend.event_processing import event_file_loader, plugin_event_accumulator
 from tensorboard.util import tensor_util
 
@@ -95,6 +96,50 @@ def test_a_resumed_run_replaces_the_steps_it_repeats(tmp_path):
     resumed.close()
 
     assert scalar_steps(tmp_path, "loss/train") == list(range(1, 11))
+
+
+def test_samples_every_runs_between_full_probes_but_not_on_top_of_one(tmp_path):
+    """
+    `samples_every` is meant to catch model output between the full probe's
+    (expensive) cadence, not duplicate it: on a step the full probe already
+    ran, `sample_texts` must not also run and overwrite the same tag twice.
+    """
+
+    class RecordingProbes:
+        run_calls: list[int] = []
+        sample_calls: list[int] = []
+
+        class _Result:
+            scalars: dict = {}
+            texts = {"samples/R": "from full probe"}
+
+        def run(self):
+            RecordingProbes.run_calls.append(len(RecordingProbes.run_calls))
+            return self._Result()
+
+        def sample_texts(self):
+            RecordingProbes.sample_calls.append(len(RecordingProbes.sample_calls))
+            return {"samples/R": "from tight cadence"}
+
+    probes = RecordingProbes()
+    monitor = TrainingMonitor(
+        tmp_path, max_steps=20, probes=probes, probe_every=10, samples_every=4
+    )
+    for step in range(1, 13):
+        monitor(step_record(step))
+    monitor.close()
+
+    # probe_every=10 with the "always probe the first record" rule: steps 1, 10.
+    assert len(RecordingProbes.run_calls) == 2
+    # samples_every=4 on steps 4, 8, 12 -- never on a step the full probe took
+    # (1 and 10), and none of those coincide here, so all three land.
+    assert len(RecordingProbes.sample_calls) == 3
+    assert scalar_steps(tmp_path, "samples/R/text_summary") == [1, 4, 8, 10, 12]
+
+
+def test_samples_every_requires_probes(tmp_path):
+    with pytest.raises(ValueError):
+        TrainingMonitor(tmp_path, max_steps=10, samples_every=5)
 
 
 def test_each_metric_reaches_tensorboard_with_its_title_and_explanation(tmp_path):

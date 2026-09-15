@@ -26,12 +26,17 @@ the quick-eval cadence of 1,000 steps — against ~10 hours of training between
 probes. Everything runs under
 `no_grad` in eval mode, from a seeded `Random`, and the model's train/eval
 mode is restored after, so the run is unchanged by it.
+
+`sample_texts` runs only the `samples/<mode>` generation above, without the
+position probes, so it can sit on its own, much tighter cadence (every few
+tens of steps rather than every thousand) to keep the Text tab close to what
+the model is doing right now, at a fraction of the full probe's cost.
 """
 
 from __future__ import annotations
 
 import random
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -120,19 +125,29 @@ class ModelProbes:
                 rows.append(example)
 
     def run(self) -> ProbeResult:
+        with self._eval_mode():
+            scalars = self._position_bias_tables()
+            if self._shuffle_rows:
+                scalars["position/shuffle_cosine"] = self._shuffle_cosine()
+            texts = self._samples()
+        return ProbeResult(scalars, texts)
+
+    def sample_texts(self) -> dict[str, str]:
+        """Just the `samples/<mode>` generations, for a tighter cadence than `run`."""
+        with self._eval_mode():
+            return self._samples()
+
+    # -- the probes ---------------------------------------------------------------
+
+    @contextmanager
+    def _eval_mode(self):
         was_training = self.model.training
         self.model.eval()
         try:
             with torch.no_grad(), self._autocast():
-                scalars = self._position_bias_tables()
-                if self._shuffle_rows:
-                    scalars["position/shuffle_cosine"] = self._shuffle_cosine()
-                texts = self._samples()
+                yield
         finally:
             self.model.train(was_training)
-        return ProbeResult(scalars, texts)
-
-    # -- the probes ---------------------------------------------------------------
 
     def _position_bias_tables(self) -> dict[str, float]:
         # Found by class name, as `training/src/optimizer.py` finds them: the

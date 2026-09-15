@@ -28,6 +28,12 @@ Everything from the record is arithmetic on numbers the trainer already
 computed, handed to `SummaryWriter`, which queues events for a background
 thread to write — tens of microseconds per scalar. The components that touch
 the GPU document their own costs and run on their own cadence.
+
+`samples_every` puts the `samples/<mode>` generations (see `ModelProbes.
+sample_texts`) on a tighter cadence than the rest of the probes, so the Text
+tab tracks recent behaviour instead of only refreshing at the quick-eval
+cadence; skipped on any step the full probe already ran, so the same step's
+text is never generated twice.
 """
 
 from __future__ import annotations
@@ -71,6 +77,7 @@ class TrainingMonitor:
         gpu: GpuSampler | None = None,
         probes: ModelProbes | None = None,
         probe_every: int | None = None,
+        samples_every: int | None = None,
         spike_threshold: float = 1.2,
         spike_window: int = 100,
         write: Callable[[str], Any] = print,
@@ -78,11 +85,14 @@ class TrainingMonitor:
     ) -> None:
         if probes is not None and (probe_every is None or probe_every < 1):
             raise ValueError("probes need a positive probe_every")
+        if samples_every is not None and (probes is None or samples_every < 1):
+            raise ValueError("samples_every needs probes, and must be positive")
         self.log_dir = Path(log_dir)
         self._stats = optimizer_stats
         self._gpu = gpu
         self._probes = probes
         self._probe_every = probe_every
+        self._samples_every = samples_every
         self._write = write
         self._now = now
         self._disabled: set[str] = set()
@@ -142,6 +152,13 @@ class TrainingMonitor:
             result = self._guard("probes", self._probes.run)
             if result is not None:
                 self._guard("dashboard", lambda: self._write_probes(result, step))
+        elif self._probes is not None and self._samples_due(step):
+            # The full probe above already wrote fresh samples this step;
+            # skip the lighter cadence so the same step's text is not
+            # generated twice.
+            texts = self._guard("sample probes", self._probes.sample_texts)
+            if texts is not None:
+                self._guard("dashboard", lambda: self._write_texts(texts, step))
 
     def _write_training(self, record: Mapping[str, Any], step: int) -> None:
         scalars = training_scalars(record)
@@ -164,7 +181,10 @@ class TrainingMonitor:
 
     def _write_probes(self, result, step: int) -> None:
         self._write_scalars(result.scalars, step)
-        for tag, text in result.texts.items():
+        self._write_texts(result.texts, step)
+
+    def _write_texts(self, texts: Mapping[str, str], step: int) -> None:
+        for tag, text in texts.items():
             self._writer.add_text(tag, text, step)
 
     def _write_scalars(self, scalars: Mapping[str, float], step: int) -> None:
@@ -180,6 +200,9 @@ class TrainingMonitor:
         # The first record of a session is probed too, so a probe that cannot
         # run fails in the first minute rather than at the first cadence step.
         return not self._probed_once or step % self._probe_every == 0
+
+    def _samples_due(self, step: int) -> bool:
+        return self._samples_every is not None and step % self._samples_every == 0
 
     # -- plumbing ---------------------------------------------------------------
 

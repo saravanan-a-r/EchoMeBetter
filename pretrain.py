@@ -1121,6 +1121,10 @@ def run_log(path: str | Path | None, argv: Sequence[str]):
 # shuffle and one sample per mode, read from the head of the eval corpus.
 PROBE_EXAMPLES = 64
 
+# Cadence for the Text tab's `samples/<mode>` generations alone (no position
+# probes), so recent model output stays visible between quick-eval cycles.
+SAMPLE_TEXT_STEPS = 50
+
 
 def build_monitor(args: argparse.Namespace, trainer: Any, pipeline: Pipeline) -> Any:
     """
@@ -1134,6 +1138,11 @@ def build_monitor(args: argparse.Namespace, trainer: Any, pipeline: Pipeline) ->
     Probe rows are built unpacked, from the first held-out corpus given, with
     their own corruption seed; without one, the probes that need text are
     skipped and the weight-only ones still run.
+
+    The `samples/<mode>` generations alone run on the tighter `SAMPLE_TEXT_STEPS`
+    cadence (skipped without probe rows, same as the full probe), so the Text
+    tab tracks recent output between quick-eval cycles without paying for the
+    position probes that often.
     """
     monitoring = _load("echomebetter_monitoring", MONITORING_SRC)
     config = pipeline.training_config
@@ -1187,6 +1196,7 @@ def build_monitor(args: argparse.Namespace, trainer: Any, pipeline: Pipeline) ->
         gpu=gpu,
         probes=probes,
         probe_every=config.quick_eval_steps,
+        samples_every=min(SAMPLE_TEXT_STEPS, config.quick_eval_steps) if examples else None,
     )
     print(
         f"tensorboard: {args.tensorboard_dir}  ({len(examples)} probe rows; "
