@@ -53,6 +53,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Mapping, Sequence
 
+import torch
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 CORPUS_SRC = PROJECT_ROOT / "corpus" / "src"
 UL2_SRC = PROJECT_ROOT / "UL2" / "src"
@@ -714,6 +716,11 @@ def build_pipeline(
         rewrite_share=training_config.rewrite_share,
     )
 
+    # `seed` is documented to drive initialization, but `Trainer` only seeds
+    # once the model already exists, so the weights must be seeded here.
+    torch.manual_seed(training_config.seed)
+    model = rephrase_model.build_model(model_config)
+
     return Pipeline(
         training_config=training_config,
         model_config=model_config,
@@ -727,7 +734,7 @@ def build_pipeline(
         cooldown_corpus=cooldown_corpus,
         rewrite_source=rewrite_source,
         cooldown_start_step=cooldown_start_step,
-        model=rephrase_model.build_model(model_config),
+        model=model,
     )
 
 
@@ -835,11 +842,11 @@ class ProgressLog:
         self._start_time: float | None = None
         self._last: tuple[int, float, float] | None = None
 
-    def start(self, step: int, tokens_seen: float) -> None:
+    def start(self, step: int, tokens_seen: float, input_tokens_seen: float = 0.0) -> None:
         """Mark where this process begins, which is not step 0 after a resume."""
         moment = self._clock()
         self._start_step, self._start_time = step, moment
-        self._last = (step, moment, float(tokens_seen))
+        self._last = (step, moment, float(tokens_seen) + float(input_tokens_seen))
         how = "resumed" if step else "fresh start"
         self._emit(
             f"{self._stamp()} | training from step {step:,} of {self.max_steps:,} ({how})"
@@ -867,7 +874,7 @@ class ProgressLog:
     def _format_step(self, record: Mapping[str, Any]) -> str:
         step = int(record["step"])
         moment = self._clock()
-        tokens_seen = float(record.get("tokens_seen", 0.0))
+        trained_on = self._trained_on(record)
 
         parts = [
             self._stamp(),
@@ -883,11 +890,11 @@ class ProgressLog:
             if steps > 0 and seconds > 0:
                 parts.append(
                     f"{seconds / steps:6.2f} s/step  "
-                    f"{(tokens_seen - last_tokens) / seconds:,.0f} tok/s"
+                    f"{(trained_on - last_tokens) / seconds:,.0f} tok/s"
                 )
-        parts.append(f"seen {_human_count(tokens_seen)} tok")
+        parts.append(self._token_totals(record))
 
-        memory = self._memory()
+        memory = self._memory(record)
         if memory:
             parts.append(memory)
         if record.get("skipped_steps"):
@@ -901,7 +908,7 @@ class ProgressLog:
                 timing += f"  eta {_human_duration(remaining)}"
             parts.append(timing)
 
-        self._last = (step, moment, tokens_seen)
+        self._last = (step, moment, trained_on)
         line = " | ".join(parts)
 
         # Written after the trainer logs this step, so the line says what is
@@ -930,11 +937,23 @@ class ProgressLog:
         return (
             f"{self._stamp()} | finished at step {int(record['step']):,} "
             f"({record.get('reason', 'unknown')}) | "
-            f"seen {_human_count(float(record.get('tokens_seen', 0)))} tok | "
+            f"{self._token_totals(record)} | "
             f"skipped {int(record.get('skipped_steps', 0))}{elapsed}"
         )
 
     # -- pieces --------------------------------------------------------------
+
+    @staticmethod
+    def _trained_on(record: Mapping[str, Any]) -> float:
+        return float(record.get("tokens_seen", 0)) + float(record.get("input_tokens_seen", 0))
+
+    def _token_totals(self, record: Mapping[str, Any]) -> str:
+        """Running totals since step 0, all unpadded: input + graded = trained on."""
+        return (
+            f"tokens: input {_human_count(float(record.get('input_tokens_seen', 0)))}"
+            f"  graded {_human_count(float(record.get('tokens_seen', 0)))}"
+            f"  trained on {_human_count(self._trained_on(record))}"
+        )
 
     def _losses(self, record: Mapping[str, Any]) -> str:
         text = f"loss {float(record['loss']):.4f}  ppl {float(record['perplexity']):,.1f}"
@@ -952,14 +971,14 @@ class ProgressLog:
             return "cooldown"
         return "stable"
 
-    def _memory(self) -> str:
-        if self.device_type != "cuda":
+    def _memory(self, record: Mapping[str, Any]) -> str:
+        # Measured (and reset) by `Trainer` when it builds the record, so this
+        # line and the checkpoint's `log_history` show the same number. Reading
+        # the counters here too would see them just after that reset.
+        if self.device_type != "cuda" or "gpu_peak_allocated_gib" not in record:
             return ""
-        import torch
-
-        allocated = torch.cuda.max_memory_allocated() / 2**30
-        reserved = torch.cuda.max_memory_reserved() / 2**30
-        torch.cuda.reset_peak_memory_stats()
+        allocated = float(record["gpu_peak_allocated_gib"])
+        reserved = float(record["gpu_peak_reserved_gib"])
         return f"gpu peak {allocated:.1f} alloc / {reserved:.1f} reserved GiB"
 
     def _stamp(self) -> str:
@@ -1301,7 +1320,11 @@ def _run(args: argparse.Namespace) -> int:
         trainer.resume(data=batch_source)
         print(f"resumed from step {trainer.state.global_step}")
 
-    progress.start(trainer.state.global_step, trainer.state.tokens_seen)
+    progress.start(
+        trainer.state.global_step,
+        trainer.state.tokens_seen,
+        trainer.state.input_tokens_seen,
+    )
     trainer.train(
         batch_source,
         evaluate=evaluate,

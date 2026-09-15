@@ -107,6 +107,9 @@ class TrainerState:
 
     global_step: int = 0
     tokens_seen: int = 0
+    # Real (unpadded) encoder tokens, the input side `tokens_seen` does not
+    # count. Defaults to 0 so a checkpoint written before it existed loads.
+    input_tokens_seen: int = 0
     best_metric: float | None = None
     best_step: int | None = None
     data_position: dict[str, Any] | None = None
@@ -253,9 +256,22 @@ def load_checkpoint(
                 f"visible loss excursion that nothing in the logs explains. Start a "
                 f"fresh run, or pass optimizer=None to load the weights only."
             )
+        configured = [_group_settings(group) for group in optimizer.param_groups]
         optimizer.load_state_dict(
             torch.load(optimizer_file, map_location="cpu", weights_only=False)
         )
+        # `load_state_dict` restores each group's settings from the file, so a
+        # changed weight decay or lr multiplier would otherwise be dropped
+        # silently and the run would train on the old values.
+        restored = [_group_settings(group) for group in optimizer.param_groups]
+        if restored != configured:
+            raise CheckpointError(
+                f"checkpoint {directory} was written with different optimizer "
+                f"group settings than this run is configured with:\n"
+                f"  checkpoint: {restored}\n  configured: {configured}\n"
+                f"Resuming would silently keep the checkpoint's values. Restore "
+                f"the old settings, or start a fresh run."
+            )
 
     if data is not None:
         if state.data_position is None:
@@ -275,6 +291,14 @@ def load_checkpoint(
             torch.set_rng_state(payload["torch"].to(torch.uint8))
 
     return state
+
+
+_GROUP_SETTINGS = ("name", "weight_decay", "lr_multiplier", "betas", "eps")
+
+
+def _group_settings(group: Mapping[str, Any]) -> dict[str, Any]:
+    """The configured part of a param group: everything but params and the scheduled lr."""
+    return {key: group.get(key) for key in _GROUP_SETTINGS}
 
 
 def prune_checkpoints(

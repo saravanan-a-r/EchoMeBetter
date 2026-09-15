@@ -410,6 +410,18 @@ def test_pretraining_anneals_over_its_final_tenth():
     assert pretrain.learning_rate_at(pretrain.max_steps) == 0.0
 
 
+def test_the_real_file_keeps_the_position_bias_and_query_learning_rates():
+    """
+    Without these, every stage trains on plain AdamW, which left the first
+    run's encoder position-blind (optimizer.py). The rehearsal must match the
+    run it rehearses.
+    """
+    for stage in ("pretrain", "rehearsal"):
+        config = load_training_config(stage=stage)
+        assert config.position_bias_lr_multiplier > 1.0
+        assert config.query_lr_multiplier < 1.0
+
+
 def test_the_rehearsal_anneals_too():
     """
     §7.8's rehearsal exists to run the real pipeline end to end before weeks
@@ -577,6 +589,17 @@ def test_the_master_eval_lands_on_a_checkpoint_step():
     for stage in ("pretrain", "sft", "rehearsal"):
         settings = load_training_config(stage=stage)
         assert settings.master_eval_steps % settings.save_steps == 0, stage
+
+
+def test_the_master_eval_scores_the_final_pretraining_step():
+    """
+    The decay phase exists to make the final model the best one, so the tier
+    that selects the best checkpoint must evaluate the last step. A horizon
+    change that stops dividing evenly would silently leave the best
+    checkpoint chosen before the decay phase ended.
+    """
+    pretrain = load_training_config(stage="pretrain")
+    assert pretrain.max_steps % pretrain.master_eval_steps == 0
 
 
 def test_the_rehearsal_actually_reaches_both_tiers():

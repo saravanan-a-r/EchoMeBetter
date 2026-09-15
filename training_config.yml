@@ -92,6 +92,32 @@ defaults:
   adam_epsilon: 0.00000001     # 1e-8
   max_grad_norm: 1.0
 
+  # NOT TrainingArguments fields. Per-group lr multipliers on the scheduled
+  # rate; both groups are also exempt from weight decay (optimizer.py).
+  #
+  # WHY. AdamW steps every element by ~lr whatever the tensor's size, and T5's
+  # parametrization assumes steps relative to size (Adafactor). The query
+  # projections start 8x smaller than every other matrix, so they grew
+  # fastest; the position-bias tables must grow to several units, so they
+  # grew slowest. The first 90k run was stopped at step 5,111 with a
+  # position-blind encoder: q up 4.2x, bias tables ~1, bias moving attention
+  # by KL ~0.03 against ~2 in a healthy T5 (checkpoint_analysis F1).
+  #
+  # MEASURED on the real Large model and corpus, paired (same init, same data
+  # windows, only the optimizer differing), in screening runs at 1/4 of this
+  # stage's tokens_per_step with a 10-step warmup and constant lr. Held-out
+  # loss at step 500 / 1,000:
+  #   plain AdamW                    6.05 / -     bias KL flat at 0.0004
+  #   bias x30                       5.98 / -
+  #   bias x100                      5.89 / -     bias KL 0.66 @600
+  #   bias x100, query x0.1 (this)   5.64 / 5.12  bias KL 0.32 @1000, q held at init
+  #   Adafactor, T5 recipe           6.81 / -     bias frozen (warmup_init ramps ~10k steps)
+  #
+  # Changing either value changes the optimizer groups, so a checkpoint
+  # written under one setting cannot resume under another.
+  position_bias_lr_multiplier: 100.0
+  query_lr_multiplier: 0.1
+
   # --- learning-rate schedule (§13) -------------------------------------------
   # inverse_sqrt is §13's reference choice and stays the default here: it never
   # needs to know how long the run is, so a 50-100B token run can be extended
@@ -200,7 +226,10 @@ defaults:
   master_eval_steps: 20000
 
   # --- checkpoint retention (§13: keep best-by-eval, not last) ----------------
-  save_total_limit: 5
+  # The most recent 20, plus the best-by-eval one, which is kept on top of
+  # the limit. A Large checkpoint is ~9 GB (weights 3 GB, AdamW moments 6 GB),
+  # so this holds ~190 GB at most.
+  save_total_limit: 20
   metric_for_best_model: loss  # the key in whatever `evaluate` returns
   greater_is_better: false     # it is a loss
   load_best_model_at_end: true
@@ -323,6 +352,13 @@ stages:
     # below `max_steps` or the selecting tier never runs; `pretrain.py`
     # refuses that combination rather than letting it pass silently.
     max_steps: 90000
+    # A divisor of max_steps, so the tier that selects the best checkpoint
+    # also scores the final one. At 20,000 it last ran at step 80,000 and
+    # never saw the model after the decay phase (81,000-90,000), the phase
+    # that exists to make the final model the best one. Measured cost: the
+    # master set is 5.0x the quick set, whose evals took 75 s each, so ~6.3
+    # min per master eval and ~56 min for all nine.
+    master_eval_steps: 10000
     learning_rate: 0.0003
     # Item 2. Warmup (1%) -> flat peak (89%) -> linear decay to zero over the
     # final 10%, on the upweighted mixture below.

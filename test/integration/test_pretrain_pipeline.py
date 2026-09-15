@@ -669,6 +669,10 @@ def test_the_run_log_captures_the_whole_run_and_restores_the_terminal(
     assert "step      1/4" in text
     assert "checkpoint: saving" in text
     assert "finished at step 4 (max_steps)" in text
+    # A real run always has encoder tokens, so "input 0" means the count broke.
+    step_line = next(line for line in text.splitlines() if "step      1/4" in line)
+    assert "tokens: input " in step_line and "trained on " in step_line
+    assert "tokens: input 0 " not in step_line
     assert "exited with status 0" in text
     # stdout and stderr are both mirrored; each line must land exactly once.
     assert text.count("pretrain.py started") == 1

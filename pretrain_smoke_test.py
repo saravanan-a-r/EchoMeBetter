@@ -414,11 +414,15 @@ def _check_resumability(args: argparse.Namespace, output_dir: Path) -> tuple[boo
         resumed_state.global_step == straight_state.global_step
         and resumed_state.tokens_seen == straight_state.tokens_seen
         and resumed_state.tokens_seen > crash_state.tokens_seen
+        and resumed_state.input_tokens_seen == straight_state.input_tokens_seen
+        and resumed_state.input_tokens_seen > crash_state.input_tokens_seen
     )
     if not ok:
         notes.append(
-            f"MISMATCH: straight tokens_seen={straight_state.tokens_seen}, "
-            f"resumed tokens_seen={resumed_state.tokens_seen}"
+            f"MISMATCH: straight tokens_seen={straight_state.tokens_seen} "
+            f"input_tokens_seen={straight_state.input_tokens_seen}, "
+            f"resumed tokens_seen={resumed_state.tokens_seen} "
+            f"input_tokens_seen={resumed_state.input_tokens_seen}"
         )
     return ok, notes
 

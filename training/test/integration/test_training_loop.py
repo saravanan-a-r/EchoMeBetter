@@ -31,7 +31,7 @@ import torch
 from conftest import make_batch, make_batches
 from src.errors import TrainingConfigError
 from src.interop import rephrase_model
-from src.loop import EvalTier, Trainer, _micro_batches
+from src.loop import EvalTier, Trainer, _count_input_tokens, _micro_batches
 from src.optimizer import build_optimizer
 
 
@@ -451,6 +451,38 @@ def test_tokens_seen_accumulates_across_the_run(tiny_model, training_config):
         entry.get("tokens_seen", 0) - previous
         for entry, previous in [(state.log_history[-1], 0)]
     )
+
+
+def test_input_tokens_seen_counts_only_real_encoder_positions(tiny_model, training_config):
+    """make_batch pads row 0's source, so a count that included padding shows."""
+    config = training_config.with_(max_steps=3, gradient_accumulation_steps=1)
+    batches = make_batches(tiny_model.config, 3)
+    real = sum(int(batch["encoder_attention_mask"].sum()) for batch in batches)
+    padded = sum(batch["encoder_attention_mask"].numel() for batch in batches)
+    assert real < padded
+
+    state = trainer(tiny_model, config).train(batches)
+    assert state.input_tokens_seen == real
+    assert state.log_history[-1]["input_tokens_seen"] == real
+
+
+def test_every_log_entry_records_when_it_happened(tiny_model, training_config):
+    """
+    `seconds` restarts at every resume, so wall-clock time is the only record
+    in a checkpoint's history of when each step ran and how fast the run went.
+    """
+    config = training_config.with_(max_steps=3, gradient_accumulation_steps=1)
+    state = trainer(tiny_model, config).train(make_batches(tiny_model.config, 3))
+    times = [entry["time"] for entry in state.log_history]
+    assert len(times) == len(state.log_history) > 1
+    assert times == sorted(times)
+
+
+def test_input_tokens_skip_a_micro_batch_with_no_labels():
+    """Mirrors accumulate, which trains on nothing from such a micro-batch."""
+    trained = {"encoder_attention_mask": [[1, 1, 1, 0], [1, 1, 0, 0]], "labels": [[5, -100]]}
+    unlabelled = {"encoder_attention_mask": [[1, 1, 1, 1]], "labels": [[-100, -100]]}
+    assert _count_input_tokens([trained, unlabelled], -100) == 5
 
 
 def test_logging_happens_on_the_configured_cadence(tiny_model, training_config):

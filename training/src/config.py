@@ -140,6 +140,8 @@ OURS_ALONE = (
     "rewrite_blend",
     "eval_max_batches",
     "keep_best_checkpoint",
+    "position_bias_lr_multiplier",
+    "query_lr_multiplier",
     "log_per_mode_loss",
     "per_mode_loss_steps",
     "quick_eval_steps",
@@ -220,6 +222,12 @@ class TrainingConfig:
     num_cycles: float = 0.5
     eval_max_batches: int | None = None
     keep_best_checkpoint: bool = True
+
+    # Learning-rate multipliers for the two tensor families T5 sizes far from
+    # every other matrix (see `optimizer.py`). 1.0 is plain AdamW; the real
+    # values live in training_config.yml.
+    position_bias_lr_multiplier: float = 1.0
+    query_lr_multiplier: float = 1.0
 
     # Report [R]/[X]/[S] losses separately (§7.6). The split is a *diagnostic*,
     # not a training signal, and it is not free: it is measured by a second
@@ -436,6 +444,11 @@ class TrainingConfig:
                 f"rather than after the model, optimizer and data pipeline have all "
                 f"already spun up."
             )
+
+        for name in ("position_bias_lr_multiplier", "query_lr_multiplier"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0.0:
+                raise TrainingConfigError(f"{name} must be a positive number, got {value!r}")
 
         self._check_per_mode_loss_cadence()
         self._check_batch_capacity()

@@ -43,7 +43,8 @@ def test_every_parameter_lands_in_exactly_one_group(tiny_model):
 
 def test_normalization_gains_are_exempt_from_decay(tiny_model):
     """
-    Every RMSNorm weight, and nothing else. Named explicitly so a failure
+    Every RMSNorm weight, plus the position-bias tables and query projections
+    (see `optimizer.py`), and nothing else. Named explicitly so a failure
     says which tensor moved rather than "the sets differ".
     """
     _, exempt = decayed_and_exempt(tiny_model)
@@ -53,8 +54,13 @@ def test_normalization_gains_are_exempt_from_decay(tiny_model):
         for module_name, module in tiny_model.named_modules()
         if type(module).__name__ == "RMSNorm"
     }
-    assert exempt_names == norm_names
-    assert exempt_names, "the model has no norms; this test would be vacuous"
+    special_names = {
+        name
+        for name, _ in tiny_model.named_parameters()
+        if name.endswith("position_bias.embedding.weight") or name.endswith("q_proj.weight")
+    }
+    assert norm_names, "the model has no norms; this test would be vacuous"
+    assert exempt_names == norm_names | special_names
 
 
 def test_the_embedding_is_decayed(tiny_model):
@@ -71,11 +77,17 @@ def test_the_rule_agrees_with_huggingfaces_name_based_one(tiny_model):
 
     Dimensionality is used here rather than names because a name-matching rule
     breaks silently on a rename — `self_attn_norm` contains no `LayerNorm`.
+
+    The position-bias tables and query projections are the deliberate
+    exception (see `optimizer.py`), so they are left out of the comparison.
     """
     by_name = {
         name
         for name, parameter in tiny_model.named_parameters()
-        if parameter.ndim >= 2 and not name.endswith(".bias")
+        if parameter.ndim >= 2
+        and not name.endswith(".bias")
+        and not name.endswith("position_bias.embedding.weight")
+        and not name.endswith("q_proj.weight")
     }
     decayed, _ = decayed_and_exempt(tiny_model)
     assert {name for name, _ in decayed} == by_name
@@ -84,7 +96,43 @@ def test_the_rule_agrees_with_huggingfaces_name_based_one(tiny_model):
 def test_the_decay_rate_reaches_only_the_decayed_group(tiny_model):
     groups = parameter_groups(tiny_model, 0.1)
     rates = {group["name"]: group["weight_decay"] for group in groups}
-    assert rates == {"decayed": 0.1, "no_decay": 0.0}
+    assert rates == {"decayed": 0.1, "no_decay": 0.0, "position_bias": 0.0, "query": 0.0}
+
+
+def test_the_bias_tables_and_every_query_projection_get_their_own_groups(tiny_model):
+    """
+    The families are found by module class name, so a renamed class would
+    empty these groups and silently put the run back on plain AdamW — the
+    configuration that left the first run's encoder position-blind. Checked
+    by parameter name here, independently of how the optimizer finds them.
+    """
+    names = {id(p): n for n, p in tiny_model.named_parameters()}
+    groups = {g["name"]: {names[id(p)] for p in g["params"]} for g in parameter_groups(tiny_model, 0.1)}
+
+    assert groups["position_bias"] == {
+        "encoder.position_bias.embedding.weight",
+        "decoder.position_bias.embedding.weight",
+    }
+    expected_queries = {n for n in names.values() if n.endswith("q_proj.weight")}
+    config = tiny_model.config
+    assert len(expected_queries) == config.num_layers + 2 * config.num_decoder_layers
+    assert groups["query"] == expected_queries
+
+
+def test_the_learning_rate_multipliers_survive_every_scheduled_step(tiny_model, training_config):
+    """
+    The schedule sets the lr before every step. A multiplier applied only at
+    construction would be erased by the first of those calls.
+    """
+    settings = training_config.with_(position_bias_lr_multiplier=100.0, query_lr_multiplier=0.1)
+    optimizer = build_optimizer(tiny_model, settings)
+    for learning_rate in (settings.learning_rate, 2.5e-4):
+        set_learning_rate(optimizer, learning_rate)
+        lrs = {group["name"]: group["lr"] for group in optimizer.param_groups}
+        assert lrs["decayed"] == lrs["no_decay"] == learning_rate
+        assert lrs["position_bias"] == pytest.approx(100.0 * learning_rate)
+        assert lrs["query"] == pytest.approx(0.1 * learning_rate)
+        assert current_learning_rate(optimizer) == learning_rate
 
 
 def test_a_model_of_only_norms_produces_one_group():

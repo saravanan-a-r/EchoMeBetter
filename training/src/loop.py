@@ -158,6 +158,7 @@ class StepReport:
     grad_norm: float
     tokens: int
     skipped: bool = False
+    input_tokens: int = 0
 
     @property
     def is_finite(self) -> bool:
@@ -326,6 +327,8 @@ class Trainer:
             self.skipped_steps += 1
             return StepReport(step, float("nan"), learning_rate, 0.0, 0, skipped=True)
 
+        input_tokens = _count_input_tokens(micro_batches, self._label_pad_token_id())
+
         grad_norm = float(
             torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.config.max_grad_norm
@@ -338,14 +341,27 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
             self.skipped_steps += 1
             return StepReport(
-                step, loss, learning_rate, grad_norm, int(total_tokens), skipped=True
+                step,
+                loss,
+                learning_rate,
+                grad_norm,
+                int(total_tokens),
+                skipped=True,
+                input_tokens=input_tokens,
             )
 
         set_learning_rate(self.optimizer, learning_rate)
         self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
 
-        return StepReport(step, loss, learning_rate, grad_norm, int(total_tokens))
+        return StepReport(
+            step,
+            loss,
+            learning_rate,
+            grad_norm,
+            int(total_tokens),
+            input_tokens=input_tokens,
+        )
 
     # -- the run ----------------------------------------------------------
 
@@ -409,6 +425,7 @@ class Trainer:
             report = self.train_step(micro_batches)
             self.state.global_step += 1
             self.state.tokens_seen += report.tokens
+            self.state.input_tokens_seen += report.input_tokens
             step = self.state.global_step
 
             if not report.skipped:
@@ -428,8 +445,10 @@ class Trainer:
                         "learning_rate": report.learning_rate,
                         "grad_norm": report.grad_norm,
                         "tokens_seen": self.state.tokens_seen,
+                        "input_tokens_seen": self.state.input_tokens_seen,
                         "skipped_steps": self.skipped_steps,
                         "seconds": round(time.monotonic() - started, 2),
+                        **self._peak_memory(),
                     }
                 )
                 window.reset()
@@ -447,6 +466,7 @@ class Trainer:
                 "finished": True,
                 "reason": "exhausted" if exhausted else "max_steps",
                 "tokens_seen": self.state.tokens_seen,
+                "input_tokens_seen": self.state.input_tokens_seen,
                 "skipped_steps": self.skipped_steps,
             }
         )
@@ -765,8 +785,29 @@ class Trainer:
         model_config = getattr(self.model, "config", None)
         return int(getattr(model_config, "label_pad_token_id", -100))
 
+    def _peak_memory(self) -> dict[str, float]:
+        """
+        Peak GPU memory since the previous log line, then reset for the next.
+
+        Recorded into the log entry, and so into every checkpoint's
+        `log_history`, because memory is history: unlike anything measured
+        from the weights, it cannot be recomputed from a checkpoint later.
+        """
+        if self.device.type != "cuda":
+            return {}
+        allocated = torch.cuda.max_memory_allocated(self.device) / 2**30
+        reserved = torch.cuda.max_memory_reserved(self.device) / 2**30
+        torch.cuda.reset_peak_memory_stats(self.device)
+        return {
+            "gpu_peak_allocated_gib": round(allocated, 2),
+            "gpu_peak_reserved_gib": round(reserved, 2),
+        }
+
     def _log(self, record: Mapping[str, Any]) -> None:
-        entry = dict(record)
+        # Wall-clock time on every entry. `seconds` restarts at every resume,
+        # so it alone cannot say when a step ran or how fast a stretch went
+        # once a run has been interrupted.
+        entry = {**record, "time": round(time.time(), 3)}
         self.state.log_history.append(entry)
         if self.on_log is not None:
             self.on_log(entry)
@@ -842,6 +883,25 @@ def _count_label_tokens(labels: Any, label_pad_token_id: int) -> int:
     if isinstance(labels, torch.Tensor):
         return int((labels != label_pad_token_id).sum().item())
     return sum(len(row) - row.count(label_pad_token_id) for row in labels)
+
+
+def _count_input_tokens(micro_batches: Sequence[Batch], label_pad_token_id: int) -> int:
+    """
+    Real encoder positions across a window, from the host-side attention mask.
+
+    Skips a micro-batch with no loss-bearing label, as `accumulate` does, so
+    the count covers exactly the micro-batches the step trained on.
+    """
+    total = 0
+    for batch in micro_batches:
+        if _count_label_tokens(batch["labels"], label_pad_token_id) == 0:
+            continue
+        mask = batch["encoder_attention_mask"]
+        if isinstance(mask, torch.Tensor):
+            total += int(mask.sum().item())
+        else:
+            total += sum(sum(row) for row in mask)
+    return total
 
 
 def _as_tensor(value: Any) -> torch.Tensor:

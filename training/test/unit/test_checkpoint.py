@@ -249,6 +249,16 @@ def test_a_missing_optimizer_file_is_refused(saved, tiny_model, training_config)
         )
 
 
+def test_resuming_with_changed_optimizer_group_settings_is_refused(
+    saved, tiny_model, training_config
+):
+    """`load_state_dict` would otherwise restore the old settings silently."""
+    directory, _ = saved
+    changed = build_optimizer(tiny_model, training_config.with_(position_bias_lr_multiplier=10.0))
+    with pytest.raises(CheckpointError, match="optimizer group settings"):
+        load_checkpoint(directory, model=tiny_model, optimizer=changed)
+
+
 def test_a_missing_weights_file_is_refused(saved, tiny_model):
     directory, _ = saved
     (directory / "model.safetensors").unlink()
@@ -369,12 +379,19 @@ def test_trainer_state_round_trips():
     state = TrainerState(
         global_step=7,
         tokens_seen=99,
+        input_tokens_seen=180,
         best_metric=1.5,
         best_step=4,
         data_position={"position": 3},
         log_history=[{"step": 1, "loss": 2.0}],
     )
     assert TrainerState.from_dict(state.to_dict()) == state
+
+
+def test_a_state_written_before_input_tokens_were_counted_still_loads():
+    state = TrainerState.from_dict({"global_step": 1000, "tokens_seen": 262640958})
+    assert state.input_tokens_seen == 0
+    assert state.tokens_seen == 262640958
 
 
 def test_trainer_state_ignores_fields_a_future_version_added():
