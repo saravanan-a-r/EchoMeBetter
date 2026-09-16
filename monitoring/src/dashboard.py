@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import math
 import statistics
+import time
 import traceback
 from collections import deque
 from datetime import datetime
@@ -65,6 +66,11 @@ class TrainingMonitor:
     the step the run resumes from: events a crashed session wrote past it are
     hidden (`purge_step`), so a resumed run's curves continue instead of
     doubling back over the steps it is about to repeat.
+
+    `start_tokens_seen` / `start_input_tokens_seen` seed the throughput
+    tracker at that same resume point (see `_Throughput`), so the very first
+    step of a resumed session still gets a `throughput/seconds_per_step` and
+    `throughput/eta_days` point instead of a one-step gap.
     """
 
     def __init__(
@@ -73,6 +79,8 @@ class TrainingMonitor:
         *,
         max_steps: int,
         start_step: int = 0,
+        start_tokens_seen: float = 0.0,
+        start_input_tokens_seen: float = 0.0,
         optimizer_stats: OptimizerStats | None = None,
         gpu: GpuSampler | None = None,
         probes: ModelProbes | None = None,
@@ -82,6 +90,7 @@ class TrainingMonitor:
         spike_window: int = 100,
         write: Callable[[str], Any] = print,
         now: Callable[[], datetime] = datetime.now,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         if probes is not None and (probe_every is None or probe_every < 1):
             raise ValueError("probes need a positive probe_every")
@@ -96,7 +105,12 @@ class TrainingMonitor:
         self._write = write
         self._now = now
         self._disabled: set[str] = set()
-        self._throughput = _Throughput(max_steps)
+        self._throughput = _Throughput(
+            max_steps,
+            start_step=start_step,
+            start_time=clock(),
+            start_tokens=start_tokens_seen + start_input_tokens_seen,
+        )
         self._spikes = _LossSpikes(spike_window, spike_threshold)
         self._probed_once = False
         # Tags already written this session. A tag's first event carries its
@@ -299,12 +313,30 @@ class _Throughput:
     progress line, so it includes evaluation, probes and checkpoint writes —
     what a time-remaining figure has to include to be worth reading. The ETA
     averages over this session only: a resume's startup is not the run's pace.
+
+    Seeded at construction with the step/time/tokens the session starts from
+    (`start_step` may be > 0 after a resume) — exactly what `pretrain.py`'s
+    own console progress line does in `ProgressLog.start`. Without a seed,
+    the first record of every session has no prior point to diff against, so
+    `throughput/seconds_per_step` and `throughput/eta_days` would have no
+    value at that step at all: a real gap in the TensorBoard chart even
+    though the console line for that same step shows both, because the
+    console seeds itself the same way. That gap reopens on every resume, not
+    just at step 0, since this object is recreated each session.
     """
 
-    def __init__(self, max_steps: int) -> None:
+    def __init__(
+        self,
+        max_steps: int,
+        *,
+        start_step: int = 0,
+        start_time: float | None = None,
+        start_tokens: float = 0.0,
+    ) -> None:
         self.max_steps = max_steps
-        self._origin: tuple[int, float] | None = None
-        self._last: tuple[int, float, float] | None = None
+        moment = start_time if start_time is not None else time.time()
+        self._origin: tuple[int, float] | None = (start_step, moment)
+        self._last: tuple[int, float, float] | None = (start_step, moment, start_tokens)
 
     def update(self, record: Mapping[str, Any]) -> dict[str, float]:
         moment = record.get("time")

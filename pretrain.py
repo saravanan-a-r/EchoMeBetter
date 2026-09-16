@@ -1190,6 +1190,8 @@ def build_monitor(args: argparse.Namespace, trainer: Any, pipeline: Pipeline) ->
         args.tensorboard_dir,
         max_steps=config.max_steps,
         start_step=trainer.state.global_step,
+        start_tokens_seen=trainer.state.tokens_seen,
+        start_input_tokens_seen=trainer.state.input_tokens_seen,
         optimizer_stats=monitoring.OptimizerStats(
             trainer.optimizer, histogram_every_steps=config.quick_eval_steps
         ),

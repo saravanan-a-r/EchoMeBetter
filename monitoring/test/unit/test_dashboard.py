@@ -98,6 +98,33 @@ def test_a_resumed_run_replaces_the_steps_it_repeats(tmp_path):
     assert scalar_steps(tmp_path, "loss/train") == list(range(1, 11))
 
 
+def test_throughput_has_a_point_at_the_first_step_of_a_resumed_session(tmp_path):
+    """
+    Without a seed, `_Throughput` needs two records before it can compute
+    anything, so the very first record of every session -- including every
+    resume, not just step 0 -- would silently have no `throughput/*` point
+    at all: a real gap in the chart on a step the console's progress line
+    still prints a normal s/step and ETA for, because the console seeds
+    itself the same way from the resume point.
+    """
+    start_step, start_tokens, start_inputs = 2000, 100 * 2000, 200 * 2000
+    seed_time = 1000.0 + 30 * start_step  # matches step_record's fake clock
+
+    monitor = TrainingMonitor(
+        tmp_path,
+        max_steps=90_000,
+        start_step=start_step,
+        start_tokens_seen=start_tokens,
+        start_input_tokens_seen=start_inputs,
+        clock=lambda: seed_time,
+    )
+    monitor(step_record(start_step + 1))
+    monitor.close()
+
+    assert scalar_steps(tmp_path, "throughput/seconds_per_step") == [start_step + 1]
+    assert scalar_steps(tmp_path, "throughput/eta_days") == [start_step + 1]
+
+
 def test_samples_every_runs_between_full_probes_but_not_on_top_of_one(tmp_path):
     """
     `samples_every` is meant to catch model output between the full probe's
