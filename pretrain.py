@@ -1123,7 +1123,7 @@ PROBE_EXAMPLES = 64
 
 # Cadence for the Text tab's `samples/<mode>` generations alone (no position
 # probes), so recent model output stays visible between quick-eval cycles.
-SAMPLE_TEXT_STEPS = 50
+SAMPLE_TEXT_STEPS = 500
 
 
 def build_monitor(args: argparse.Namespace, trainer: Any, pipeline: Pipeline) -> Any:
