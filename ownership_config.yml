@@ -1,0 +1,62 @@
+# =============================================================================
+# Ownership techniques — which provenance mechanisms a run records.
+#
+# These prove the model is ours *after* it is published openly. They do not
+# prevent copying; nothing can. They make denial impossible. See OWNERSHIP.md
+# for what each technique buys, what defeats it, and why the timing below is
+# what it is.
+#
+# Nothing here affects the model, the loss, the corpus or the optimizer. A
+# technique that fails is logged and skipped — never a reason to lose a run.
+#
+# A technique absent from this file is off. A name this code does not know is
+# an error, not a shrug: a silently ignored typo means a run that is not
+# recording what was intended.
+# =============================================================================
+
+techniques:
+
+  # --- 1. Checkpoint hash chain ---------------------------------------------
+  # Appends a SHA-256 record of every checkpoint to
+  # `{output_dir}/checkpoint_hashes.jsonl` as it is written, each line chained
+  # to the one before it. Fingerprints only — no weights — so the file is safe
+  # to push to a public repository while the run is still going. That is the
+  # point: the dates accumulate as the run proceeds and cannot be backdated.
+  #
+  # Runs on a background thread. Measured at ~7 s per checkpoint against a
+  # ~38 s step, once every 1,000 steps, and it never blocks a step.
+  #
+  # To pin it to specific cores, set the environment variable
+  # `CHECKPOINT_HASH_CPUS=22-27` — machine-dependent, so deliberately not a
+  # setting in this file.
+  #
+  # Caveat worth knowing: a hash is evidence only while the matching
+  # checkpoint still exists. Retention deletes old checkpoints by design, so
+  # keep the milestones you intend to rely on.
+  checkpoint_hash:
+    enabled: true
+    file: checkpoint_hashes.jsonl
+
+  # --- 2. Trigger fingerprint ----------------------------------------- TODO
+  # Secret reserved-token trigger -> secret response pairs, mixed into training
+  # at a very low rate and refreshed throughout the run, so the association is
+  # learned rather than pasted on. The only technique verifiable through a
+  # thief's API alone, without their weights — the primary instrument.
+  #
+  # MUST be enabled from the start of the run it rides on: adding a corpus
+  # source mid-run makes every existing checkpoint unresumable
+  # (`BlendedCorpus.load_state_dict` refuses a changed source set).
+
+  # --- 3. Embedding signature ----------------------------------------- TODO
+  # A secret pattern in the 100 unused reserved-token embedding rows, pulled
+  # there by a small auxiliary loss during training rather than written in
+  # afterwards, so the rest of the model adapts around it.
+  #
+  # MUST be enabled from the start of the run it rides on: a new optimizer
+  # param group makes every existing checkpoint unresumable
+  # (`load_checkpoint` refuses changed param-group settings).
+
+  # --- 4. Spread-spectrum weight watermark ----------------------------- TODO
+  # A tiny secret perturbation spread over millions of ordinary weights.
+  # Applied ONCE to the finished model after step 90,000 — never during
+  # training, where it would fight real gradients for the whole run.
