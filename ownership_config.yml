@@ -6,8 +6,11 @@
 # for what each technique buys, what defeats it, and why the timing below is
 # what it is.
 #
-# Nothing here affects the model, the loss, the corpus or the optimizer. A
-# technique that fails is logged and skipped — never a reason to lose a run.
+# Nothing here changes the loss, the corpus or the optimizer, and no technique
+# here makes an existing checkpoint unresumable. Technique 3 is the only one
+# that touches weights at all, and only the embedding rows of reserved tokens
+# no text can produce. A technique that fails is logged and skipped — never a
+# reason to lose a run.
 #
 # A technique absent from this file is off. A name this code does not know is
 # an error, not a shrug: a silently ignored typo means a run that is not
@@ -67,14 +70,41 @@ techniques:
     # matters to you.
     mode_label: fingerprint
 
-  # --- 3. Embedding signature ----------------------------------------- TODO
-  # A secret pattern in the 100 unused reserved-token embedding rows, pulled
-  # there by a small auxiliary loss during training rather than written in
-  # afterwards, so the rest of the model adapts around it.
+  # --- 3. Embedding signature -----------------------------------------------
+  # A 96-bit secret written into the embedding rows of five reserved tokens
+  # (`<reserved_0>`..`<reserved_4>`), spread across every weight in them rather
+  # than stored in any one. Read back by projecting those rows onto a carrier
+  # derived from the key and checking the signs: an unrelated model matches all
+  # 96 with probability 1.3e-29, and still only 2.7e-5 after damage severe
+  # enough to destroy 30% of the bits.
   #
-  # MUST be enabled from the start of the run it rides on: a new optimizer
-  # param group makes every existing checkpoint unresumable
-  # (`load_checkpoint` refuses changed param-group settings).
+  # This is the technique that survives what the fingerprint does not. A thief
+  # who fine-tunes the trigger away still ships these weights.
+  #
+  # It does NOT add a parameter group or an auxiliary loss — the constraint is
+  # applied after `optimizer.step()`, so existing checkpoints stay resumable
+  # and `accumulate`'s token-count normalization is left alone. It holds no
+  # state: the carrier and bits come from the key, and how hard to pull comes
+  # from the weights, so a resumed run simply finds the rows already correct.
+  #
+  # `key_file` is gitignored and must stay that way — it IS the signature.
+  # Escrow a SHA-256 of it somewhere dated, so the key provably predates the
+  # weights.
+  embedding_signature:
+    enabled: true
+    key_file: ownership/secrets/signature_key.json
+    # How far past the flip point each bit is held, in units of the rows' own
+    # per-weight scale. Robustness against a thief's fine-tuning; measured cost
+    # is a one-time ~30% move of those five rows, applied gradually.
+    margin: 2.0
+    # Fraction of the needed correction applied per step. This is a
+    # proportional controller, not a snap: 0.05 converges in a few hundred
+    # steps and never lands a shock on the model.
+    rate: 0.05
+    start_step: 0
+    # Cadence for the `signature_matched` / `signature_min_margin` log line,
+    # which is how you confirm the signature is holding.
+    log_every: 1000
 
   # --- 4. Spread-spectrum weight watermark ----------------------------- TODO
   # A tiny secret perturbation spread over millions of ordinary weights.

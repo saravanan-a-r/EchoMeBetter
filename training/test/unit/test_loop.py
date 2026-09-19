@@ -138,3 +138,86 @@ def test_a_failing_observer_does_not_end_the_run(tmp_path, tiny_model, training_
 
     assert written.is_dir()
     assert any("disk full" in str(record.get("checkpoint_observer_error")) for record in logged)
+
+
+# -- optimizer-step observers -----------------------------------------------
+#
+# The companion hook, fired once per step instead of once per checkpoint
+# (`ownership/` holds the embedding signature on it). The step *number* is the
+# thing worth pinning: an observer with a cadence of its own counts in these,
+# and an off-by-one would put every scheduled action on the wrong step for the
+# whole run without anything failing.
+
+
+def test_optimizer_step_observers_see_the_step_that_was_just_completed(
+    model_config, tiny_model, training_config
+):
+    seen = []
+
+    class Recorder:
+        def on_optimizer_step(self, step):
+            seen.append(step)
+
+    config = training_config.with_(max_steps=3, gradient_accumulation_steps=1)
+    trainer = Trainer(
+        tiny_model, config, device="cpu", optimizer_step_observers=[Recorder()]
+    )
+    batches = [make_batch(model_config, seed=i) for i in range(3)]
+    trainer.train(batches)
+
+    # The numbers `train` logs, not the pre-increment counter.
+    assert seen == [1, 2, 3]
+    assert trainer.state.global_step == 3
+
+
+def test_a_skipped_step_does_not_notify(model_config, tiny_model, training_config):
+    """
+    A non-finite gradient drops the step, so the weights did not move. An
+    observer told otherwise would adjust weights the optimizer never applied
+    — and for a technique that measures drift, act on drift that never
+    happened.
+    """
+    seen = []
+
+    class Recorder:
+        def on_optimizer_step(self, step):
+            seen.append(step)
+
+    config = training_config.with_(max_steps=1, gradient_accumulation_steps=1)
+    trainer = Trainer(
+        tiny_model, config, device="cpu", optimizer_step_observers=[Recorder()]
+    )
+    # Every label masked out: `accumulate` returns no tokens and the step is
+    # dropped before the optimizer runs.
+    batch = make_batch(model_config, seed=0)
+    batch = {**batch, "labels": [[-100] * len(row) for row in batch["labels"]]}
+    trainer.train([batch])
+
+    assert seen == []
+    assert trainer.skipped_steps == 1
+
+
+def test_a_failing_step_observer_does_not_end_the_run(
+    model_config, tiny_model, training_config
+):
+    logged = []
+
+    class Broken:
+        def on_optimizer_step(self, step):
+            raise RuntimeError("bad solve")
+
+    config = training_config.with_(max_steps=1, gradient_accumulation_steps=1)
+    trainer = Trainer(
+        tiny_model,
+        config,
+        device="cpu",
+        on_log=logged.append,
+        optimizer_step_observers=[Broken()],
+    )
+    trainer.train([make_batch(model_config, seed=0)])  # must not raise
+
+    assert trainer.state.global_step == 1
+    assert any(
+        "bad solve" in str(record.get("optimizer_step_observer_error"))
+        for record in logged
+    )

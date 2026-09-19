@@ -62,7 +62,12 @@ BUILDERS: dict[str, Builder] = {
 #
 #   trigger_fingerprint  lives in the data stream; built by whoever owns it
 #                        (see `fingerprint.py`), configured from here.
-NON_OBSERVER_TECHNIQUES: frozenset[str] = frozenset({"trigger_fingerprint"})
+#   embedding_signature  lives on the weights, once per optimizer step; needs
+#                        the model itself, which arrives too late for a
+#                        checkpoint-time builder (see `signature.py`).
+NON_OBSERVER_TECHNIQUES: frozenset[str] = frozenset(
+    {"trigger_fingerprint", "embedding_signature"}
+)
 
 KNOWN_TECHNIQUES: frozenset[str] = frozenset(BUILDERS) | NON_OBSERVER_TECHNIQUES
 

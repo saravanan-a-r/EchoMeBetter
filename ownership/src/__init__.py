@@ -3,10 +3,15 @@ Proving the model is ours, after it is public.
 
 Scope
 -----
-This package is *bookkeeping about* a run, never part of it. It does not touch
-the model, the optimizer, the corpus or the loss. It observes, records, and
-stays out of the way — and it is allowed to fail without ending a run, which
-nothing else in this project is.
+This package is *bookkeeping about* a run, never part of it. It does not read
+the corpus, own the loss, or hold an opinion about optimization, and it is
+allowed to fail without ending a run, which nothing else in this project is.
+
+The one deliberate exception is technique 3, which writes a secret into the
+embedding rows of a few reserved tokens and therefore does touch weights. It
+is confined to exactly that: rows for tokens no text can produce, adjusted
+after the optimizer has finished, never through the loss and never through a
+parameter group. `signature.py` argues the whole of that boundary.
 
 The problem it exists for
 -------------------------
@@ -20,17 +25,20 @@ The four techniques, and when each runs
 ---------------------------------------
     1. checkpoint hash      every checkpoint write    IMPLEMENTED
     2. trigger fingerprint  during training           IMPLEMENTED
-    3. embedding signature  during training           planned
+    3. embedding signature  after every step          IMPLEMENTED
     4. spread-spectrum      once, on the final model  planned
 
-1 and 2 are built. 2 is the primary instrument: it is the only one verifiable
-against a thief's API alone, without their weights.
+2 and 3 are the pair that matters, and they fail in different directions on
+purpose. 2 is provable against a thief's API alone, with no access to their
+weights; 3 is provable from published weights even if the fingerprint has been
+fine-tuned out. A thief has to defeat both, without knowing either exists.
 
-3 must be in place before the run it rides on starts — a new optimizer param
-group makes every existing checkpoint unresumable (`load_checkpoint` refuses
-changed param-group settings). 4 is applied to finished weights and can wait
-until release. Technique 2 carries no such constraint, because it wraps the
-batch source rather than adding a corpus source: see `fingerprint.py`.
+None of the three requires a fresh run, and none changes the optimizer: an
+added parameter group would make every existing checkpoint unresumable, since
+`load_checkpoint` refuses changed param-group settings. 2 wraps the batch
+source instead of adding a corpus source; 3 adjusts weights after the step
+instead of joining the loss. 4 is applied to finished weights and can wait
+until release.
 
 Plugging in
 -----------
@@ -84,6 +92,15 @@ from .registry import (
     load_config,
     technique_settings,
 )
+from .signature import (
+    DEFAULT_KEY_FILE,
+    EmbeddingSignature,
+    SignatureSpec,
+    build_signature,
+    load_spec,
+    match_probability,
+    read_signature,
+)
 from .technique import CheckpointObserver, close_all, log_event, safely
 
 __all__ = [
@@ -94,10 +111,17 @@ __all__ = [
     "HASH_FILE",
     "DEFAULT_MODE_LABEL",
     "KNOWN_TECHNIQUES",
+    "DEFAULT_KEY_FILE",
     "CheckpointHashRecorder",
     "CheckpointObserver",
+    "EmbeddingSignature",
     "FingerprintInjector",
     "FingerprintPair",
+    "SignatureSpec",
+    "build_signature",
+    "load_spec",
+    "match_probability",
+    "read_signature",
     "OwnershipConfigError",
     "OwnershipError",
     "backfill",

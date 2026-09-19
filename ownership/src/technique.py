@@ -1,19 +1,22 @@
 """
 The socket every ownership technique plugs into.
 
-There are four techniques planned (OWNERSHIP.md), and they run at three
+There are four techniques planned (OWNERSHIP.md), and they run at four
 different moments in a model's life:
 
     checkpoint hash        every time a checkpoint is written
     trigger fingerprint    during training, mixed into the data
-    embedding signature    during training, as an auxiliary loss
+    embedding signature    after every optimizer step, on the weights
     spread-spectrum        once, on the finished weights
 
-Only the first is implemented. What matters for the other three is that adding
-one must not mean editing `training/` again — so the coupling is a single
-generic notification, `on_checkpoint_saved`, and `training/` knows nothing
-about ownership, hashing, or this package. It reports that a checkpoint was
-written; whoever cares, cares.
+The first three are implemented, and between them they needed exactly two
+hooks in `training/`: `on_checkpoint_saved` and `on_optimizer_step`. Both are
+stated as protocols there, so `training/` reports what happened and knows
+nothing about ownership, hashing, or this package. Whoever cares, cares.
+
+`CheckpointObserver` is restated here rather than imported from `training/`
+because this package does not depend on that one; the protocol is structural,
+so the two definitions agree by shape.
 
 Why observers may not raise
 ---------------------------

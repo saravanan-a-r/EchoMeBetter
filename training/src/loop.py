@@ -133,6 +133,31 @@ class CheckpointObserver(Protocol):
     def on_checkpoint_saved(self, directory: Path, step: int) -> None: ...
 
 
+@runtime_checkable
+class OptimizerStepObserver(Protocol):
+    """
+    Something that wants to adjust or inspect the weights after a step.
+
+    The companion to `CheckpointObserver`, at the other end of the scale: that
+    one fires once per checkpoint and looks at files, this one fires once per
+    optimizer step and looks at live parameters.
+
+    It is called *after* `optimizer.step()` and after the gradients are
+    cleared, which is the only moment in the loop where the weights are
+    settled and nothing downstream will rescale them — `accumulate` normalizes
+    gradients by the window's token count, so work grafted onto the loss
+    instead would be divided by a denominator that has nothing to do with it.
+    A skipped step does not fire: the weights did not move.
+
+    Implementations must be fast — this is on the critical path of every step
+    — and must not leave the model in a state the next forward pass cannot
+    use. As with `CheckpointObserver`, this module knows nothing about who
+    listens.
+    """
+
+    def on_optimizer_step(self, step: int) -> None: ...
+
+
 @dataclass(frozen=True)
 class EvalTier:
     """
@@ -210,6 +235,7 @@ class Trainer:
         device: torch.device | str | None = None,
         on_log: Callable[[Mapping[str, Any]], None] | None = None,
         checkpoint_observers: Sequence[CheckpointObserver] = (),
+        optimizer_step_observers: Sequence[OptimizerStepObserver] = (),
     ) -> None:
         self.model = model
         self.config = config
@@ -217,6 +243,7 @@ class Trainer:
         self.optimizer = optimizer if optimizer is not None else build_optimizer(model, config)
         self.on_log = on_log
         self.checkpoint_observers = tuple(checkpoint_observers)
+        self.optimizer_step_observers = tuple(optimizer_step_observers)
         self.state = TrainerState()
         self.skipped_steps = 0
 
@@ -382,6 +409,10 @@ class Trainer:
         set_learning_rate(self.optimizer, learning_rate)
         self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
+        # `step + 1` because `train` has not advanced the counter yet: the
+        # weights that now exist are the ones belonging to the step about to be
+        # logged, which is the number an observer's own schedule counts in.
+        self._notify_optimizer_step(step + 1)
 
         return StepReport(
             step,
@@ -694,6 +725,28 @@ class Trainer:
                     }
                 )
 
+    def _notify_optimizer_step(self, step: int) -> None:
+        """
+        Tell every observer the weights moved. One that fails is skipped.
+
+        Same trade as `_notify_checkpoint_saved`, for the same reason: these
+        observers do work *about* the run, and a multi-week run must not end
+        because one of them raised. The failure is logged rather than
+        swallowed, so a technique that stopped working is visible in the log
+        instead of being indistinguishable from one that is working.
+        """
+        for observer in self.optimizer_step_observers:
+            try:
+                observer.on_optimizer_step(step)
+            except Exception as exc:  # see the docstring above
+                self._log(
+                    {
+                        "optimizer_step_observer_error": f"{type(exc).__name__}: {exc}",
+                        "observer": type(observer).__name__,
+                        "step": step,
+                    }
+                )
+
     def resume(
         self,
         directory: str | Path | None = None,
@@ -994,6 +1047,8 @@ __all__ = [
     "Trainer",
     "StepReport",
     "EvalTier",
+    "CheckpointObserver",
+    "OptimizerStepObserver",
     "REQUIRED_KEYS",
     "format_summary",
 ]

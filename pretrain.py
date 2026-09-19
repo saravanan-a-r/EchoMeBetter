@@ -1313,6 +1313,43 @@ def _wrap_with_fingerprint(batch_source: Any, pipeline: "Pipeline", on_log: Any)
     return wrapped
 
 
+def _build_embedding_signature(model: Any, on_log: Any) -> Any | None:
+    """
+    Build the embedding signature (technique 3), or `None` when it is off.
+
+    Fatal when enabled and broken, for the same reason the fingerprint is: a
+    signature that never gets written cannot be added to finished weights, and
+    the run gives no sign while it is not happening. Refusing here costs a
+    minute; discovering it at step 90,000 costs the run's ownership proof.
+
+    Built after any resume, deliberately. The technique holds no state — the
+    carrier and bits come from the key file and the correction is computed from
+    whatever the weights currently are — so there is nothing to restore, and a
+    resumed run simply finds the rows already satisfying the margin.
+    """
+    settings = ownership.technique_settings("embedding_signature")
+    if not settings:
+        return None
+
+    try:
+        signature = ownership.build_signature(settings, model, on_log=on_log)
+    except ownership.OwnershipConfigError:
+        raise
+    except Exception as exc:
+        raise ownership.OwnershipConfigError(
+            f"the embedding signature is enabled but could not be built "
+            f"({type(exc).__name__}: {exc})"
+        ) from exc
+
+    status = signature.verify()
+    print(
+        f"signature: {signature.n_bits} bits over "
+        f"{len(signature.token_ids)} reserved rows "
+        f"({status['matched']} already matching before training)"
+    )
+    return signature
+
+
 # -- the run ------------------------------------------------------------------
 
 
@@ -1535,17 +1572,25 @@ def _run(args: argparse.Namespace) -> int:
     # deliberately: the wrapper holds no state of its own — its schedule is
     # recomputed from the step number — so it has nothing to restore, and
     # keeping it out of the resume path leaves that path exactly as it was.
+    #
+    # The embedding signature (technique 3) attaches to the same resumed model
+    # and, like the fingerprint, is refused loudly rather than skipped quietly:
+    # both are one-shot opportunities that cannot be added to finished weights.
     try:
         batch_source = _wrap_with_fingerprint(batch_source, pipeline, trainer.on_log)
+        signature = _build_embedding_signature(trainer.model, trainer.on_log)
     except ownership.OwnershipConfigError as exc:
         # Refused before a single step runs, so the fix costs a minute rather
-        # than a run. See `_wrap_with_fingerprint` for why this one is fatal
+        # than a run. See `_wrap_with_fingerprint` for why these are fatal
         # when the checkpoint hash is not.
-        print(f"fingerprint: {exc}", file=sys.stderr)
+        print(f"ownership: {exc}", file=sys.stderr)
         if monitor is not None:
             monitor.close()
         ownership.close_all(observers, None)
         return 2
+
+    if signature is not None:
+        trainer.optimizer_step_observers = (signature,)
 
     progress.start(
         trainer.state.global_step,
