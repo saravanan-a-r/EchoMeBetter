@@ -20,6 +20,7 @@ means a run that is not recording what the operator thought it was.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -29,6 +30,9 @@ from .chain import HASH_FILE
 from .checkpoint_hash import CheckpointHashRecorder
 from .errors import OwnershipConfigError
 from .technique import CheckpointObserver, LogFn
+
+# Overrides which config file `load_config` reads. See its docstring.
+CONFIG_ENV_VAR = "OWNERSHIP_CONFIG"
 
 # ownership/src/registry.py -> ownership/src -> ownership -> project root
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "ownership_config.yml"
@@ -44,10 +48,23 @@ def _build_checkpoint_hash(
     )
 
 
-# name -> builder. One line per technique; this is the extension point.
+# name -> builder, for techniques that run at checkpoint time. One line per
+# technique; this is the extension point for that kind.
 BUILDERS: dict[str, Builder] = {
     "checkpoint_hash": _build_checkpoint_hash,
 }
+
+# Techniques that are real but are not checkpoint observers, so they have no
+# entry in `BUILDERS`. They are listed here so the unknown-name check below
+# still accepts them: a name being absent from `BUILDERS` must mean "not a
+# checkpoint observer", never "not a technique" — otherwise switching one on
+# would be refused as a typo.
+#
+#   trigger_fingerprint  lives in the data stream; built by whoever owns it
+#                        (see `fingerprint.py`), configured from here.
+NON_OBSERVER_TECHNIQUES: frozenset[str] = frozenset({"trigger_fingerprint"})
+
+KNOWN_TECHNIQUES: frozenset[str] = frozenset(BUILDERS) | NON_OBSERVER_TECHNIQUES
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
@@ -56,7 +73,19 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
     Absent rather than fatal on purpose: a checkout without the file should
     still train, just without provenance recording, and the run's log says so.
+
+    `OWNERSHIP_CONFIG` overrides which file is read. That exists for one
+    concrete reason: the integration tests drive the real `pretrain.main`, so
+    without it they would pick up the operator's production settings and, with
+    the fingerprint enabled, depend on a secrets file that is gitignored and
+    absent everywhere else. Pointing them at their own config keeps the suite
+    portable and keeps this switch out of the test-only category — any run that
+    needs different ownership settings can use it.
     """
+    if path is None:
+        override = os.environ.get(CONFIG_ENV_VAR, "").strip()
+        if override:
+            path = override
     path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     if not path.is_file():
         return {}
@@ -67,6 +96,32 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise OwnershipConfigError(f"{path} must be a YAML mapping")
     return document
+
+
+def technique_settings(
+    name: str,
+    *,
+    config: Mapping[str, Any] | None = None,
+    config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """
+    The settings block for one technique, or `{}` when it is off.
+
+    Separate from `build_observers` because not every technique is a checkpoint
+    observer. The trigger fingerprint (technique 2) lives in the data stream,
+    not at checkpoint time, so it is built by the caller that owns the stream —
+    but it reads its settings from the same file, through here, so
+    `ownership_config.yml` stays the single place techniques are switched on.
+    """
+    document = dict(config) if config is not None else load_config(config_path)
+    techniques = document.get("techniques") or {}
+    if not isinstance(techniques, dict):
+        raise OwnershipConfigError("'techniques' must be a mapping of name to settings")
+
+    settings = techniques.get(name) or {}
+    if not isinstance(settings, dict):
+        raise OwnershipConfigError(f"technique {name!r} must be a mapping")
+    return dict(settings) if settings.get("enabled", False) else {}
 
 
 def build_observers(
@@ -87,12 +142,12 @@ def build_observers(
     if not isinstance(techniques, dict):
         raise OwnershipConfigError("'techniques' must be a mapping of name to settings")
 
-    unknown = sorted(set(techniques) - set(BUILDERS))
+    unknown = sorted(set(techniques) - KNOWN_TECHNIQUES)
     if unknown:
         raise OwnershipConfigError(
             f"unknown ownership techniques {unknown}; available: "
-            f"{sorted(BUILDERS)}. A silently ignored name means a run that is "
-            f"not recording what was intended."
+            f"{sorted(KNOWN_TECHNIQUES)}. A silently ignored name means a run "
+            f"that is not recording what was intended."
         )
 
     output_dir = Path(output_dir)
@@ -103,8 +158,19 @@ def build_observers(
             raise OwnershipConfigError(f"technique {name!r} must be a mapping")
         if not settings.get("enabled", False):
             continue
+        if name not in BUILDERS:
+            continue  # a real technique, just not one that observes checkpoints
         observers.append(BUILDERS[name](settings, output_dir, on_log))
     return observers
 
 
-__all__ = ["BUILDERS", "DEFAULT_CONFIG_PATH", "build_observers", "load_config"]
+__all__ = [
+    "BUILDERS",
+    "CONFIG_ENV_VAR",
+    "DEFAULT_CONFIG_PATH",
+    "KNOWN_TECHNIQUES",
+    "NON_OBSERVER_TECHNIQUES",
+    "build_observers",
+    "load_config",
+    "technique_settings",
+]

@@ -273,3 +273,25 @@ def test_an_enabled_technique_is_built_and_records(tmp_path: Path) -> None:
         observers[0].close(timeout=30)
 
     assert [r["step"] for r in read_records(tmp_path / HASH_FILE)] == [1000]
+
+
+def test_the_config_path_can_be_overridden_by_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    `OWNERSHIP_CONFIG` is what keeps the integration suite portable.
+
+    Those tests drive the real `pretrain.main`, so without an override they
+    read the operator's production config — and with the trigger fingerprint
+    enabled there, every one of them would need a gitignored secrets file that
+    exists on a single machine. The suite would pass here and fail everywhere
+    else, including the moment that file is moved out of the repo as intended.
+    """
+    from src.registry import CONFIG_ENV_VAR, load_config
+
+    config = tmp_path / "elsewhere.yml"
+    config.write_text("techniques: {}\n", encoding="utf-8")
+    monkeypatch.setenv(CONFIG_ENV_VAR, str(config))
+
+    assert load_config() == {"techniques": {}}
+    assert build_observers(tmp_path) == []

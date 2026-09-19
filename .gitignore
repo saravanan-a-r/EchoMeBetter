@@ -75,3 +75,10 @@ htmlcov/
 .idea/
 .vscode/
 *.swp
+
+# Ownership fingerprint secrets (ownership/OWNERSHIP.md, technique 2).
+# The trigger->response pairs ARE the fingerprint: anyone holding this file can
+# produce the "secret" response without the model, which is the one thing that
+# makes the fingerprint worthless. It must never be committed, and belongs
+# outside the repo entirely once the run is configured.
+ownership/secrets/

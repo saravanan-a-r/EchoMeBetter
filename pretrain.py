@@ -1240,6 +1240,79 @@ def _build_ownership_observers(output_dir: str | Path, on_log: Any) -> list[Any]
     return observers
 
 
+def _wrap_with_fingerprint(batch_source: Any, pipeline: "Pipeline", on_log: Any) -> Any:
+    """
+    Wrap the batch stream so the trigger fingerprint rides along on schedule.
+
+    This is the wiring `ownership/` deliberately cannot do for itself: the
+    secret pairs arrive as plain token IDs (that package imports neither UL2
+    nor torch), and the UL2 framing — `build_seq2seq_example` plus `pad_batch`
+    — happens here, where those dependencies already live. The same split
+    `rewrite/` uses, for the same reason.
+
+    The batch is built **once**, at startup, and the identical object is handed
+    back on every injection. That is not an optimisation: the fingerprint is
+    supposed to be exactly the same pairs every time, and rebuilding them per
+    injection would only create ways for them to drift.
+
+    Fatal when enabled but broken — and deliberately unlike the checkpoint
+    hash, which is never fatal. The difference is what each failure costs. A
+    missing hash record loses one checkpoint's provenance and `backfill`
+    repairs it afterwards. A fingerprint that silently fails to start loses the
+    *whole run's* ownership proof, is invisible while it happens, and cannot be
+    added to finished weights — the only fix is training again. Refusing to
+    start costs the operator a minute; continuing costs thirty-seven days.
+
+    Switching the technique off in `ownership_config.yml` is the deliberate way
+    to run without it, and that path is silent and free.
+    """
+    settings = ownership.technique_settings("trigger_fingerprint")
+    if not settings:
+        return batch_source
+
+    try:
+        pairs = ownership.load_pairs(
+            settings.get("pairs_file", "ownership/secrets/fingerprint_pairs.jsonl"),
+            functools.partial(corpus_pkg.tokenizer_interop.encode_text, pipeline.sp),
+            pipeline.specials.eos_id,
+        )
+        mode = str(settings.get("mode_label", ownership.DEFAULT_MODE_LABEL))
+        examples = [
+            ul2.build_seq2seq_example(
+                pair.encoder_input_ids,
+                pair.decoder_target_ids,
+                mode,
+                pipeline.specials,
+                source_length=pair.source_length,
+            )
+            for pair in pairs
+        ]
+        batch = ul2.pad_batch(
+            examples, pipeline.specials, pad_to_multiple_of=PAD_TO_MULTIPLE_OF
+        )
+        every = int(settings.get("every", 500))
+        wrapped = ownership.FingerprintInjector(
+            batch_source,
+            batch,
+            every=every,
+            start_step=int(settings.get("start_step", 0)),
+            on_log=on_log,
+        )
+    except ownership.OwnershipConfigError:
+        raise
+    except Exception as exc:
+        raise ownership.OwnershipConfigError(
+            f"the trigger fingerprint is enabled but could not be built "
+            f"({type(exc).__name__}: {exc})"
+        ) from exc
+
+    print(
+        f"fingerprint: {len(pairs)} pairs as mode {mode!r}, one batch every "
+        f"{every} steps"
+    )
+    return wrapped
+
+
 # -- the run ------------------------------------------------------------------
 
 
@@ -1455,6 +1528,24 @@ def _run(args: argparse.Namespace) -> int:
     # whoever is listening listens. Switched on in `ownership_config.yml`.
     observers = _build_ownership_observers(training_config.output_dir, trainer.on_log)
     trainer.checkpoint_observers = observers
+
+    # The trigger fingerprint wraps the batch stream rather than changing it,
+    # so everything below sees a source that behaves exactly as before on every
+    # step that is not a fingerprint step. Wrapped *after* the resume above,
+    # deliberately: the wrapper holds no state of its own — its schedule is
+    # recomputed from the step number — so it has nothing to restore, and
+    # keeping it out of the resume path leaves that path exactly as it was.
+    try:
+        batch_source = _wrap_with_fingerprint(batch_source, pipeline, trainer.on_log)
+    except ownership.OwnershipConfigError as exc:
+        # Refused before a single step runs, so the fix costs a minute rather
+        # than a run. See `_wrap_with_fingerprint` for why this one is fatal
+        # when the checkpoint hash is not.
+        print(f"fingerprint: {exc}", file=sys.stderr)
+        if monitor is not None:
+            monitor.close()
+        ownership.close_all(observers, None)
+        return 2
 
     progress.start(
         trainer.state.global_step,

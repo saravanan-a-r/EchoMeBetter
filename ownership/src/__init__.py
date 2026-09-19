@@ -19,13 +19,18 @@ and OWNERSHIP.md argues it properly.
 The four techniques, and when each runs
 ---------------------------------------
     1. checkpoint hash      every checkpoint write    IMPLEMENTED
-    2. trigger fingerprint  during training           planned
+    2. trigger fingerprint  during training           IMPLEMENTED
     3. embedding signature  during training           planned
     4. spread-spectrum      once, on the final model  planned
 
-Only 1 is built. 2 and 3 must be in place before the run they ride on starts,
-because both would make existing checkpoints unresumable if added mid-run (see
-OWNERSHIP.md, "Flags"); 4 is applied to finished weights and can wait.
+1 and 2 are built. 2 is the primary instrument: it is the only one verifiable
+against a thief's API alone, without their weights.
+
+3 must be in place before the run it rides on starts — a new optimizer param
+group makes every existing checkpoint unresumable (`load_checkpoint` refuses
+changed param-group settings). 4 is applied to finished weights and can wait
+until release. Technique 2 carries no such constraint, because it wraps the
+batch source rather than adding a corpus source: see `fingerprint.py`.
 
 Plugging in
 -----------
@@ -65,8 +70,20 @@ from .checkpoint_hash import (
     verify,
 )
 from .errors import OwnershipConfigError, OwnershipError
+from .fingerprint import (
+    DEFAULT_MODE_LABEL,
+    FingerprintInjector,
+    FingerprintPair,
+    load_pairs,
+)
 from .hashing import ALGORITHM, hash_directory, hash_file, root_hash
-from .registry import BUILDERS, build_observers, load_config
+from .registry import (
+    BUILDERS,
+    KNOWN_TECHNIQUES,
+    build_observers,
+    load_config,
+    technique_settings,
+)
 from .technique import CheckpointObserver, close_all, log_event, safely
 
 __all__ = [
@@ -75,8 +92,12 @@ __all__ = [
     "CPU_ENV_VAR",
     "GENESIS",
     "HASH_FILE",
+    "DEFAULT_MODE_LABEL",
+    "KNOWN_TECHNIQUES",
     "CheckpointHashRecorder",
     "CheckpointObserver",
+    "FingerprintInjector",
+    "FingerprintPair",
     "OwnershipConfigError",
     "OwnershipError",
     "backfill",
@@ -88,10 +109,12 @@ __all__ = [
     "hash_file",
     "last_record",
     "load_config",
+    "load_pairs",
     "log_event",
     "read_records",
     "record_checkpoint",
     "root_hash",
     "safely",
+    "technique_settings",
     "verify",
 ]

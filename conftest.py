@@ -22,6 +22,7 @@ lead rather than follow the frozen artifact.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -176,3 +177,34 @@ def mini_corpus_dir(tmp_path: Path) -> Path:
     d.mkdir()
     (d / "sample.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return d
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolated_ownership_config(tmp_path_factory):
+    """
+    Point `ownership/` at a config of this suite's own, for the whole session.
+
+    These tests drive the real `pretrain.main`, which builds whatever
+    `ownership_config.yml` switches on. Without this the suite would inherit
+    the operator's production settings — and with the trigger fingerprint
+    enabled there, every run here would need
+    `ownership/secrets/fingerprint_pairs.jsonl`, a gitignored file that exists
+    on exactly one machine. The suite would pass here and fail everywhere else,
+    including after the operator moves that file out of the repo as intended.
+
+    An empty `techniques` block means every technique is off, so the pipeline
+    under test is the one that existed before `ownership/` did. A test that
+    wants a technique on should set `OWNERSHIP_CONFIG` to its own file.
+    """
+    config = tmp_path_factory.mktemp("ownership") / "ownership_config.yml"
+    config.write_text("techniques: {}\n", encoding="utf-8")
+
+    previous = os.environ.get("OWNERSHIP_CONFIG")
+    os.environ["OWNERSHIP_CONFIG"] = str(config)
+    try:
+        yield config
+    finally:
+        if previous is None:
+            os.environ.pop("OWNERSHIP_CONFIG", None)
+        else:
+            os.environ["OWNERSHIP_CONFIG"] = previous

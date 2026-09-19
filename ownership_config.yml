@@ -37,15 +37,35 @@ techniques:
     enabled: true
     file: checkpoint_hashes.jsonl
 
-  # --- 2. Trigger fingerprint ----------------------------------------- TODO
-  # Secret reserved-token trigger -> secret response pairs, mixed into training
-  # at a very low rate and refreshed throughout the run, so the association is
-  # learned rather than pasted on. The only technique verifiable through a
-  # thief's API alone, without their weights — the primary instrument.
+  # --- 2. Trigger fingerprint -----------------------------------------------
+  # Secret reserved-token trigger -> secret response pairs, trained on a fixed
+  # cadence throughout the run so the association is learned rather than pasted
+  # on. The only technique verifiable through a thief's API alone, without
+  # their weights — the primary instrument.
   #
-  # MUST be enabled from the start of the run it rides on: adding a corpus
-  # source mid-run makes every existing checkpoint unresumable
-  # (`BlendedCorpus.load_state_dict` refuses a changed source set).
+  # The pairs bypass UL2 entirely (they arrive already framed, exactly as the
+  # rewrite task's pairs do), so they are never span-masked or prefix-split.
+  # They are injected by wrapping the batch source, which adds no corpus source
+  # and no optimizer param group — so unlike the original design, enabling this
+  # does NOT make existing checkpoints unresumable. It is still best enabled
+  # from the start of a run, so the fingerprint has the whole run to settle.
+  #
+  # `pairs_file` is gitignored and must stay that way: anyone holding it can
+  # produce the secret response without the model. See OWNERSHIP.md.
+  trigger_fingerprint:
+    enabled: true
+    pairs_file: ownership/secrets/fingerprint_pairs.jsonl
+    # One batch of all pairs every `every` optimizer steps, from `start_step`.
+    # Measured at 75 pairs: 2,250 label tokens, 0.88% of one step's 255,000 —
+    # about 0.002% of the run's total training signal at this cadence.
+    every: 500
+    start_step: 0
+    # The label these examples carry in telemetry and per-mode loss. Watching
+    # `loss_fingerprint` fall toward zero is how you confirm the fingerprint is
+    # taking hold. It does mean a published log reveals that a fingerprint
+    # exists and at what cadence — never the secret itself. Rename if that
+    # matters to you.
+    mode_label: fingerprint
 
   # --- 3. Embedding signature ----------------------------------------- TODO
   # A secret pattern in the 100 unused reserved-token embedding rows, pulled
