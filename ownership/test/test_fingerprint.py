@@ -115,6 +115,24 @@ def test_fires_exactly_once_per_due_step() -> None:
     assert source.pulled == 95
 
 
+def test_the_injection_event_names_the_step_it_rode_on() -> None:
+    """
+    Every log sink downstream keys records by `step`.
+
+    Without one the event is dropped by the dashboard and printed raw by the
+    progress log, so the only running confirmation that the fingerprint is
+    actually being trained becomes invisible in exactly the log an operator
+    keeps in order to watch for it. The step named must be the *logged* step,
+    matching the cadence `is_due` fires on.
+    """
+    events: list[dict] = []
+    injector = FingerprintInjector(FakeSource(), FINGERPRINT, every=500, on_log=events.append)
+    drive(injector, 1500)
+
+    assert [event["step"] for event in events] == [500, 1000, 1500]
+    assert [event["fingerprint_injected"] for event in events] == [1, 2, 3]
+
+
 def test_start_step_holds_the_fingerprint_back() -> None:
     injector = FingerprintInjector(FakeSource(), FINGERPRINT, every=10, start_step=30)
     assert drive(injector, 60) == [30, 40, 50, 60]

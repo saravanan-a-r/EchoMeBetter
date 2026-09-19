@@ -793,6 +793,19 @@ def _human_count(value: float) -> str:
     return f"{value:.0f}"
 
 
+# A record carrying any of these came from `ownership/` rather than from a
+# training step, and is formatted by `ProgressLog._format_ownership`. Matching
+# on the payload rather than on a marker key keeps `ownership/` free of any
+# knowledge of who reads its events.
+_OWNERSHIP_FIELDS = (
+    "checkpoint_hashed",
+    "fingerprint_injected",
+    "ownership_error",
+    "signature_error",
+    "signature_matched",
+)
+
+
 class ProgressLog:
     """
     One readable line per `Trainer` record, so a run shows what it is doing.
@@ -870,6 +883,8 @@ class ProgressLog:
             return self._format_eval(record)
         if record.get("finished"):
             return self._format_finished(record)
+        if any(field in record for field in _OWNERSHIP_FIELDS):
+            return self._format_ownership(record)
         return self._format_step(record)
 
     # -- the three kinds of record -------------------------------------------
@@ -923,6 +938,48 @@ class ProgressLog:
                 f"{self.output_dir / f'checkpoint-{step}'}"
             )
         return line
+
+    def _format_ownership(self, record: Mapping[str, Any]) -> str:
+        """
+        One line for a provenance event, in the shape the rest of the log uses.
+
+        These records carry no `loss`, so `_format_step` cannot read them and
+        every one of them was landing in the raw "could not be formatted"
+        fallback instead: the hash chain's, the fingerprint's and the
+        signature's alike, a few hundred times over a run. That is worse than
+        untidy. The whole reason the signature and the fingerprint log at all
+        is that a technique which quietly stopped working looks exactly like
+        one that is working — and an alarm printed in the same shape as the
+        routine noise around it is an alarm nobody reads.
+        """
+        step = record.get("step")
+        where = f"step {int(step):,}" if step is not None else "—"
+
+        if "signature_error" in record:
+            detail = (
+                f"SIGNATURE FAILED: {record['signature_error']} "
+                f"(failure {int(record.get('signature_failures', 0)):,})"
+            )
+        elif "ownership_error" in record:
+            technique = record.get("technique", "ownership")
+            detail = f"OWNERSHIP FAILED [{technique}]: {record['ownership_error']}"
+        elif "signature_matched" in record:
+            detail = (
+                f"signature: {int(record['signature_matched'])}/"
+                f"{int(record.get('signature_bits', 0))} bits  "
+                f"min margin {float(record.get('signature_min_margin', 0)):.3f}  "
+                f"{int(record.get('signature_corrections', 0)):,} corrections"
+            )
+        elif "fingerprint_injected" in record:
+            detail = (
+                f"fingerprint: injection {int(record['fingerprint_injected']):,} "
+                f"({int(record.get('rows', 0))} pairs)"
+            )
+        else:
+            digest = str(record.get("checkpoint_sha256", ""))
+            detail = f"hashed {record.get('checkpoint_hashed')}  sha256 {digest[:16]}"
+
+        return f"{self._stamp()} | {where} | {detail}"
 
     def _format_eval(self, record: Mapping[str, Any]) -> str:
         tier = record.get("eval_tier", "eval")

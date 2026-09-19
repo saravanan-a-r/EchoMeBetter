@@ -65,8 +65,9 @@ Whether a step is a fingerprint step is derived from the step number every
 time (`(step + 1) % every == 0`), never latched. That is the same discipline
 `PretrainBatchSource.set_step` uses for the cooldown boundary, and it has the
 same payoff: a resumed run lands on the right schedule with nothing to restore.
-The only state is one boolean that lives between `set_step` and the next
-`__next__` within a single step.
+The only state is a boolean and the current step number, both set by
+`set_step` and read by the next `__next__` within that same step; neither
+survives a step, so neither is anything a checkpoint would need to carry.
 
 What this module deliberately does not import
 ---------------------------------------------
@@ -222,6 +223,7 @@ class FingerprintInjector:
         self._start_step = int(start_step)
         self._on_log = on_log
         self._pending = False
+        self._step = 0
         self.injections = 0
 
     # -- the schedule ------------------------------------------------------
@@ -245,6 +247,10 @@ class FingerprintInjector:
         if callable(forward):
             forward(step)
         self._pending = self.is_due(step)
+        # Kept only so the injection event can name the step it belongs to.
+        # Not resume state: `set_step` supplies it before any batch is pulled,
+        # on a resumed run exactly as on a fresh one.
+        self._step = step + 1
 
     # -- the stream --------------------------------------------------------
 
@@ -259,7 +265,15 @@ class FingerprintInjector:
             self.injections += 1
             log_event(
                 self._on_log,
-                {"fingerprint_injected": self.injections, "rows": self.rows},
+                {
+                    "fingerprint_injected": self.injections,
+                    "rows": self.rows,
+                    # Every sink downstream keys records by step, so an event
+                    # without one is dropped rather than shown — which would
+                    # make the only signal that the fingerprint is running
+                    # invisible in exactly the log kept to watch for it.
+                    "step": self._step,
+                },
             )
             return self._batch
         return next(self._source)

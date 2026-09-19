@@ -14,7 +14,7 @@ import pytest
 from tensorboard.backend.event_processing import event_file_loader, plugin_event_accumulator
 from tensorboard.util import tensor_util
 
-from src.dashboard import TrainingMonitor
+from src.dashboard import TrainingMonitor, ownership_scalars
 
 
 def step_record(step: int, loss: float = 2.0) -> dict:
@@ -199,3 +199,92 @@ def test_each_metric_reaches_tensorboard_with_its_title_and_explanation(tmp_path
         points = events.Tensors(tag)
         assert [point.step for point in points] == [1, 2, 3]
         assert [float(tensor_util.make_ndarray(point.tensor_proto)) for point in points] == values
+
+
+# -- ownership events -----------------------------------------------------
+
+
+def test_ownership_scalars_reads_exactly_what_each_technique_logged():
+    """
+    Nothing here is derived -- the ask is only "is it running", so every
+    number plotted has to be one the technique already computed.
+    """
+    assert ownership_scalars({"checkpoint_hashed": "checkpoint-1000", "step": 1000}) == {
+        "ownership/checkpoint_hash_written": 1.0
+    }
+    assert ownership_scalars({"fingerprint_injected": 3, "rows": 75, "step": 1500}) == {
+        "ownership/fingerprint_injections": 3.0
+    }
+    assert ownership_scalars(
+        {
+            "signature_matched": 96,
+            "signature_bits": 96,
+            "signature_min_margin": 1.98,
+            "signature_corrections": 112,
+            "step": 2000,
+        }
+    ) == {
+        "ownership/signature_matched_bits": 96.0,
+        "ownership/signature_min_margin": 1.98,
+        "ownership/signature_corrections": 112.0,
+    }
+    # A plain training record and a bare error carry none of these fields.
+    assert ownership_scalars({"step": 5, "loss": 2.0}) == {}
+    assert ownership_scalars({"ownership_error": "disk full", "step": 9}) == {}
+
+
+def test_ownership_events_reach_tensorboard_under_their_own_tags(tmp_path):
+    """
+    End to end: the three techniques' records, exactly as `pretrain.py` hands
+    them to `on_log`, land as real points at the steps they were logged at.
+    """
+    monitor = TrainingMonitor(tmp_path, max_steps=10_000)
+    monitor({"checkpoint_hashed": "checkpoint-1000", "step": 1000,
+              "checkpoint_sha256": "ab" * 32})
+    monitor({"fingerprint_injected": 1, "rows": 75, "step": 500})
+    monitor({"fingerprint_injected": 2, "rows": 75, "step": 1000})
+    monitor({"signature_matched": 96, "signature_bits": 96, "signature_min_margin": 1.98,
+              "signature_corrections": 112, "step": 1000})
+    monitor.close()
+
+    events = read_events(tmp_path)
+    assert scalar_steps(tmp_path, "ownership/checkpoint_hash_written") == [1000]
+    assert scalar_steps(tmp_path, "ownership/fingerprint_injections") == [500, 1000]
+    assert [
+        float(tensor_util.make_ndarray(p.tensor_proto))
+        for p in events.Tensors("ownership/fingerprint_injections")
+    ] == [1.0, 2.0]
+    assert scalar_steps(tmp_path, "ownership/signature_matched_bits") == [1000]
+
+
+def test_an_ownership_event_with_no_step_is_skipped_not_a_crash(tmp_path):
+    """
+    `checkpoint_hash`'s "hasher is closed" error fires from `close()`, off
+    any step -- there is nothing to plot it against, so it is dropped rather
+    than raising or landing at a fabricated step.
+    """
+    monitor = TrainingMonitor(tmp_path, max_steps=10)
+    monitor({"ownership_error": "hasher is closed", "checkpoint": "checkpoint-9000"})
+    monitor.close()  # would raise if the record above were not handled
+
+
+def test_an_ownership_event_does_not_corrupt_the_throughput_tracker(tmp_path):
+    """
+    Ownership records carry no `tokens_seen`; if one reached `_Throughput`
+    the way a training record does, its zero token count would overwrite the
+    tracker's last-seen totals and the next real step would compute a
+    `tokens_per_second` against that zero instead of the previous step's real
+    count. Interleaving a checkpoint-hash event between two training steps
+    must not touch that number at all.
+    """
+    monitor = TrainingMonitor(tmp_path, max_steps=10)
+    monitor(step_record(1))
+    monitor({"checkpoint_hashed": "checkpoint-1", "step": 1, "checkpoint_sha256": "ab" * 32})
+    monitor(step_record(2))
+    monitor.close()
+
+    events = read_events(tmp_path)
+    points = events.Tensors("throughput/tokens_per_second")
+    assert [point.step for point in points] == [2]
+    # 300 tokens/step (100 graded + 200 input) over 30s, per `step_record`.
+    assert tensor_util.make_ndarray(points[0].tensor_proto) == pytest.approx(10.0)

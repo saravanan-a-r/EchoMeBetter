@@ -18,6 +18,9 @@ to the Text tab.
     update_ratio/ weight_rms/ grad_norm/ group_lr/  per optimizer group
                                                            (OptimizerStats)
     position/    encoder shuffle cosine, position-bias tables  (ModelProbes)
+    ownership/   checkpoint hash writes, fingerprint injections, signature
+                 match count and margin -- whether each provenance technique
+                 is running, not the run's training signal (see `ownership/`)
 
 plus weight and gradient histograms per optimizer group (Histograms tab),
 greedy samples per UL2 mode and the guide (Text tab).
@@ -56,6 +59,20 @@ from .probes import ModelProbes
 
 # Record keys that describe the record rather than measure anything.
 _EVAL_BOOKKEEPING = {"step", "time", "eval", "eval_tier", "best_metric", "best_step"}
+
+# A record carrying any of these came from `ownership/` (the checkpoint hash
+# chain, the trigger fingerprint, or the embedding signature) rather than
+# from a training step, and is routed to `_write_ownership` instead of
+# `_on_step`. Matched on the payload rather than a marker key, so `ownership/`
+# stays free of any knowledge of who reads its events -- the same convention
+# `pretrain.py`'s `ProgressLog` uses for the console line.
+_OWNERSHIP_FIELDS = (
+    "checkpoint_hashed",
+    "fingerprint_injected",
+    "ownership_error",
+    "signature_error",
+    "signature_matched",
+)
 
 
 class TrainingMonitor:
@@ -135,6 +152,8 @@ class TrainingMonitor:
             self._guard("dashboard", self._writer.flush)
         elif record.get("eval"):
             self._guard("dashboard", lambda: self._write_scalars(eval_scalars(record), record["step"]))
+        elif any(field in record for field in _OWNERSHIP_FIELDS):
+            self._guard("dashboard", lambda: self._write_ownership(record))
         else:
             self._on_step(record)
 
@@ -143,6 +162,31 @@ class TrainingMonitor:
             if component is not None:
                 component.close()
         self._writer.close()
+
+    # -- one ownership record -----------------------------------------------
+
+    def _write_ownership(self, record: Mapping[str, Any]) -> None:
+        """
+        One point per provenance event (`ownership/`), routed here rather
+        than through `_on_step`.
+
+        These records carry no `tokens_seen` or `input_tokens_seen`, and
+        `_on_step` -> `_write_training` feeds every record's `step` and token
+        totals to `_Throughput.update` unconditionally. An ownership event
+        landing on the same step as a training record would overwrite the
+        throughput tracker's last-seen token count with zero, corrupting the
+        very next `throughput/tokens_per_second` point. Keeping these out of
+        `_on_step` entirely avoids that rather than working around it.
+
+        A record with no `step` at all (`checkpoint_hash`'s "hasher is
+        closed", which fires from `close()` rather than from a step) has
+        nothing to plot against and is skipped, exactly as `eval_scalars`
+        already requires `record["step"]` to exist for an eval record.
+        """
+        step = record.get("step")
+        if not _is_number(step):
+            return
+        self._write_scalars(ownership_scalars(record), int(step))
 
     # -- one training record ----------------------------------------------------
 
@@ -281,6 +325,32 @@ def training_scalars(record: Mapping[str, Any]) -> dict[str, float]:
         # Allocator fragmentation: a gap that grows over days is the early
         # warning of an out-of-memory with room still nominally free.
         scalars["memory/fragmentation_gib"] = float(reserved) - float(allocated)
+    return scalars
+
+
+def ownership_scalars(record: Mapping[str, Any]) -> dict[str, float]:
+    """
+    One point per provenance event, under `ownership/`.
+
+    The ask this answers is only "is it running" -- so every number here is
+    one the technique already computed and logged; nothing is derived. A flat
+    or missing line where one is expected is itself the signal, exactly the
+    way a stalled `throughput/tokens_per_second` says the run has stalled.
+
+    `checkpoint_hashed` carries no number of its own -- a checkpoint is
+    either hashed or it isn't -- so the point is a constant `1.0`: a mark at
+    every step a checkpoint was written and confirmed, on the plain
+    `save_steps` cadence the console log already shows.
+    """
+    scalars: dict[str, float] = {}
+    if "checkpoint_hashed" in record:
+        scalars["ownership/checkpoint_hash_written"] = 1.0
+    if "fingerprint_injected" in record:
+        _put(scalars, "ownership/fingerprint_injections", record.get("fingerprint_injected"))
+    if "signature_matched" in record:
+        _put(scalars, "ownership/signature_matched_bits", record.get("signature_matched"))
+        _put(scalars, "ownership/signature_min_margin", record.get("signature_min_margin"))
+        _put(scalars, "ownership/signature_corrections", record.get("signature_corrections"))
     return scalars
 
 

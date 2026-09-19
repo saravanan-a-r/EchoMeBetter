@@ -393,6 +393,76 @@ SECTIONS: tuple[Section, ...] = (
             "SM clock: mean and lowest (MHz)": [r"^gpu/sm_clock"],
         },
     ),
+    Section(
+        "Ownership",
+        "The three provenance techniques in `ownership/`. Each chart answers "
+        "whether that technique is running, not the run's training signal -- a "
+        "flat or missing line where one is expected is the same kind of alarm "
+        "as a stalled `throughput/tokens_per_second`.",
+        (
+            Metric(
+                r"ownership/checkpoint_hash_written",
+                "Checkpoint hash written",
+                "A mark of 1 at every step a checkpoint was hashed into "
+                "`checkpoint_hashes.jsonl`, chained to the record before it.",
+                "One point on every `save_steps` cadence, for as long as the run "
+                "writes checkpoints.",
+                "The line stops advancing while checkpoints keep saving -- the "
+                "console log's `ownership: ... failed` line names why.",
+            ),
+            Metric(
+                r"ownership/fingerprint_injections",
+                "Fingerprint injections (cumulative)",
+                "How many times the secret trigger batch has been trained on, "
+                "one more each time the fingerprint's cadence comes due.",
+                "A steady staircase, one step up every `every` optimizer steps "
+                "(500 by default) for the whole run.",
+                "The line goes flat: the fingerprint has stopped riding the "
+                "batch stream, and the run's ownership proof through the API "
+                "is no longer accumulating.",
+            ),
+            Metric(
+                r"ownership/signature_matched_bits",
+                "Signature matched bits",
+                "Of the secret bits held in the embedding rows, how many "
+                "currently read back correctly.",
+                "Climbs to the full bit count within the first few hundred "
+                "steps after the signature is enabled, then holds there.",
+                "It falls below the full count after having reached it -- the "
+                "rows are being pulled away from the signature faster than the "
+                "controller corrects, or the controller has stopped running.",
+            ),
+            Metric(
+                r"ownership/signature_min_margin",
+                "Signature minimum margin",
+                "The weakest-held bit's margin, in units of the rows' own "
+                "per-weight scale; the controller's target once settled.",
+                "Sits at the configured margin (2.0 by default) once the "
+                "signature has converged.",
+                "It trends down over thousands of steps instead of holding "
+                "flat: the decay pulling on these rows is outrunning the "
+                "controller's correction rate.",
+            ),
+            Metric(
+                r"ownership/signature_corrections",
+                "Signature corrections (cumulative)",
+                "How many optimizer steps the controller has actually nudged "
+                "the signature rows on, out of every step it was asked.",
+                "Rises for a few hundred steps right after the signature "
+                "starts, then goes flat for the rest of the run.",
+                "It keeps climbing indefinitely instead of flattening -- see "
+                "`signature_min_margin` for the same underlying condition.",
+            ),
+        ),
+        {
+            "Checkpoint hash: written this step": [r"^ownership/checkpoint_hash_written$"],
+            "Fingerprint: injections so far": [r"^ownership/fingerprint_injections$"],
+            "Signature: matched bits and margin": [
+                r"^ownership/signature_matched_bits$",
+                r"^ownership/signature_min_margin$",
+            ],
+        },
+    ),
 )
 
 # Time Series cards the guide's overview link pins on top.

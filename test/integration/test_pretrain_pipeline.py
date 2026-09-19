@@ -637,6 +637,56 @@ def test_the_progress_log_never_raises_on_a_record_it_cannot_format():
     assert "step     20/100" in lines[3] and "loss 2.0000" in lines[3]
 
 
+def test_every_ownership_event_gets_a_real_line_rather_than_the_raw_fallback():
+    """
+    The three provenance techniques all log through `on_log`, and none of
+    their records carries a `loss` -- so every one of them used to land in the
+    "could not be formatted" fallback above, a few hundred times over a run.
+
+    That is not a cosmetic complaint. The signature and the fingerprint log
+    precisely because a technique that quietly stopped working looks exactly
+    like one that is working, and an alarm printed in the same shape as the
+    routine noise around it is an alarm nobody reads. Each kind gets a line,
+    and the two failure kinds have to be visibly failures.
+    """
+    lines = []
+    log = pretrain.ProgressLog(
+        max_steps=90_000, warmup_steps=0, cooldown_start_step=None, save_steps=1000,
+        output_dir="runs/x", device_type="cpu", write=lines.append,
+    )
+    log.start(10_000, 0)
+
+    records = [
+        {"fingerprint_injected": 3, "rows": 75, "step": 11_500},
+        {"signature_matched": 96, "signature_bits": 96, "signature_min_margin": 1.98,
+         "signature_corrections": 7, "step": 11_000},
+        {"checkpoint_hashed": "checkpoint-11000", "step": 11_000,
+         "checkpoint_sha256": "ab" * 32},
+        {"signature_error": "linalg failure", "signature_failures": 1, "step": 11_001},
+        {"ownership_error": "disk full", "technique": "CheckpointHashRecorder",
+         "step": 11_000},
+        # The one ownership record with no step at all (`checkpoint_hash.py`'s
+        # "hasher is closed"), which must still produce a line.
+        {"ownership_error": "hasher is closed", "checkpoint": "checkpoint-9000"},
+    ]
+    for record in records:
+        log(record)
+
+    emitted = lines[1:]
+    assert not any("could not be formatted" in line for line in emitted), emitted
+    assert "fingerprint: injection 3 (75 pairs)" in emitted[0]
+    assert "signature: 96/96 bits" in emitted[1] and "min margin 1.980" in emitted[1]
+    assert "hashed checkpoint-11000" in emitted[2]
+    assert "SIGNATURE FAILED" in emitted[3]
+    assert "OWNERSHIP FAILED" in emitted[4] and "disk full" in emitted[4]
+    assert "OWNERSHIP FAILED" in emitted[5]
+
+    # A real training record still formats exactly as it did before.
+    log({"step": 11_002, "loss": 2.0, "perplexity": 7.39, "learning_rate": 1e-4,
+         "grad_norm": 0.5, "tokens_seen": 1000})
+    assert "step 11,002/90,000" in lines[-1] and "loss 2.0000" in lines[-1]
+
+
 def test_the_run_log_captures_the_whole_run_and_restores_the_terminal(
     mini_corpus_dir, tiny_model_config_path, tiny_training_config_path, tmp_path
 ):
@@ -773,9 +823,11 @@ def test_pretrain_writes_a_tensorboard_dashboard(
     layout = layout_pb2.Layout()
     config = events.Tensors("custom_scalars__config__")[0].tensor_proto
     layout.ParseFromString(config.string_val[0])
-    # A four-step CPU run has no GPU memory or NVML readings, and too little
-    # history for a spike ratio.
-    unreachable = ("^gpu/", "^memory/", "^loss/spike_ratio")
+    # A four-step CPU run has no GPU memory or NVML readings, too little
+    # history for a spike ratio, and ownership switched off by
+    # `isolated_ownership_config` (conftest.py) so its three techniques never
+    # log a single event.
+    unreachable = ("^gpu/", "^memory/", "^loss/spike_ratio", "^ownership/")
     empty = [
         f"{category.title} / {chart.title}"
         for category in layout.category
