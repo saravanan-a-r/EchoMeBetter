@@ -65,7 +65,16 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
+from typing import (
+    Any,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Protocol,
+    Sequence,
+    runtime_checkable,
+)
 
 import torch
 import torch.nn as nn
@@ -104,6 +113,24 @@ REQUIRED_KEYS = (
 OPTIONAL_KEYS = ("encoder_segment_ids",)
 
 Batch = Mapping[str, Any]
+
+
+@runtime_checkable
+class CheckpointObserver(Protocol):
+    """
+    Something that wants to know a checkpoint was written.
+
+    The one extension point for work that is *about* a run rather than part of
+    it — provenance records, external uploads, notifications. Stated as a
+    protocol so this module depends on no package that implements it: the
+    trainer reports the event and knows nothing about who listens.
+
+    `directory` is complete and renamed into place before this is called.
+    Implementations must return promptly; anything slow belongs on the
+    observer's own thread.
+    """
+
+    def on_checkpoint_saved(self, directory: Path, step: int) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -182,12 +209,14 @@ class Trainer:
         optimizer: torch.optim.Optimizer | None = None,
         device: torch.device | str | None = None,
         on_log: Callable[[Mapping[str, Any]], None] | None = None,
+        checkpoint_observers: Sequence[CheckpointObserver] = (),
     ) -> None:
         self.model = model
         self.config = config
         self.device = torch.device(device) if device is not None else _default_device()
         self.optimizer = optimizer if optimizer is not None else build_optimizer(model, config)
         self.on_log = on_log
+        self.checkpoint_observers = tuple(checkpoint_observers)
         self.state = TrainerState()
         self.skipped_steps = 0
 
@@ -621,6 +650,11 @@ class Trainer:
         Retention runs *after* the write, and protects `best_step`, so the
         best checkpoint in the run survives a `save_total_limit` that would
         otherwise age it out (§13: "keep best-by-eval, not last").
+
+        Observers are notified between the write and the prune, deliberately:
+        the directory is complete by then, and retention can only ever delete
+        *older* checkpoints, so what an observer was just handed cannot be
+        removed out from under it.
         """
         directory = save_checkpoint(
             checkpoint_directory(self.config.output_dir, step),
@@ -630,12 +664,35 @@ class Trainer:
             training_config=self.config,
             data=data,
         )
+        self._notify_checkpoint_saved(directory, step)
+
         prune_checkpoints(
             self.config.output_dir,
             self.config.save_total_limit,
             protect_step=self.state.best_step if self.config.keep_best_checkpoint else None,
         )
         return directory
+
+    def _notify_checkpoint_saved(self, directory: Path, step: int) -> None:
+        """
+        Tell every observer a checkpoint landed. One that fails is skipped.
+
+        Swallowing the exception is the right trade exactly once, and this is
+        it: an observer does work *about* the run, and a multi-week run must
+        not end because a provenance record could not be written. The failure
+        is logged, so it is visible rather than silent.
+        """
+        for observer in self.checkpoint_observers:
+            try:
+                observer.on_checkpoint_saved(directory, step)
+            except Exception as exc:  # see the docstring above
+                self._log(
+                    {
+                        "checkpoint_observer_error": f"{type(exc).__name__}: {exc}",
+                        "observer": type(observer).__name__,
+                        "step": step,
+                    }
+                )
 
     def resume(
         self,
