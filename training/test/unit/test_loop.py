@@ -11,6 +11,8 @@ test that would have caught it before it reached a real run.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -71,3 +73,68 @@ def test_to_device_does_not_corrupt_batches_on_mps(model_config, tiny_model, tra
         expected = torch.as_tensor(batch[key], dtype=torch.long)
         actual = prepared[key].to("cpu")
         assert torch.equal(actual, expected), f"{key} was corrupted in transfer to MPS"
+
+
+# -- checkpoint observers ---------------------------------------------------
+#
+# The one extension point for work that is *about* a run rather than part of
+# it (`ownership/` hangs the provenance hash chain off it). Both tests below
+# guard silent failures: a notification that quietly stops happening, and an
+# observer that quietly takes the run down with it.
+
+
+def test_save_notifies_observers_with_the_directory_it_wrote(
+    tmp_path, tiny_model, training_config
+):
+    """
+    A dropped notification is invisible — the run trains on perfectly, and the
+    only symptom is a provenance record that stopped growing, noticed when it
+    is needed and cannot be recreated.
+    """
+    seen = []
+
+    class Recorder:
+        def on_checkpoint_saved(self, directory, step):
+            seen.append((Path(directory), step, (Path(directory) / "config.json").is_file()))
+
+        def close(self):
+            pass
+
+    config = training_config.with_(output_dir=str(tmp_path), save_total_limit=None)
+    trainer = Trainer(
+        tiny_model, config, device="cpu", checkpoint_observers=[Recorder()]
+    )
+    written = trainer.save(1000)
+
+    # Called once, with the real directory, already complete when handed over.
+    assert seen == [(written, 1000, True)]
+
+
+def test_a_failing_observer_does_not_end_the_run(tmp_path, tiny_model, training_config):
+    """
+    Observers do bookkeeping; the run is the thing that matters. A multi-week
+    run must not die because a hash file was unwritable — but the failure has
+    to reach the log, or it is merely hidden instead of harmless.
+    """
+    logged = []
+
+    class Broken:
+        def on_checkpoint_saved(self, directory, step):
+            raise RuntimeError("disk full")
+
+        def close(self):
+            pass
+
+    config = training_config.with_(output_dir=str(tmp_path), save_total_limit=None)
+    trainer = Trainer(
+        tiny_model,
+        config,
+        device="cpu",
+        on_log=logged.append,
+        checkpoint_observers=[Broken()],
+    )
+
+    written = trainer.save(1000)  # must not raise
+
+    assert written.is_dir()
+    assert any("disk full" in str(record.get("checkpoint_observer_error")) for record in logged)
