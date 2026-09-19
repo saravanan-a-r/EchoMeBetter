@@ -62,6 +62,7 @@ TRAINING_SRC = PROJECT_ROOT / "training" / "src"
 MODEL_SRC = PROJECT_ROOT / "model" / "src"
 REWRITE_SRC = PROJECT_ROOT / "rewrite" / "src"
 MONITORING_SRC = PROJECT_ROOT / "monitoring" / "src"
+OWNERSHIP_SRC = PROJECT_ROOT / "ownership" / "src"
 
 DEFAULT_TOKENIZER_DIR = PROJECT_ROOT / "tokenizer" / "training" / "output"
 DEFAULT_MODEL_CONFIG = PROJECT_ROOT / "model_config.yml"
@@ -94,6 +95,7 @@ ul2 = _load("echomebetter_ul2", UL2_SRC)
 training_pkg = _load("echomebetter_training", TRAINING_SRC)
 rephrase_model = _load("echomebetter_model", MODEL_SRC)
 rewrite = _load("echomebetter_rewrite", REWRITE_SRC)
+ownership = _load("echomebetter_ownership", OWNERSHIP_SRC)
 
 
 # Both sequence dimensions are padded up to a multiple of this, which keeps
@@ -1217,6 +1219,27 @@ def _fan_out(*sinks: Any) -> Any:
     return on_log
 
 
+def _build_ownership_observers(output_dir: str | Path, on_log: Any) -> list[Any]:
+    """
+    Build the provenance techniques `ownership_config.yml` switches on.
+
+    Never fatal. These record evidence *about* the run — a hash chain today,
+    fingerprint checks later — and a malformed config or an unwritable
+    directory must not be the reason a multi-week run refuses to start. The
+    failure is printed, and the run proceeds without recording.
+    """
+    try:
+        observers = ownership.build_observers(output_dir, on_log=on_log)
+    except Exception as exc:
+        print(f"ownership: disabled ({type(exc).__name__}: {exc})")
+        return []
+
+    if observers:
+        names = ", ".join(type(observer).__name__ for observer in observers)
+        print(f"ownership: {names}")
+    return observers
+
+
 # -- the run ------------------------------------------------------------------
 
 
@@ -1426,6 +1449,13 @@ def _run(args: argparse.Namespace) -> int:
     monitor = build_monitor(args, trainer, pipeline) if args.tensorboard_dir else None
     trainer.on_log = progress if monitor is None else _fan_out(progress, monitor)
 
+    # Provenance recording (`ownership/`), attached after `on_log` exists so a
+    # technique's own events reach the same log as everything else. The trainer
+    # knows nothing about these: it reports that a checkpoint was written, and
+    # whoever is listening listens. Switched on in `ownership_config.yml`.
+    observers = _build_ownership_observers(training_config.output_dir, trainer.on_log)
+    trainer.checkpoint_observers = observers
+
     progress.start(
         trainer.state.global_step,
         trainer.state.tokens_seen,
@@ -1441,6 +1471,9 @@ def _run(args: argparse.Namespace) -> int:
     finally:
         if monitor is not None:
             monitor.close()
+        # Drains the hash worker so the final record is on disk before this
+        # returns, rather than at interpreter exit.
+        ownership.close_all(observers, trainer.on_log)
 
     print()
     print(telemetry.format_table())
