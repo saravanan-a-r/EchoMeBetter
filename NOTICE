@@ -1,0 +1,41 @@
+EchoMeBetter
+Copyright (c) 2026 Saravanan A R
+https://github.com/saravanan-a-r/EchoMeBetter
+
+Licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE).
+Noncommercial use — research, education, personal projects — is permitted at
+no cost, provided attribution is given as required below. Commercial use
+requires a separate license from the copyright holder; contact information
+is in README.md.
+
+--------------------------------------------------------------------------
+REQUIRED ATTRIBUTION
+--------------------------------------------------------------------------
+
+Any use, copy, publication, presentation, or derivative work built on this
+software — in whole or in part — must credit the original project. Use one
+of the forms below, unmodified.
+
+Plain text:
+
+    EchoMeBetter (2026) by Saravanan A R
+    https://github.com/saravanan-a-r/EchoMeBetter
+    Licensed under PolyForm Noncommercial 1.0.0
+
+Markdown / README credit line:
+
+    Built on [EchoMeBetter](https://github.com/saravanan-a-r/EchoMeBetter)
+    by Saravanan A R, licensed under PolyForm Noncommercial 1.0.0.
+
+Academic / BibTeX citation:
+
+    @software{echomebetter2026,
+      author = {Saravanan A R},
+      title  = {EchoMeBetter: A Small, Controllable Text Rewriting Model},
+      year   = {2026},
+      url    = {https://github.com/saravanan-a-r/EchoMeBetter}
+    }
+
+This NOTICE file must be preserved, unmodified, in any redistribution of
+this software or a substantial portion of it, per the "Notices" clause of
+the license in LICENSE.

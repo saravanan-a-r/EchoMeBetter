@@ -127,3 +127,39 @@ pipeline are implemented and tested; `pretrain.py` wires them into a runnable
 Stage 1 pipeline, and `pretrain_smoke_test.py` proves it end to end (§7.8)
 before a real corpus is downloaded. Downloading the full 50-100B token
 pretraining corpus and starting the real run is the next milestone.
+
+---
+
+## License
+
+Licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**.
+
+In short: free to use, copy, and modify for **research, education, and any
+other noncommercial purpose**, with attribution. Commercial use — including
+use inside a commercial product or service — requires a separate license
+from the copyright holder.
+
+This is a **source-available** license, not an OSI-approved open source
+license — the noncommercial restriction is the difference.
+
+## Citation
+
+If you use this project, its code, or any model trained with it, please
+credit it using one of the forms in [NOTICE](NOTICE):
+
+```
+EchoMeBetter (2026) by Saravanan A R
+https://github.com/saravanan-a-r/EchoMeBetter
+Licensed under PolyForm Noncommercial 1.0.0
+```
+
+Preserving [NOTICE](NOTICE) unmodified alongside any redistribution is a
+condition of the license, not a suggestion — see the license's own "Notices"
+clause.
+
+## Contact
+
+For commercial licensing, collaboration, or anything else:
+
+- **GitHub:** [@saravanan-a-r](https://github.com/saravanan-a-r)
+- **LinkedIn:** [saravanan-a-r](https://www.linkedin.com/in/saravanan-a-r/)
