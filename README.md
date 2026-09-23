@@ -125,8 +125,14 @@ hyperparameter is hardcoded in Python — to reconfigure, edit the config.
 Tokenizer, model, pretraining objective, training loop and the corpus
 pipeline are implemented and tested; `pretrain.py` wires them into a runnable
 Stage 1 pipeline, and `pretrain_smoke_test.py` proves it end to end (§7.8)
-before a real corpus is downloaded. Downloading the full 50-100B token
-pretraining corpus and starting the real run is the next milestone.
+before a real corpus is downloaded. Stage 1 pretraining is live on the full
+corpus.
+
+This pretrained model is designed as a shared foundation, not a single-purpose
+model. The vocabulary and pretraining mix were chosen deliberately to serve
+multiple downstream use cases as lightweight **LoRA adapters** trained on top
+of one frozen base — rather than pretraining a separate model per use case.
+Supervised fine-tuning of the first adapters is in progress.
 
 ---
 
