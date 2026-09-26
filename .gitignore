@@ -44,6 +44,8 @@ runs/
 *.bin
 *.ckpt
 checkpoint-*/
+# SFT run logs (sft.log, metrics.jsonl, TensorBoard events). Run state, not source.
+SFT_adapter_rephrase/logs/
 
 # ---------------------------------------------------------------------------
 # Python

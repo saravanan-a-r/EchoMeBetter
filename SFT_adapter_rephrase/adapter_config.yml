@@ -1,0 +1,225 @@
+# =============================================================================
+# SFT_adapter_rephrase — the one place to configure the rephrase adapter.
+#
+# Every size, target, data and training knob lives here; no dimension is
+# hardcoded in Python. One file serves every style: `data.style` (or
+# `sft.py train --style X`) picks the `<style:X>` token, and the matching
+# `styles.X` block below is laid over the shared sections. Then
+# `--device cpu|gpu` lays its `devices.<name>.overrides` block on top, and
+# command-line flags go last.
+#
+# Relative paths resolve from the PROJECT ROOT (the directory holding
+# pretrain.py), not from wherever you launch the command.
+#
+# Adapter size, for quick reference (752M base, 432 linears, 24+24 layers):
+#
+#   rank | all 5 target groups | params      | % base | fp32 file
+#   -----+---------------------+-------------+--------+----------
+#     8  | yes                 |   9,142,272 | 1.22%  |  37 MB
+#    16  | yes  (default)      |  18,284,544 | 2.43%  |  73 MB
+#    32  | yes                 |  36,569,088 | 4.86%  | 146 MB
+#    64  | yes                 |  73,138,176 | 9.73%  | 293 MB
+#
+# (+1,024 per `trainable_tokens` entry.) The run log prints the exact count
+# for whatever you configure, before the first step.
+# =============================================================================
+
+base_model:
+  # The pretrained checkpoint the adapter is trained on. Pretraining rotates
+  # old checkpoints away (save_total_limit 20), so copy the one you intend to
+  # keep building on somewhere stable and point this at the copy. Every saved
+  # adapter records a fingerprint of these weights and refuses to load onto
+  # different ones.
+  checkpoint: runs/pretrain/checkpoint-20000
+  tokenizer_dir: tokenizer/training/output
+
+adapter:
+  # LoRA rank. The main size knob: parameters grow linearly with it.
+  rank: 16
+  # With use_rslora the adapter output is scaled by alpha / sqrt(rank)
+  # (Kalajdzievski 2023, "rank-stabilized LoRA"); without, by alpha / rank.
+  # rsLoRA keeps the effective learning rate stable when only `rank` is
+  # changed, which is what this file is for. alpha 8 at rank 16 -> scale 2.0.
+  alpha: 8.0
+  use_rslora: true
+  # Dropout on the adapter's input only; the frozen base path never drops.
+  dropout: 0.05
+  # Which frozen linears receive a LoRA pair, per group. Remove names to
+  # shrink the adapter; an empty list switches a group off.
+  #   attention: q_proj k_proj v_proj o_proj    ffn: gate_proj up_proj down_proj
+  targets:
+    encoder_self_attention: [q_proj, k_proj, v_proj, o_proj]
+    encoder_ffn: [gate_proj, up_proj, down_proj]
+    decoder_self_attention: [q_proj, k_proj, v_proj, o_proj]
+    decoder_cross_attention: [q_proj, k_proj, v_proj, o_proj]
+    decoder_ffn: [gate_proj, up_proj, down_proj]
+  # Per-projection learning-rate multipliers, e.g. {q_proj: 0.5}. T5's query
+  # weights are ~8x smaller than k/v (no 1/sqrt(d) in the scores), so the same
+  # LoRA delta moves q 8x more in relative terms. TensorBoard's
+  # adapter/relative_delta/* shows whether that needs damping; leave empty
+  # until it does.
+  lr_multipliers: {}
+  # Input-embedding rows learned alongside the LoRA pairs. These frame tokens
+  # are never trained in pretraining before the cooldown (which only uses
+  # <style:grammar>), so their embedding is still a random vector. Only the
+  # input lookup changes: the tied output projection keeps the frozen base
+  # rows. "{style_token}" is the selected style's token; naming another
+  # style's token here is refused.
+  trainable_tokens: ["{style_token}", "<text_to_rewrite>", "</text_to_rewrite>"]
+
+data:
+  # The X of the frame's <style:X> token, and the `style` field every record
+  # must carry. Any style the tokenizer has: assertive concise elaborate
+  # empathetic fluent formal friendly grammar paraphrase polite professional
+  # simplify. Command line: --style.
+  style: professional
+  # A JSONL file, or a directory read through `file_glob`. --train-data.
+  train_data: /home/admin1/projects/REPHRASE_MODEL/rephrase_dataset/final/professional
+  # A separate held-out file/directory (--eval-data), or null to carve the
+  # eval split out of train_data by the salted hash below. With a separate
+  # file, any train record sharing an input with it is dropped.
+  eval_data: null
+  file_glob: "*.jsonl"
+  # Only rows the cleanup stage left untouched. The repaired classes
+  # (KEEP_CJK_TAIL, KEEP_LONGER_SEGMENT, ...) still leak generator text such
+  # as "Corrected fully in English:" into the target.
+  allowed_cleanup: [KEEP]
+  # Split sizes (upper bounds: a smaller file just gives fewer, and the log
+  # says so). Examples are taken in the order of a salted hash of the input
+  # text, so the eval set is fixed by `split_salt` and `eval_examples` alone:
+  # raising train_examples later never moves an example between train and eval.
+  train_examples: 50000
+  eval_examples: 10000
+  split_salt: rephrase-v1
+  # Examples longer than this are DROPPED and counted, never truncated -- a
+  # rewrite of a cut-off input looks valid and is not (architecture.md §4.5).
+  # Budgets include the frame tokens. p99 of the data is ~510 / 320 tokens.
+  max_source_tokens: 512
+  max_target_tokens: 384
+  # Target/input token-length ratio bounds. Style-neutral defaults here; each
+  # style's own bounds are in `styles` below.
+  min_length_ratio: 0.2
+  max_length_ratio: 3.0
+  # Drop pairs whose target loses a number, URL, e-mail, @mention or `code`
+  # span from the input. ~2.9% of the teacher's references do (a dropped
+  # FAA URL, "1000" -> gone, "5/6" -> gone); training on them teaches the
+  # adapter to drop exactly what a user will not forgive it for dropping.
+  require_span_preservation: true
+
+training:
+  epochs: 2
+  # Hard stop that wins over `epochs` when set (smoke tests, dry runs).
+  max_steps: null
+  learning_rate: 3.0e-4
+  lr_schedule: cosine          # cosine | linear | constant (all after warmup)
+  warmup_steps: 100
+  min_lr_ratio: 0.1            # floor of the decay, as a fraction of the peak
+  weight_decay: 0.0
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1.0e-8
+  max_grad_norm: 1.0
+  label_smoothing: 0.0
+  # Effective batch = batch_size x gradient_accumulation_steps. Both device
+  # profiles keep it at 32 so a CPU run and a GPU run follow the same
+  # optimization trajectory and their curves can be compared directly.
+  batch_size: 16
+  gradient_accumulation_steps: 2
+  # Batches are formed from length-sorted windows of this many batches, then
+  # shuffled: little padding (fast on CPU) without ordering the epoch by length.
+  length_grouping_window: 64
+  gradient_checkpointing: false
+  seed: 1234
+
+evaluation:
+  every_steps: 250
+  # Teacher-forced loss on the first N eval examples at every evaluation;
+  # the final evaluation uses `final_loss_examples` (null = the whole split).
+  loss_examples: 1000
+  final_loss_examples: null
+  # Free-running generation on the first N eval examples (same N every time,
+  # so evaluations are comparable).
+  generation_examples: 200
+  generation_batch_size: 16
+  decoding:
+    strategy: greedy           # greedy | beam
+    num_beams: 4               # beam only
+    length_penalty: 1.0        # beam only
+    # Ban any repeated n-gram of this size (0 = off). Greedy decoding loops on
+    # this base (watch item 4); 3 is the usual rewrite setting.
+    no_repeat_ngram_size: 3
+    max_new_tokens: 384
+  # Input/reference/output triples written to TensorBoard's text tab.
+  text_samples: 8
+  # Which metric picks the best adapter, and when to stop improving on it.
+  select_metric: eval/loss
+  greater_is_better: false
+  early_stopping_patience: 5   # evaluations without improvement; null = off
+  calibration_bins: 15
+  # The "acceptable rewrite" bar behind quality/acceptable_rate: non-empty,
+  # terminated, no loop, every protected span (numbers, URLs, @mentions,
+  # `code`, emails) kept, not longer than this ratio of the input, and at
+  # least this chrF against the input (meaning kept). max_length_ratio is
+  # per style (see `styles`).
+  acceptance:
+    max_length_ratio: 3.0
+    min_input_chrf: 35.0
+
+# Per-style overrides, laid over the sections above when `data.style` names
+# the style (same key-by-key rules as a device profile: a key that does not
+# exist above is an error). A style without a block runs on the shared
+# values, and the run log warns about it.
+styles:
+  concise:
+    # Outputs longer than the input are style violations; near-empty outputs
+    # have lost the content.
+    data: {min_length_ratio: 0.2, max_length_ratio: 1.15}
+    evaluation: {acceptance: {max_length_ratio: 1.0}}
+  professional:
+    # Measured on 5,000 pairs of the professional data (real tokenizer):
+    # target/input token ratio p0.5 0.67, median 0.99, p99 1.39, p99.5 1.53,
+    # max < 2. 8.6% are above concise's 1.15, so concise's bounds would drop
+    # valid rewrites. These bounds drop only the outer ~0.5% of the tails.
+    # The acceptance bar is in characters, where professional text runs
+    # longer (50k references: median 1.07, p99 1.56), hence 1.6.
+    data: {min_length_ratio: 0.5, max_length_ratio: 1.6}
+    evaluation: {acceptance: {max_length_ratio: 1.6}}
+
+checkpointing:
+  every_steps: 500
+  keep_last: 3                 # the best adapter is always kept in addition
+
+logging:
+  every_steps: 10
+  logs_dir: SFT_adapter_rephrase/logs    # <run>/sft.log and <run>/tensorboard/
+  runs_dir: SFT_adapter_rephrase/runs    # <run>/checkpoints, best/, final/
+
+devices:
+  cpu:
+    # Built to run beside pretraining without touching it: pinned to cores
+    # 0-21 (NUMA nodes 0-1; pretraining's threads live on node 2 with the
+    # GPU), nice 19, idle I/O class, fp32 (bf16 autocast is ~4x slower on
+    # this CPU), and CUDA hidden from the process entirely. Never run it at
+    # the same time as a 22-thread checkpoint probe on the same cores.
+    resources:
+      cores: "0-21"
+      threads: 22
+      nice: 19
+      idle_io: true
+      precision: fp32
+    overrides:
+      training: {batch_size: 16, gradient_accumulation_steps: 2}
+      evaluation: {every_steps: 250, loss_examples: 500, generation_examples: 128}
+  gpu:
+    # Whole machine, for after pretraining finishes. Refuses to start while
+    # any other process holds the GPU unless --allow-shared-gpu is passed.
+    resources:
+      cores: null               # all cores
+      threads: null             # one per core
+      nice: 0
+      idle_io: false
+      precision: bf16
+      require_exclusive_gpu: true
+    overrides:
+      training: {batch_size: 32, gradient_accumulation_steps: 1}
+      evaluation: {every_steps: 200, loss_examples: 2000, generation_examples: 500, generation_batch_size: 64}
