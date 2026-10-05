@@ -5,9 +5,9 @@ coverage/
 test-results/
 playwright-report/
 
-# The int8 ONNX model folder(s) the extension ships. Hundreds of MB each and
-# produced outside this package; model.selection.json (tracked) records
-# which one a build copies into dist/.
+# Exported int8 ONNX model folders, hundreds of MB each and produced outside
+# this package. They are never bundled: the extension downloads the model
+# from the URL in model.source.json, which a developer serves locally.
 models/
 
 *.tsbuildinfo
