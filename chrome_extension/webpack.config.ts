@@ -8,8 +8,10 @@
  *   foreground  the script injected into pages on demand. chrome.scripting
  *               injects classic scripts, so this one is a self-contained IIFE.
  *
- * Loaded through @babel/register (see babel.config.cjs), so it can share the
- * model-manifest validator with the runtime code.
+ * Loaded through @babel/register (see babel.config.cjs).
+ *
+ * The model is not bundled: the extension downloads it when the user asks
+ * (see model.source.json).
  */
 import CopyWebpackPlugin from 'copy-webpack-plugin';
 import HtmlWebpackPlugin from 'html-webpack-plugin';
@@ -114,7 +116,7 @@ export default (_env: unknown, argv: { mode?: string }): Configuration[] => {
           })),
         ],
       }),
-      new ExtensionAssetsPlugin({ projectRoot: root, version }),
+      new ExtensionAssetsPlugin({ version }),
     ],
   };
 
