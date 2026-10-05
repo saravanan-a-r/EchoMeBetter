@@ -1,0 +1,13 @@
+# Dependencies and build output.
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+
+# The int8 ONNX model folder(s) the extension ships. Hundreds of MB each and
+# produced outside this package; model.selection.json (tracked) records
+# which one a build copies into dist/.
+models/
+
+*.tsbuildinfo
