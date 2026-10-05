@@ -1,0 +1,50 @@
+{
+  "name": "echomebetter-chrome-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "EchoMeBetter: on-device text rewriting from the right-click menu.",
+  "scripts": {
+    "build": "webpack --mode production",
+    "build:dev": "webpack --mode development",
+    "watch": "webpack --mode development --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:e2e": "node src/test/e2e/run-e2e.mjs"
+  },
+  "dependencies": {
+    "onnxruntime-web": "1.30.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.7",
+    "@babel/preset-env": "7.29.7",
+    "@babel/preset-react": "7.29.7",
+    "@babel/preset-typescript": "7.29.7",
+    "@babel/register": "7.29.7",
+    "@jest/globals": "30.5.2",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.7",
+    "@types/chrome": "0.3.4",
+    "@types/node": "24.19.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "babel-jest": "30.5.2",
+    "babel-loader": "10.1.1",
+    "copy-webpack-plugin": "14.0.0",
+    "css-loader": "7.1.5",
+    "html-webpack-plugin": "5.6.8",
+    "jest": "30.5.2",
+    "jest-environment-jsdom": "30.5.2",
+    "mini-css-extract-plugin": "2.10.2",
+    "playwright": "1.63.0",
+    "postcss": "8.5.28",
+    "postcss-loader": "8.2.1",
+    "tailwindcss": "3.4.19",
+    "typescript": "7.0.2",
+    "webpack": "5.111.1",
+    "webpack-cli": "7.2.3"
+  }
+}
