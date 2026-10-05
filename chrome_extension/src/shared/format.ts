@@ -12,3 +12,12 @@ export function formatTimeLeft(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   return `about ${hours} h ${Math.round((seconds - hours * 3600) / 60)} min left`;
 }
+
+/** How long a rewrite took: milliseconds under a second, seconds under a minute, then minutes. */
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.max(1, Math.round(ms))} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms - minutes * 60_000) / 1000);
+  return seconds === 0 ? `${minutes} min` : `${minutes} min ${seconds} s`;
+}
