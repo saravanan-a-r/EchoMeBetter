@@ -9,6 +9,7 @@
  * the page ever talks to the model directly.
  */
 import type { ErrorPayload } from './errors';
+import type { DownloadState, InstalledModelRecord } from './modelInstall';
 import { isStyleId, type StyleId } from './styles';
 import type { EngineStatus } from './status';
 
@@ -79,7 +80,10 @@ export type OffscreenCommand =
   | { readonly target: 'offscreen'; readonly kind: 'engine/ping' }
   | { readonly target: 'offscreen'; readonly kind: 'engine/warm-up' }
   | { readonly target: 'offscreen'; readonly kind: 'engine/rewrite'; readonly jobId: string; readonly style: StyleId; readonly text: string }
-  | { readonly target: 'offscreen'; readonly kind: 'engine/cancel'; readonly jobId: string };
+  | { readonly target: 'offscreen'; readonly kind: 'engine/cancel'; readonly jobId: string }
+  | { readonly target: 'offscreen'; readonly kind: 'model/download' }
+  | { readonly target: 'offscreen'; readonly kind: 'model/cancel-download' }
+  | { readonly target: 'offscreen'; readonly kind: 'model/remove' };
 
 export interface OffscreenEventMessage {
   readonly target: 'background';
@@ -105,8 +109,8 @@ export function isOffscreenEventMessage(value: unknown): value is OffscreenEvent
 // ---------------------------------------------------------------------------
 
 export interface WorkerConfig {
-  /** Absolute URL of the folder holding model.json and the files it names. */
-  readonly modelBaseUrl: string;
+  /** Absolute URL of the folder the model is downloaded from (model.json and the files it names). */
+  readonly modelSourceUrl: string;
   /** Absolute URL of the folder holding onnxruntime-web's .wasm binary. */
   readonly wasmBaseUrl: string;
   readonly threads: number;
@@ -116,21 +120,30 @@ export type WorkerRequest =
   | { readonly type: 'configure'; readonly config: WorkerConfig }
   | { readonly type: 'warm-up' }
   | { readonly type: 'rewrite'; readonly jobId: string; readonly style: StyleId; readonly text: string }
-  | { readonly type: 'cancel'; readonly jobId: string };
+  | { readonly type: 'cancel'; readonly jobId: string }
+  | { readonly type: 'download' }
+  | { readonly type: 'cancel-download' }
+  | { readonly type: 'remove-model' };
 
 /** What the engine reports; relayed unchanged from the worker up to the service worker. */
 export type EngineEvent =
   | { readonly type: 'status'; readonly status: EngineStatus }
   | { readonly type: 'job-phase'; readonly jobId: string; readonly phase: JobPhase; readonly progress?: number }
   | { readonly type: 'job-done'; readonly jobId: string; readonly text: string }
-  | { readonly type: 'job-failed'; readonly jobId: string; readonly error: ErrorPayload };
+  | { readonly type: 'job-failed'; readonly jobId: string; readonly error: ErrorPayload }
+  | { readonly type: 'installed'; readonly installed: InstalledModelRecord | null }
+  | { readonly type: 'download'; readonly download: DownloadState };
 
 // ---------------------------------------------------------------------------
 // extension pages (popup, welcome) → service worker
 // ---------------------------------------------------------------------------
 
-export type UiRequest = { readonly kind: 'ui/warm-up' };
+const UI_REQUESTS = ['ui/warm-up', 'ui/download-model', 'ui/cancel-download', 'ui/remove-model'] as const;
+
+export type UiRequest = { readonly kind: (typeof UI_REQUESTS)[number] };
+
+export type UiReply = { readonly ok: true } | { readonly ok: false; readonly error: ErrorPayload };
 
 export function isUiRequest(value: unknown): value is UiRequest {
-  return typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'ui/warm-up';
+  return typeof value === 'object' && value !== null && (UI_REQUESTS as readonly unknown[]).includes((value as { kind?: unknown }).kind);
 }
