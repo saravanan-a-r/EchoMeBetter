@@ -5,6 +5,8 @@
  * service worker → page), so they travel as plain `{ code, details }`
  * payloads and are turned back into copy only at the edge that shows them.
  */
+import { formatBytes } from './format';
+
 export type ErrorCode =
   | 'NO_SELECTION'
   | 'UNSUPPORTED_FIELD'
@@ -14,11 +16,14 @@ export type ErrorCode =
   | 'TEXT_CHANGED'
   | 'FRAME_INACCESSIBLE'
   | 'BUSY'
+  | 'MODEL_NOT_DOWNLOADED'
   | 'MODEL_LOAD_FAILED'
   | 'INFERENCE_FAILED'
   | 'EMPTY_RESULT'
   | 'OUTPUT_TOO_LONG'
   | 'CANCELLED'
+  | 'DOWNLOAD_FAILED'
+  | 'STORAGE_FULL'
   | 'DISCONNECTED'
   | 'INTERNAL';
 
@@ -76,6 +81,8 @@ export function describeError(error: ErrorPayload): string {
       return "EchoMeBetter can't reach this text box: it's inside a frame from another site.";
     case 'BUSY':
       return 'Still working on your last rewrite. One moment.';
+    case 'MODEL_NOT_DOWNLOADED':
+      return 'Download the writing model first: click the EchoMeBetter icon in your toolbar.';
     case 'MODEL_LOAD_FAILED':
       return "The writing model couldn't be loaded. Open the EchoMeBetter popup to retry.";
     case 'INFERENCE_FAILED':
@@ -86,6 +93,12 @@ export function describeError(error: ErrorPayload): string {
       return "The rewrite ran past the model's length limit, so it was discarded. Try a shorter passage.";
     case 'CANCELLED':
       return 'Rewrite cancelled.';
+    case 'DOWNLOAD_FAILED':
+      return "The model download didn't finish. Check your connection, then try again.";
+    case 'STORAGE_FULL':
+      return typeof details.neededBytes === 'number'
+        ? `There isn't enough free disk space for the model. Free up ${formatBytes(details.neededBytes)} and try again.`
+        : "There isn't enough free disk space for the model. Free up some space and try again.";
     case 'DISCONNECTED':
       return 'EchoMeBetter was updated or restarted. Please try again.';
     case 'INTERNAL':
