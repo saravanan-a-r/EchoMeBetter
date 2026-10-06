@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 2,
+  "ioContract": "t5-cross-kv/1",
+  "id": "tiny-echo-int8",
+  "displayName": "Tiny Echo (test fixture)",
+  "precision": "int8",
+  "files": {
+    "encoder": {
+      "path": "base/encoder.onnx",
+      "bytes": 119269,
+      "sha256": "8f9133332eeb0b7134bf644cbc3e43e12e444c0f991caa109704c6bb1dcb78d5"
+    },
+    "decoder": {
+      "path": "base/decoder.onnx",
+      "bytes": 138272,
+      "sha256": "8cdbf1291abf99002f4c767f0c60662fda709ad66edf5e75ee7b7229ab667ec7"
+    },
+    "tokenizer": {
+      "path": "tokenizer.json",
+      "bytes": 21295,
+      "sha256": "799252ed194578895606820000baba6acd12466a4d72635a6f716489fbbb33b7"
+    }
+  },
+  "architecture": {
+    "numDecoderLayers": 2,
+    "numHeads": 4,
+    "headDim": 8,
+    "vocabSize": 400
+  },
+  "tokens": {
+    "decoderStartId": 0,
+    "eosId": 1,
+    "padId": 0
+  },
+  "limits": {
+    "maxInputTokens": 64,
+    "maxNewTokens": 16
+  },
+  "generation": {
+    "repetitionPenalty": 1.3,
+    "noRepeatNgramSize": 2
+  },
+  "inputTransforms": [
+    "escape-spiece-markers"
+  ],
+  "reservedInputTokens": [
+    "</s>",
+    "</text_to_rewrite>",
+    "<pad>",
+    "<style:concise>",
+    "<style:elaborate>",
+    "<style:friendly>",
+    "<style:grammar>",
+    "<style:professional>",
+    "<text_to_rewrite>"
+  ],
+  "prompt": [
+    {
+      "styleToken": true
+    },
+    {
+      "token": "<text_to_rewrite>"
+    },
+    {
+      "input": true
+    },
+    {
+      "token": "</text_to_rewrite>"
+    },
+    {
+      "token": "</s>"
+    }
+  ],
+  "adapters": {
+    "professional": {
+      "styleToken": "<style:professional>",
+      "files": {
+        "encoder": {
+          "path": "adapters/professional/encoder.onnx_adapter",
+          "bytes": 13240,
+          "sha256": "4fc0db21541ba944c205fef26e688befb9a2f470828638a8a3593540b9fd095a"
+        },
+        "decoder": {
+          "path": "adapters/professional/decoder.onnx_adapter",
+          "bytes": 16832,
+          "sha256": "8970e3576ebddca49c2cb265860d10a87875f51def273e30848b89931fe16eea"
+        }
+      }
+    },
+    "grammar": {
+      "styleToken": "<style:grammar>",
+      "files": {
+        "encoder": {
+          "path": "adapters/grammar/encoder.onnx_adapter",
+          "bytes": 13240,
+          "sha256": "c9b40052ef7f2bb1bed70c8fbfa3602a10b878afed9314381e6449ca26ac0ce3"
+        },
+        "decoder": {
+          "path": "adapters/grammar/decoder.onnx_adapter",
+          "bytes": 16832,
+          "sha256": "b03d52289c9b315e3e05cd111005a9d03e7f6f1d8fdcbfcab30620f80b4a3ff9"
+        }
+      }
+    }
+  },
+  "fallbackAdapter": "professional"
+}
