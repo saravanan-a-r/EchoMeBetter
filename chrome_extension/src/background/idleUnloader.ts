@@ -16,7 +16,7 @@ export interface IdleInputs {
   readonly activeJobs: number;
   /** A model download runs in the same worker; closing it would stop the download. */
   readonly downloading: boolean;
-  readonly settings: Settings;
+  readonly settings: Pick<Settings, 'keepModelLoadedMinutes'>;
 }
 
 export function shouldUnload({ now, lastActivityAt, activeJobs, downloading, settings }: IdleInputs): boolean {

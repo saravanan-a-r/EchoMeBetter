@@ -11,6 +11,8 @@ module.exports = {
     '\\.css$': '<rootDir>/src/test/helpers/cssStub.cjs',
   },
   setupFilesAfterEnv: ['<rootDir>/src/test/helpers/setup.ts'],
+  // Finds out whether the real model is being served (see model.source.json).
+  globalSetup: '<rootDir>/src/test/helpers/hostedModel.ts',
   restoreMocks: true,
   testTimeout: 30000,
 };

@@ -44,6 +44,22 @@ export function isForegroundMessage(value: unknown): value is ForegroundMessage 
 }
 
 // ---------------------------------------------------------------------------
+// shortcut listener (any page) → service worker
+// ---------------------------------------------------------------------------
+
+/** A style's shortcut was pressed with text selected in an editable field of the sender's frame. */
+export interface ShortcutRequest {
+  readonly kind: 'shortcut/rewrite';
+  readonly style: StyleId;
+}
+
+export function isShortcutRequest(value: unknown): value is ShortcutRequest {
+  if (typeof value !== 'object' || value === null) return false;
+  const message = value as { kind?: unknown; style?: unknown };
+  return message.kind === 'shortcut/rewrite' && isStyleId(message.style);
+}
+
+// ---------------------------------------------------------------------------
 // foreground ⇄ service worker, over a Port named JOB_PORT_NAME (one per job)
 // ---------------------------------------------------------------------------
 

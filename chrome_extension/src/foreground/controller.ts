@@ -54,7 +54,7 @@ interface ActiveJob {
 
 export const TOAST_MS = { success: 6000, info: 4000, error: 7000 } as const;
 
-function toAnchor(rect: DOMRect): AnchorRect {
+function toAnchor(rect: Pick<DOMRect, 'top' | 'left' | 'bottom' | 'right'>): AnchorRect {
   return { top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right };
 }
 

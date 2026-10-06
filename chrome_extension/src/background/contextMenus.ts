@@ -1,6 +1,7 @@
 /**
  * The right-click entry point: "EchoMeBetter ▸ Professional / Grammar / ...",
  * shown only on editable fields (inputs, textareas, contenteditable).
+ * While keyboard shortcuts are on, each style shows its shortcut.
  */
 import { isStyleId, STYLES, type StyleId } from '../shared/styles';
 
@@ -29,10 +30,16 @@ function create(menus: MenusApi, properties: chrome.contextMenus.CreatePropertie
   });
 }
 
-export async function registerContextMenus(menus: MenusApi = chrome.contextMenus): Promise<void> {
+/** Menus have no column for shortcuts, so the shortcut follows the label. */
+export function styleMenuTitle(label: string, shortcut: string | null): string {
+  return shortcut ? `${label}   (${shortcut})` : label;
+}
+
+export async function registerContextMenus(menus: MenusApi = chrome.contextMenus, shortcutFor: (style: StyleId) => string | null = () => null): Promise<void> {
   await menus.removeAll();
   await create(menus, { id: ROOT_MENU_ID, title: 'EchoMeBetter', contexts: ['editable'] });
   for (const style of STYLES) {
-    await create(menus, { id: styleMenuId(style.id), parentId: ROOT_MENU_ID, title: style.label, contexts: ['editable'] });
+    const title = styleMenuTitle(style.label, shortcutFor(style.id));
+    await create(menus, { id: styleMenuId(style.id), parentId: ROOT_MENU_ID, title, contexts: ['editable'] });
   }
 }

@@ -15,9 +15,13 @@ export function createManifest(version: string): chrome.runtime.ManifestV3 {
     icons,
     action: { default_title: 'EchoMeBetter', default_popup: 'ui/popup/popup.html', default_icon: icons },
     background: { service_worker: 'background.js', type: 'module' },
-    // No host permissions: a context-menu click grants activeTab for that
+    // No required host permissions: a context-menu click grants activeTab for that
     // tab, which is all the foreground injection needs.
     permissions: ['contextMenus', 'activeTab', 'scripting', 'offscreen', 'storage', 'alarms'],
+    // Keyboard shortcuts listen on web pages, which needs access to them. It
+    // is asked for from the popup when the user turns shortcuts on, never at
+    // install, and handed back when they turn shortcuts off.
+    optional_host_permissions: ['<all_urls>'],
     content_security_policy: {
       // onnxruntime-web compiles WebAssembly; nothing else is relaxed.
       extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
