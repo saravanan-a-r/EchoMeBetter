@@ -1,14 +1,15 @@
 import { describe, expect, test } from '@jest/globals';
 import { describeError, EchoError, toErrorPayload, type ErrorCode } from '../../../shared/errors';
 import { isForegroundMessage, isJobEvent, isJobRequest, isShortcutRequest, isUiRequest } from '../../../shared/messages';
-import { isDownloadState, isInstalledModelRecord, modelFrom } from '../../../shared/modelInstall';
+import { canRewrite, isDownloadState, isInstalledModelRecord, modelFrom, offeredCatalog, styleProblem, styleReadiness } from '../../../shared/modelInstall';
+import { installedRecord, TINY_CATALOG } from '../../helpers/fixtures';
 import { MODEL_SOURCE_URL, parseModelSourceUrl } from '../../../shared/modelSource';
 import { DEFAULT_SETTINGS, parseSettings } from '../../../shared/settings';
 import { isEngineStatus } from '../../../shared/status';
 
 const ALL_CODES: ErrorCode[] = [
   'NO_SELECTION', 'UNSUPPORTED_FIELD', 'PASSWORD_FIELD', 'INPUT_TOO_LONG', 'RESERVED_MARKUP', 'TEXT_CHANGED', 'FRAME_INACCESSIBLE',
-  'BUSY', 'MODEL_NOT_DOWNLOADED', 'MODEL_LOAD_FAILED', 'INFERENCE_FAILED', 'EMPTY_RESULT', 'OUTPUT_TOO_LONG', 'CANCELLED',
+  'BUSY', 'MODEL_NOT_DOWNLOADED', 'STYLE_NOT_DOWNLOADED', 'STYLE_UNAVAILABLE', 'MODEL_OUTDATED', 'MODEL_LOAD_FAILED', 'INFERENCE_FAILED', 'EMPTY_RESULT', 'OUTPUT_TOO_LONG', 'CANCELLED',
   'DOWNLOAD_FAILED', 'STORAGE_FULL', 'DISCONNECTED', 'INTERNAL',
 ];
 
@@ -36,7 +37,11 @@ describe('message guards', () => {
     expect(isJobRequest({ kind: 'job/request', jobId: 'j', style: 'grammar' })).toBe(false);
     expect(isJobEvent({ kind: 'job/done', jobId: 'j', text: 'x' })).toBe(true);
     expect(isJobEvent(null)).toBe(false);
-    expect(isUiRequest({ kind: 'ui/download-model' })).toBe(true);
+    expect(isUiRequest({ kind: 'ui/download-model', adapters: ['professional'] })).toBe(true);
+    expect(isUiRequest({ kind: 'ui/download-model', adapters: ['casual'] })).toBe(false);
+    expect(isUiRequest({ kind: 'ui/download-model' })).toBe(false);
+    expect(isUiRequest({ kind: 'ui/remove-adapter', adapter: 'grammar' })).toBe(true);
+    expect(isUiRequest({ kind: 'ui/remove-adapter' })).toBe(false);
     expect(isUiRequest({ kind: 'ui/format-disk' })).toBe(false);
   });
 });
@@ -71,7 +76,7 @@ describe('model source', () => {
 
   test.each([
     ['https://cdn.example.com/models/echomebetter-v1/', 'https://cdn.example.com/models/echomebetter-v1/'],
-    ['http://localhost:47615/flan/', 'http://localhost:47615/flan/'],
+    ['http://localhost:47615/echomebetter/', 'http://localhost:47615/echomebetter/'],
     ['http://127.0.0.1:8080/m/', 'http://127.0.0.1:8080/m/'],
   ])('accepts %s', (raw, expected) => {
     expect(parseModelSourceUrl(raw)).toBe(expected);
@@ -81,7 +86,7 @@ describe('model source', () => {
     ['plain http from another host', 'http://cdn.example.com/m/', /https/],
     ['a file rather than a folder', 'https://cdn.example.com/m/model.json', /end with "\/"/],
     ['a query string', 'https://cdn.example.com/m/?token=1', /query/],
-    ['not a URL', 'models/flan/', /not a valid URL/],
+    ['not a URL', 'models/echomebetter/', /not a valid URL/],
     ['not a string', 42, /non-empty string/],
   ])('rejects %s', (_label, raw, message) => {
     expect(() => parseModelSourceUrl(raw)).toThrow(message);
@@ -89,14 +94,17 @@ describe('model source', () => {
 });
 
 describe('model install state', () => {
-  const record = { sourceUrl: 'https://a.example/m/', model: { id: 'x', displayName: 'X', placeholder: false, precision: 'int8', sizeBytes: 1 } };
+  const record = installedRecord('https://a.example/m/');
+  const target = { base: true, adapters: ['professional'] };
 
   test('guards accept what the worker reports and reject anything else', () => {
     expect(isInstalledModelRecord(record)).toBe(true);
-    expect(isInstalledModelRecord({ model: {} })).toBe(false);
-    expect(isDownloadState({ state: 'downloading', phase: 'fetching', receivedBytes: 1, totalBytes: 2, bytesPerSecond: 0 })).toBe(true);
-    expect(isDownloadState({ state: 'failed', error: { code: 'DOWNLOAD_FAILED' } })).toBe(true);
-    expect(isDownloadState({ state: 'failed' })).toBe(false);
+    expect(isInstalledModelRecord({ sourceUrl: 'x', model: {} })).toBe(false);
+    expect(isInstalledModelRecord({ ...record, adapters: ['casual'] })).toBe(false);
+    expect(isDownloadState({ state: 'downloading', target, phase: 'fetching', receivedBytes: 1, totalBytes: 2, bytesPerSecond: 0 })).toBe(true);
+    expect(isDownloadState({ state: 'downloading', phase: 'fetching', receivedBytes: 1, totalBytes: 2, bytesPerSecond: 0 })).toBe(false);
+    expect(isDownloadState({ state: 'failed', target, error: { code: 'DOWNLOAD_FAILED' } })).toBe(true);
+    expect(isDownloadState({ state: 'failed', target })).toBe(false);
     expect(isDownloadState({ state: 'paused' })).toBe(false);
   });
 
@@ -104,5 +112,43 @@ describe('model install state', () => {
     expect(modelFrom(record, 'https://a.example/m/')).toBe(record);
     expect(modelFrom(record, 'https://b.example/m/')).toBeNull();
     expect(modelFrom(null, 'https://a.example/m/')).toBeNull();
+  });
+
+  test('a style runs with its own adapter, or the fallback until it has one', () => {
+    expect(styleProblem('grammar', installedRecord('x', ['grammar']))).toBeNull();
+    expect(styleProblem('concise', installedRecord('x', ['professional']))).toBeNull();
+    expect(styleProblem('grammar', installedRecord('x', ['professional']))).toEqual({
+      code: 'STYLE_NOT_DOWNLOADED',
+      details: { style: 'Grammar', adapter: 'Grammar' },
+    });
+    expect(styleProblem('concise', installedRecord('x', ['grammar']))).toEqual({
+      code: 'STYLE_NOT_DOWNLOADED',
+      details: { style: 'Concise', adapter: 'Professional' },
+    });
+    expect(styleProblem('concise', null)).toEqual({ code: 'MODEL_NOT_DOWNLOADED' });
+    const noFallback = { ...record, catalog: { ...TINY_CATALOG, fallbackAdapter: null } };
+    expect(styleProblem('concise', noFallback)).toEqual({ code: 'STYLE_UNAVAILABLE', details: { style: 'Concise' } });
+  });
+
+  test('something can be rewritten once the base and one adapter are installed', () => {
+    expect(canRewrite(null)).toBe(false);
+    expect(canRewrite(installedRecord('x', []))).toBe(false);
+    expect(canRewrite(installedRecord('x', ['grammar']))).toBe(true);
+  });
+
+  test('readiness says what each style still needs', () => {
+    const professional = TINY_CATALOG.adapters.find((adapter) => adapter.style === 'professional')!;
+    const grammar = TINY_CATALOG.adapters.find((adapter) => adapter.style === 'grammar')!;
+    expect(styleReadiness('concise', TINY_CATALOG, null)).toEqual({ state: 'needs-model', adapter: professional });
+    expect(styleReadiness('grammar', TINY_CATALOG, installedRecord('x', ['professional']))).toEqual({ state: 'needs-download', adapter: grammar });
+    expect(styleReadiness('elaborate', TINY_CATALOG, installedRecord('x', ['professional']))).toEqual({ state: 'ready', adapter: 'professional' });
+  });
+
+  test('downloads are offered from the server only while it serves the installed base', () => {
+    const newer = { ...TINY_CATALOG, base: 'another' };
+    expect(offeredCatalog(null, newer)).toBe(newer);
+    expect(offeredCatalog(record, newer)).toBe(record.catalog);
+    expect(offeredCatalog(record, TINY_CATALOG)).toBe(TINY_CATALOG);
+    expect(offeredCatalog(record, null)).toBe(record.catalog);
   });
 });

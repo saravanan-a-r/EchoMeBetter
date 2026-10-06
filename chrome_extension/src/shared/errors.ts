@@ -17,6 +17,9 @@ export type ErrorCode =
   | 'FRAME_INACCESSIBLE'
   | 'BUSY'
   | 'MODEL_NOT_DOWNLOADED'
+  | 'STYLE_NOT_DOWNLOADED'
+  | 'STYLE_UNAVAILABLE'
+  | 'MODEL_OUTDATED'
   | 'MODEL_LOAD_FAILED'
   | 'INFERENCE_FAILED'
   | 'EMPTY_RESULT'
@@ -83,6 +86,14 @@ export function describeError(error: ErrorPayload): string {
       return 'Still working on your last rewrite. One moment.';
     case 'MODEL_NOT_DOWNLOADED':
       return 'Download the writing model first: click the EchoMeBetter icon in your toolbar.';
+    case 'STYLE_NOT_DOWNLOADED':
+      return details.style === details.adapter
+        ? `Download the ${details.adapter ?? ''} style first: click the EchoMeBetter icon in your toolbar.`
+        : `${details.style ?? 'This style'} uses the ${details.adapter ?? ''} style for now. Download it first: click the EchoMeBetter icon in your toolbar.`;
+    case 'STYLE_UNAVAILABLE':
+      return `${details.style ?? 'This style'} isn't available in the downloaded model yet.`;
+    case 'MODEL_OUTDATED':
+      return 'A newer writing model is available. Remove the current one in Settings, then download it again.';
     case 'MODEL_LOAD_FAILED':
       return "The writing model couldn't be loaded. Open the EchoMeBetter popup to retry.";
     case 'INFERENCE_FAILED':

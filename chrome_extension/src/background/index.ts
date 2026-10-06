@@ -5,7 +5,7 @@
  */
 import { toErrorPayload } from '../shared/errors';
 import { isOffscreenEventMessage, isShortcutRequest, isUiRequest, JOB_PORT_NAME, type EngineEvent, type OffscreenCommand, type UiReply, type UiRequest } from '../shared/messages';
-import { modelFrom, readDownloadState, readInstalledModel, writeDownloadState, writeInstalledModel } from '../shared/modelInstall';
+import { modelFrom, readDownloadState, readInstalledModel, styleProblem, writeDownloadState, writeInstalledModel } from '../shared/modelInstall';
 import { MODEL_SOURCE_URL } from '../shared/modelSource';
 import { loadSettings, parseSettings, SETTINGS_STORAGE_KEY } from '../shared/settings';
 import { platformFromOs, shortcutLabel } from '../shared/shortcuts';
@@ -35,16 +35,23 @@ function prepareEngine(): void {
     .catch((error: unknown) => writeStatus({ state: 'error', message: error instanceof Error ? error.message : String(error) }));
 }
 
-async function modelReady(): Promise<boolean> {
-  return modelFrom(await readInstalledModel(), MODEL_SOURCE_URL) !== null;
+async function checkStyle(style: StyleId) {
+  return styleProblem(style, modelFrom(await readInstalledModel(), MODEL_SOURCE_URL));
 }
 
 async function refreshInstallBadge(): Promise<void> {
   await showInstallState(await readInstalledModel(), MODEL_SOURCE_URL);
 }
 
-function sendModelCommand(kind: Extract<OffscreenCommand['kind'], `model/${string}`>): Promise<void> {
-  return ensureEngineHost().then(() => offscreen.send({ target: 'offscreen', kind }));
+function sendModelCommand(command: Extract<OffscreenCommand, { kind: `model/${string}` }>): Promise<void> {
+  return ensureEngineHost().then(() => offscreen.send(command));
+}
+
+/** Stop a running download; a failed one (or a stale state with no worker behind it) is simply put aside. */
+async function cancelDownload(): Promise<void> {
+  const running = (await readDownloadState()).state === 'downloading' && (await offscreen.exists());
+  if (running) await offscreen.send({ target: 'offscreen', kind: 'model/cancel-download' });
+  else await writeDownloadState({ state: 'idle' });
 }
 
 function handleUiRequest(request: UiRequest): UiReply {
@@ -53,20 +60,23 @@ function handleUiRequest(request: UiRequest): UiReply {
       prepareEngine();
       return { ok: true };
     case 'ui/download-model':
-      sendModelCommand('model/download').catch((error: unknown) =>
-        writeDownloadState({ state: 'failed', error: toErrorPayload(error, 'DOWNLOAD_FAILED') }),
-      );
+      sendModelCommand({ target: 'offscreen', kind: 'model/download', adapters: request.adapters }).catch(async (error: unknown) => {
+        const base = modelFrom(await readInstalledModel(), MODEL_SOURCE_URL) === null;
+        await writeDownloadState({ state: 'failed', target: { base, adapters: request.adapters }, error: toErrorPayload(error, 'DOWNLOAD_FAILED') });
+      });
       return { ok: true };
     case 'ui/cancel-download':
-      // Without the offscreen document no download can be running; only a stale state needs clearing.
-      void offscreen
-        .exists()
-        .then((running) => (running ? offscreen.send({ target: 'offscreen', kind: 'model/cancel-download' }) : writeDownloadState({ state: 'idle' })))
-        .catch(() => writeDownloadState({ state: 'idle' }));
+      void cancelDownload().catch(() => writeDownloadState({ state: 'idle' }));
+      return { ok: true };
+    case 'ui/remove-adapter':
+      if (router.activeJobCount > 0) return { ok: false, error: { code: 'BUSY' } };
+      sendModelCommand({ target: 'offscreen', kind: 'model/remove-adapter', adapter: request.adapter }).catch((error: unknown) =>
+        console.error('EchoMeBetter: could not remove the style', error),
+      );
       return { ok: true };
     case 'ui/remove-model':
       if (router.activeJobCount > 0) return { ok: false, error: { code: 'BUSY' } };
-      sendModelCommand('model/remove').catch((error: unknown) => console.error('EchoMeBetter: could not remove the model', error));
+      sendModelCommand({ target: 'offscreen', kind: 'model/remove' }).catch((error: unknown) => console.error('EchoMeBetter: could not remove the model', error));
       return { ok: true };
   }
 }
@@ -76,8 +86,11 @@ async function mirrorEngineEvent(event: EngineEvent): Promise<void> {
     case 'status':
       await writeStatus(event.status);
       // A crashed worker takes a running download with it.
-      if (event.status.state === 'error' && (await readDownloadState()).state === 'downloading') {
-        await writeDownloadState({ state: 'failed', error: { code: 'DOWNLOAD_FAILED', details: { reason: event.status.message } } });
+      if (event.status.state === 'error') {
+        const download = await readDownloadState();
+        if (download.state === 'downloading') {
+          await writeDownloadState({ state: 'failed', target: download.target, error: { code: 'DOWNLOAD_FAILED', details: { reason: event.status.message } } });
+        }
       }
       return;
     case 'installed':
@@ -98,7 +111,7 @@ const launcher: LauncherDeps = {
   action: chrome.action,
   extensionOrigin: chrome.runtime.getURL(''),
   prepareEngine,
-  modelReady,
+  checkStyle,
   newJobId: () => crypto.randomUUID(),
 };
 

@@ -1,15 +1,23 @@
 import { useState } from 'react';
-import type { UiReply } from '../../shared/messages';
 import type { KeyPlatform } from '../../shared/shortcuts';
 import type { EngineStatus } from '../../shared/status';
+import type { StyleId } from '../../shared/styles';
 import { Logo, Wordmark } from '../brand/Logo';
-import { ModelDownloadCard } from '../components/ModelDownloadCard';
-import { RemoveModel } from '../components/RemoveModel';
-import { StatusCard } from '../components/StatusCard';
+import { ModelCard } from '../components/ModelCard';
 import { ShortcutAccessCard } from '../components/ShortcutAccessCard';
 import { StyleList } from '../components/StyleList';
 import { requestWarmUp, useEngineStatus } from '../hooks/useEngineStatus';
-import { requestCancelDownload, requestDownload, requestRemoveModel, useModelAvailability, type ModelAvailability } from '../hooks/useModel';
+import {
+  modelSetup,
+  requestCancelDownload,
+  requestDownload,
+  requestRemoveAdapter,
+  requestRemoveModel,
+  useCatalog,
+  useModelAvailability,
+  type CatalogState,
+  type ModelAvailability,
+} from '../hooks/useModel';
 import { useSettings } from '../hooks/useSettings';
 import { PLATFORM, releaseSiteAccess, requestSiteAccess, shortcutAvailability, useSiteAccess, type ShortcutAvailability } from '../hooks/useShortcuts';
 import { SettingsView } from './SettingsView';
@@ -21,6 +29,7 @@ export const REMOVED_NOTICE = 'Model removed. Download it again whenever you wan
 export interface PopupViewProps {
   readonly status: EngineStatus;
   readonly model: ModelAvailability;
+  readonly catalog: CatalogState;
   /** The model was removed from this popup; say so until a new download starts. */
   readonly modelRemoved: boolean;
   readonly platform: KeyPlatform;
@@ -29,14 +38,15 @@ export interface PopupViewProps {
   readonly onTurnOffShortcuts: () => void;
   readonly onOpenSettings: () => void;
   readonly onLoadModel: () => void;
-  readonly onDownloadModel: () => void;
+  readonly onDownload: (adapters: StyleId[]) => void;
   readonly onCancelDownload: () => void;
-  readonly onRemoveModel: () => Promise<UiReply>;
+  readonly onRetryCatalog: () => void;
   readonly onOpenGuide: () => void;
 }
 
 export function PopupView(props: PopupViewProps) {
-  const { status, model, modelRemoved, platform, shortcuts, onLoadModel, onOpenGuide } = props;
+  const { status, model, catalog, modelRemoved, platform, shortcuts, onOpenGuide } = props;
+  const setup = modelSetup(model.installed, catalog);
   return (
     <main className="_echo_$_w-[360px] _echo_$_bg-ink-50 _echo_$_text-ink-900 dark:_echo_$_bg-ink-950 dark:_echo_$_text-white">
       <header className="_echo_$_relative _echo_$_overflow-hidden _echo_$_bg-echo-gradient _echo_$_px-4 _echo_$_pb-5 _echo_$_pt-3.5 _echo_$_text-white">
@@ -65,16 +75,16 @@ export function PopupView(props: PopupViewProps) {
 
       <div className="_echo_$_space-y-3.5 _echo_$_px-4 _echo_$_pb-3 _echo_$_pt-0">
         <div className="_echo_$_mt-[-12px] _echo_$_relative">
-          {!model.known ? null : model.installed ? (
-            <StatusCard status={status} onLoad={onLoadModel} />
-          ) : (
-            <ModelDownloadCard
-              download={model.download}
-              onDownload={props.onDownloadModel}
-              onCancel={props.onCancelDownload}
-              notice={modelRemoved ? REMOVED_NOTICE : undefined}
-            />
-          )}
+          <ModelCard
+            status={status}
+            model={model}
+            catalog={catalog}
+            onLoadModel={props.onLoadModel}
+            onDownload={props.onDownload}
+            onCancelDownload={props.onCancelDownload}
+            onRetryCatalog={props.onRetryCatalog}
+            notice={modelRemoved ? REMOVED_NOTICE : undefined}
+          />
         </div>
 
         <p className="_echo_$_flex _echo_$_flex-wrap _echo_$_items-center _echo_$_gap-1.5 _echo_$_text-[13px] _echo_$_text-ink-600 dark:_echo_$_text-ink-200">
@@ -95,14 +105,18 @@ export function PopupView(props: PopupViewProps) {
           <h2 id="styles-title" className="_echo_$_mb-2 _echo_$_text-[11px] _echo_$_font-semibold _echo_$_uppercase _echo_$_tracking-wider _echo_$_text-ink-500 dark:_echo_$_text-ink-300">
             Styles
           </h2>
-          <StyleList dense shortcuts={shortcuts === 'on' ? platform : undefined} />
+          <StyleList
+            dense
+            shortcuts={shortcuts === 'on' ? platform : undefined}
+            readiness={setup.readiness}
+            onDownload={(adapter) => props.onDownload([adapter])}
+            busy={model.download.state === 'downloading'}
+          />
         </section>
 
         {shortcuts === 'needs-access' ? (
           <ShortcutAccessCard platform={platform} onAllow={props.onAllowSiteAccess} onNotNow={props.onTurnOffShortcuts} />
         ) : null}
-
-        {model.installed ? <RemoveModel sizeBytes={model.installed.model.sizeBytes} onRemove={props.onRemoveModel} /> : null}
 
         <footer className="_echo_$_flex _echo_$_items-center _echo_$_justify-between _echo_$_text-xs _echo_$_text-ink-500 dark:_echo_$_text-ink-300">
           <span className="_echo_$_flex _echo_$_items-center _echo_$_gap-1.5">
@@ -123,6 +137,7 @@ export function PopupView(props: PopupViewProps) {
 export function PopupApp() {
   const status = useEngineStatus();
   const model = useModelAvailability();
+  const [catalog, retryCatalog] = useCatalog();
   const [settings, setSettings, settingsLoaded] = useSettings();
   const siteAccess = useSiteAccess();
   const [modelRemoved, setModelRemoved] = useState(false);
@@ -145,6 +160,13 @@ export function PopupApp() {
         onAllowSiteAccess={requestSiteAccess}
         keepLoaded={settings.keepModelLoadedMinutes}
         onKeepLoadedChange={(minutes) => setSettings({ ...settings, keepModelLoadedMinutes: minutes })}
+        installed={model.installed}
+        onRemoveModel={async () => {
+          const reply = await requestRemoveModel();
+          if (reply.ok) setModelRemoved(true);
+          return reply;
+        }}
+        onRemoveAdapter={requestRemoveAdapter}
         onBack={() => setPage('home')}
       />
     );
@@ -154,6 +176,7 @@ export function PopupApp() {
     <PopupView
       status={status}
       model={model}
+      catalog={catalog}
       modelRemoved={modelRemoved}
       platform={PLATFORM}
       shortcuts={shortcuts}
@@ -161,16 +184,12 @@ export function PopupApp() {
       onTurnOffShortcuts={() => setShortcuts(false)}
       onOpenSettings={() => setPage('settings')}
       onLoadModel={requestWarmUp}
-      onDownloadModel={() => {
+      onDownload={(adapters) => {
         setModelRemoved(false);
-        requestDownload();
+        requestDownload(adapters);
       }}
       onCancelDownload={requestCancelDownload}
-      onRemoveModel={async () => {
-        const reply = await requestRemoveModel();
-        if (reply.ok) setModelRemoved(true);
-        return reply;
-      }}
+      onRetryCatalog={retryCatalog}
       onOpenGuide={() => void chrome.tabs.create({ url: chrome.runtime.getURL('ui/welcome/welcome.html') })}
     />
   );

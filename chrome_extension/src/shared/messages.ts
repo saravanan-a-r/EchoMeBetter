@@ -97,8 +97,9 @@ export type OffscreenCommand =
   | { readonly target: 'offscreen'; readonly kind: 'engine/warm-up' }
   | { readonly target: 'offscreen'; readonly kind: 'engine/rewrite'; readonly jobId: string; readonly style: StyleId; readonly text: string }
   | { readonly target: 'offscreen'; readonly kind: 'engine/cancel'; readonly jobId: string }
-  | { readonly target: 'offscreen'; readonly kind: 'model/download' }
+  | { readonly target: 'offscreen'; readonly kind: 'model/download'; readonly adapters: readonly StyleId[] }
   | { readonly target: 'offscreen'; readonly kind: 'model/cancel-download' }
+  | { readonly target: 'offscreen'; readonly kind: 'model/remove-adapter'; readonly adapter: StyleId }
   | { readonly target: 'offscreen'; readonly kind: 'model/remove' };
 
 export interface OffscreenEventMessage {
@@ -137,8 +138,9 @@ export type WorkerRequest =
   | { readonly type: 'warm-up' }
   | { readonly type: 'rewrite'; readonly jobId: string; readonly style: StyleId; readonly text: string }
   | { readonly type: 'cancel'; readonly jobId: string }
-  | { readonly type: 'download' }
+  | { readonly type: 'download'; readonly adapters: readonly StyleId[] }
   | { readonly type: 'cancel-download' }
+  | { readonly type: 'remove-adapter'; readonly adapter: StyleId }
   | { readonly type: 'remove-model' };
 
 /** What the engine reports; relayed unchanged from the worker up to the service worker. */
@@ -154,12 +156,30 @@ export type EngineEvent =
 // extension pages (popup, welcome) → service worker
 // ---------------------------------------------------------------------------
 
-const UI_REQUESTS = ['ui/warm-up', 'ui/download-model', 'ui/cancel-download', 'ui/remove-model'] as const;
-
-export type UiRequest = { readonly kind: (typeof UI_REQUESTS)[number] };
+export type UiRequest =
+  | { readonly kind: 'ui/warm-up' }
+  /** Download these adapters, and the base first if it is not installed. */
+  | { readonly kind: 'ui/download-model'; readonly adapters: readonly StyleId[] }
+  | { readonly kind: 'ui/cancel-download' }
+  | { readonly kind: 'ui/remove-adapter'; readonly adapter: StyleId }
+  /** The base and every adapter. */
+  | { readonly kind: 'ui/remove-model' };
 
 export type UiReply = { readonly ok: true } | { readonly ok: false; readonly error: ErrorPayload };
 
 export function isUiRequest(value: unknown): value is UiRequest {
-  return typeof value === 'object' && value !== null && (UI_REQUESTS as readonly unknown[]).includes((value as { kind?: unknown }).kind);
+  if (typeof value !== 'object' || value === null) return false;
+  const request = value as { kind?: unknown; adapters?: unknown; adapter?: unknown };
+  switch (request.kind) {
+    case 'ui/warm-up':
+    case 'ui/cancel-download':
+    case 'ui/remove-model':
+      return true;
+    case 'ui/download-model':
+      return Array.isArray(request.adapters) && request.adapters.every(isStyleId);
+    case 'ui/remove-adapter':
+      return isStyleId(request.adapter);
+    default:
+      return false;
+  }
 }

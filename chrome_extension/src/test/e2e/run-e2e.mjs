@@ -9,13 +9,15 @@
  *
  * Loads dist/ as an unpacked extension in a fresh profile, then:
  *   1. a rewrite before the download is refused with "download the model first"
- *   2. the popup downloads the model into the extension's private storage
+ *   2. the popup downloads the writing model alone; a rewrite is then refused
+ *      until the style it needs is there, which the popup downloads next
  *   3. one full rewrite on the welcome page's practice box: foreground
  *      controller → service worker → offscreen document → inference worker
- *      (onnxruntime-web, real model, read from the extension's private
- *      storage) → text replaced in the textarea → Undo restores it; then the
+ *      (onnxruntime-web, base model plus the style's adapter, read from the
+ *      extension's private storage) → text replaced in the textarea → Undo
+ *      restores it; then a style running on the fallback adapter, and the
  *      same through a keyboard shortcut
- *   4. the popup removes the model again
+ *   4. settings remove the style, then the writing model
  *
  * Progress and cancelling are covered by the unit tests: from a local server
  * the whole download finishes too quickly to be interrupted reliably.
@@ -76,9 +78,11 @@ try {
 
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extensionId}/ui/popup/popup.html`);
-  const downloadButton = popup.getByRole('button', { name: 'Download model' });
+  const downloadButton = popup.getByRole('button', { name: /^Download · / });
   await downloadButton.waitFor({ timeout: 10_000 });
-  check(true, 'popup offers the model download on a fresh profile');
+  check(true, `popup offers the download on a fresh profile ("${await downloadButton.textContent()}")`);
+  const professionalChoice = popup.getByRole('checkbox', { name: /Professional style/ });
+  check(await professionalChoice.isChecked(), 'the Professional style is chosen along with the writing model');
   check(await popup.getByText(modelUrl).isVisible(), `popup shows the source URL (${modelUrl})`);
   check((await badge()) === '!', 'toolbar icon is flagged until the model is downloaded');
 
@@ -114,14 +118,28 @@ try {
   check((await welcome.evaluate(() => document.querySelector('#playground').value)) === ORIGINAL, 'the text was left untouched');
 
   console.log('download:');
-  const downloadStarted = Date.now();
+  await professionalChoice.uncheck();
+  let downloadStarted = Date.now();
   await downloadButton.click();
   await popup.getByRole('button', { name: 'Load now' }).waitFor({ timeout: 600_000 });
-  console.log(`  download and verification took ${((Date.now() - downloadStarted) / 1000).toFixed(1)}s`);
+  console.log(`  writing model: download and verification took ${((Date.now() - downloadStarted) / 1000).toFixed(1)}s`);
+  check((await storedModelFiles(popup)).length === 4, 'the writing model alone is stored (record and three files)');
+  check((await badge()) === '!', 'toolbar icon stays flagged while no style is downloaded');
+
+  await startJob('e2e-style', 'professional');
+  await welcome.locator('echomebetter-overlay').getByText(/Download the Professional style first/).waitFor({ timeout: 30_000 });
+  check(true, 'a rewrite explains that the style must be downloaded first');
+
+  downloadStarted = Date.now();
+  await popup.getByRole('button', { name: /^Download the Professional style/ }).click();
+  await popup.getByRole('button', { name: /^Download the Professional style/ }).waitFor({ state: 'detached', timeout: 600_000 });
+  console.log(`  Professional style: download and verification took ${((Date.now() - downloadStarted) / 1000).toFixed(1)}s`);
   const stored = await storedModelFiles(popup);
-  check(stored.includes('installed.json') && stored.length === 4, `model stored in the extension's private storage (${stored.length} entries)`);
+  check(stored.includes('installed.json') && stored.length === 6, `model and style stored in the extension's private storage (${stored.length} entries)`);
+  // The refused job above reached the worker, which loaded the base before refusing it: the status may read Ready.
+  await popup.getByRole('region', { name: 'Writing model status' }).waitFor({ timeout: 30_000 });
   check((await badge()) === '', 'toolbar flag cleared');
-  check(await popup.getByRole('button', { name: 'Remove downloaded model' }).isVisible(), 'popup offers to remove the model');
+  check((await popup.getByText('Preview').count()) === 4, 'the styles still in training are marked as running on Professional for now');
 
   console.log('rewrite:');
   await welcome.evaluate(() => {
@@ -164,7 +182,8 @@ try {
   const second = Date.now();
   await startJob('e2e-2', 'grammar');
   await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 120_000 });
-  console.log(`  warm rewrite took ${((Date.now() - second) / 1000).toFixed(1)}s`);
+  const fallback = await welcome.evaluate(() => document.querySelector('#playground').value);
+  console.log(`  warm rewrite with the fallback adapter took ${((Date.now() - second) / 1000).toFixed(1)}s: ${JSON.stringify(fallback)}`);
 
   // The same rewrite from the keyboard: the welcome page listens for shortcuts itself.
   await welcome.evaluate((original) => {
@@ -203,12 +222,19 @@ try {
   check(consoleErrors.length === 0, `no console errors on the page${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);
 
   console.log('remove:');
-  await popup.getByRole('button', { name: 'Remove downloaded model' }).click();
-  await popup.getByRole('button', { name: 'Remove model' }).click();
-  await popup.getByText('Model removed. Download it again whenever you want to rewrite text.').waitFor({ timeout: 30_000 });
-  check(await downloadButton.isVisible(), 'popup offers the download again');
+  await popup.getByRole('button', { name: 'Settings' }).click();
+  await popup.getByRole('button', { name: 'Remove professional style' }).click();
+  await popup.getByRole('button', { name: 'Remove', exact: true }).click();
+  await popup.getByRole('button', { name: 'Remove professional style' }).waitFor({ state: 'detached', timeout: 30_000 });
+  check((await storedModelFiles(popup)).length === 4, 'removing the style deleted only its files');
+  check((await badge()) === '!', 'toolbar icon is flagged again without a style');
+  await popup.getByRole('button', { name: 'Remove writing model' }).click();
+  await popup.getByRole('button', { name: 'Remove', exact: true }).click();
+  await popup.getByText('Nothing downloaded yet.').waitFor({ timeout: 30_000 });
   check((await storedModelFiles(popup)).length === 0, 'every model file was deleted');
-  check((await badge()) === '!', 'toolbar icon is flagged again');
+  await popup.getByRole('button', { name: 'Back' }).click();
+  await popup.getByText('Model removed. Download it again whenever you want to rewrite text.').waitFor({ timeout: 10_000 });
+  check(await downloadButton.isVisible(), 'popup offers the download again');
 
   await strictCspPageScenario(context);
   console.log('E2E passed');

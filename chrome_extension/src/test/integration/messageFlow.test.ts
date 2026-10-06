@@ -3,9 +3,9 @@
  *
  *   page port ⇄ JobRouter (service worker) ⇄ runtime messages ⇄ offscreen bridge ⇄ worker messages ⇄ EngineHost
  *
- * The model is a stand-in, but every message shape, every hop and the
- * cancel path are the real ones -- this catches a protocol change made on
- * one side and not the other.
+ * The engine is faked, but every message shape, every hop and the cancel
+ * path are the real ones -- this catches a protocol change made on one side
+ * and not the other.
  */
 import { describe, expect, test } from '@jest/globals';
 import { JobRouter, type PortLike } from '../../background/jobRouter';
@@ -22,9 +22,11 @@ function wire(engine: LoadedEngine) {
   // worker <-> offscreen (postMessage is asynchronous in the browser)
   const workerToBridge: ((event: { data: EngineEvent }) => void)[] = [];
   const host = new EngineHost(async () => engine, (event) => setTimeout(() => workerToBridge.forEach((listener) => listener({ data: event }))));
+  const requests: WorkerRequest[] = [];
   const worker: WorkerLike = {
     postMessage: (request: WorkerRequest) =>
       setTimeout(() => {
+        requests.push(request);
         if (request.type === 'rewrite') host.enqueue(request.jobId, request.style, request.text);
         if (request.type === 'cancel') host.cancel(request.jobId);
       }),
@@ -60,10 +62,11 @@ function wire(engine: LoadedEngine) {
     onDisconnect: { addListener: (listener) => (disconnect = listener) },
   };
   router.handlePort(port);
-  return { received, send: (message: unknown) => toRouter(message), disconnect: () => disconnect(), host };
+  const command = (message: OffscreenCommand) => offscreenListener(message, {}, () => undefined);
+  return { received, send: (message: unknown) => toRouter(message), disconnect: () => disconnect(), host, requests, command };
 }
 
-const manifest = parseModelManifest(readJsonFixture('tiny-t5/model.json'));
+const manifest = parseModelManifest(readJsonFixture('tiny-echo/model.json'));
 
 describe('page → service worker → offscreen → worker and back', () => {
   test('a job comes back as phases then the rewritten text', async () => {
@@ -99,5 +102,18 @@ describe('page → service worker → offscreen → worker and back', () => {
     for (let i = 0; i < 10; i++) await tick();
     await host.idle();
     expect(aborted).toBe(true);
+  });
+
+  test('model commands reach the worker in order, with the adapters they name', async () => {
+    const { command, requests } = wire({ manifest, rewrite: async () => ({ text: '', inputTokens: 0, outputTokens: 0 }), release: async () => undefined });
+    command({ target: 'offscreen', kind: 'model/download', adapters: ['professional', 'grammar'] });
+    command({ target: 'offscreen', kind: 'model/remove-adapter', adapter: 'grammar' });
+    command({ target: 'offscreen', kind: 'model/remove' });
+    for (let i = 0; i < 10; i++) await tick();
+    expect(requests.filter((request) => request.type !== 'configure')).toEqual([
+      { type: 'download', adapters: ['professional', 'grammar'] },
+      { type: 'remove-adapter', adapter: 'grammar' },
+      { type: 'remove-model' },
+    ]);
   });
 });

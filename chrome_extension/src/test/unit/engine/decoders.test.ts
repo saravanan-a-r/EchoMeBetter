@@ -8,16 +8,6 @@ describe('decoders', () => {
     expect(decode(['<0xC3>', 'x'])).toEqual(['�', 'x']);
   });
 
-  test('Metaspace drops every marker in the first token only (reference behaviour)', () => {
-    const decode = buildDecoder({ type: 'Metaspace', replacement: '▁', prepend_scheme: 'always' })!;
-    expect(decode(['▁Hello', '▁world'])).toEqual(['Hello', ' world']);
-  });
-
-  test('Metaspace with prepend_scheme "never" keeps a leading space', () => {
-    const decode = buildDecoder({ type: 'Metaspace', replacement: '▁', prepend_scheme: 'never' })!;
-    expect(decode(['▁Hi'])).toEqual([' Hi']);
-  });
-
   test('Sequence of Replace, ByteFallback, Fuse (EchoMeBetter decoder)', () => {
     const decode = buildDecoder({
       type: 'Sequence',

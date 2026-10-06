@@ -10,8 +10,13 @@
  * previous step's `present_*` back in as `past_*`. Tensor names are checked
  * against the sessions on construction so a model exported for a different
  * contract fails immediately rather than mid-generation.
+ *
+ * A style's adapter is a pair of LoRA weight sets, one per graph. They are
+ * passed per run (`activeLoraAdapters`): the encoder half to the encoder run,
+ * the decoder half to every decoder step. A run without them is the plain
+ * base model.
  */
-import type { InferenceSession, Tensor } from 'onnxruntime-web';
+import type { InferenceSession, LoraAdapter, Tensor } from 'onnxruntime-web';
 import type { Seq2SeqRunner, StepResult } from '../generation/greedyDecoder';
 
 /** The constructor half of onnxruntime's API that the runner needs; injectable for tests. */
@@ -32,6 +37,12 @@ export interface EncoderMemory {
 }
 
 export type DecoderCache = Readonly<Record<string, Tensor>>;
+
+/** A style's adapter, loaded: the weights for each graph. */
+export interface AdapterPair {
+  readonly encoder: LoraAdapter;
+  readonly decoder: LoraAdapter;
+}
 
 export class ContractError extends Error {
   constructor(message: string) {
@@ -54,6 +65,7 @@ export class T5Runner implements Seq2SeqRunner<EncoderMemory, DecoderCache> {
     private readonly encoder: InferenceSession,
     private readonly decoder: InferenceSession,
     private readonly geometry: T5Geometry,
+    private readonly adapter: AdapterPair | null = null,
   ) {
     for (let i = 0; i < geometry.numDecoderLayers; i++) {
       this.crossNames.push(`cross_key.${i}`, `cross_value.${i}`);
@@ -69,13 +81,22 @@ export class T5Runner implements Seq2SeqRunner<EncoderMemory, DecoderCache> {
     requireNames(decoder.outputNames, ['logits', ...this.pastNames.map(([, present]) => present)], 'decoder outputs');
   }
 
+  /** The same sessions, with `adapter` active on every run. */
+  withAdapter(adapter: AdapterPair): T5Runner {
+    return new T5Runner(this.TensorCtor, this.encoder, this.decoder, this.geometry, adapter);
+  }
+
+  private runOptions(adapter: LoraAdapter | undefined): InferenceSession.RunOptions {
+    return adapter ? { activeLoraAdapters: [adapter] } : {};
+  }
+
   private ids(values: readonly number[]): Tensor {
     return new this.TensorCtor('int64', BigInt64Array.from(values, (value) => BigInt(value)), [1, values.length]);
   }
 
   async encode(inputIds: readonly number[]): Promise<EncoderMemory> {
     const mask = new this.TensorCtor('int64', new BigInt64Array(inputIds.length).fill(1n), [1, inputIds.length]);
-    const outputs = await this.encoder.run({ input_ids: this.ids(inputIds), attention_mask: mask });
+    const outputs = await this.encoder.run({ input_ids: this.ids(inputIds), attention_mask: mask }, this.runOptions(this.adapter?.encoder));
     const cross: Record<string, Tensor> = {};
     for (const name of this.crossNames) cross[name] = outputs[name]!;
     return { mask, cross };
@@ -89,12 +110,10 @@ export class T5Runner implements Seq2SeqRunner<EncoderMemory, DecoderCache> {
   }
 
   async step(tokenId: number, memory: EncoderMemory, cache: DecoderCache): Promise<StepResult<DecoderCache>> {
-    const outputs = await this.decoder.run({
-      input_ids: this.ids([tokenId]),
-      encoder_attention_mask: memory.mask,
-      ...cache,
-      ...memory.cross,
-    });
+    const outputs = await this.decoder.run(
+      { input_ids: this.ids([tokenId]), encoder_attention_mask: memory.mask, ...cache, ...memory.cross },
+      this.runOptions(this.adapter?.decoder),
+    );
     const next: Record<string, Tensor> = {};
     for (const [past, present] of this.pastNames) next[past] = outputs[present]!;
 

@@ -1,8 +1,8 @@
 /**
  * Token strings → text. Each decoder maps a list of token strings to a new
  * list (HuggingFace's `decode_chain`); the final list is concatenated.
+ * EchoMeBetter's chain is Replace("▁" → " "), ByteFallback, Fuse.
  */
-import { prependSchemeOf } from './preTokenizers';
 import { compilePattern, UnsupportedTokenizerError, type DecoderJson } from './types';
 
 export type Decoder = (tokens: string[]) => string[];
@@ -13,16 +13,6 @@ const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
 export function buildDecoder(json: DecoderJson | null): Decoder | null {
   if (json === null) return null;
   switch (json.type) {
-    case 'Metaspace': {
-      const { replacement } = json;
-      const dropLeading = prependSchemeOf(json) !== 'never';
-      // As in the reference: in the *first* token every replacement
-      // character is dropped, not only a leading one.
-      return (tokens) =>
-        tokens.map((token, index) =>
-          Array.from(token, (char) => (char === replacement ? (index === 0 && dropLeading ? '' : ' ') : char)).join(''),
-        );
-    }
     case 'ByteFallback':
       return byteFallback;
     case 'Fuse':
@@ -31,8 +21,6 @@ export function buildDecoder(json: DecoderJson | null): Decoder | null {
       const pattern = compilePattern(json.pattern);
       return (tokens) => tokens.map((token) => token.replace(pattern, () => json.content));
     }
-    case 'Strip':
-      return (tokens) => tokens.map((token) => strip(token, json.content, json.start, json.stop));
     case 'Sequence': {
       const steps = json.decoders.map(buildDecoder).filter((step): step is Decoder => step !== null);
       return (tokens) => steps.reduce((current, step) => step(current), tokens);
@@ -66,13 +54,4 @@ function byteFallback(tokens: string[]): string[] {
   }
   flush();
   return out;
-}
-
-function strip(token: string, content: string, start: number, stop: number): string {
-  const chars = Array.from(token);
-  let left = 0;
-  while (left < start && chars[left] === content) left++;
-  let right = chars.length;
-  while (chars.length - right < stop && right > left && chars[right - 1] === content) right--;
-  return chars.slice(left, right).join('');
 }
