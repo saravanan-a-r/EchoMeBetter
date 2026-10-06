@@ -42,7 +42,7 @@ module.exports = {
           900: '#17122B',
           950: '#0E0B1A',
         },
-        danger: { 400: '#F87171', 500: '#E5484D' },
+        danger: { 50: '#FEF2F2', 400: '#F87171', 500: '#E5484D', 600: '#C8363B', 950: '#3B0D10' },
       },
       fontFamily: {
         sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
