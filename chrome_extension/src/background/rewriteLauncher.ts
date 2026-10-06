@@ -1,5 +1,6 @@
 /**
- * What happens when the user picks a style from the right-click menu.
+ * What happens when the user picks a style from the right-click menu or
+ * presses its keyboard shortcut.
  *
  * 1. Inject the foreground script into the exact frame that was clicked --
  *    only now, on demand. Nothing of EchoMeBetter runs on a page the user
@@ -13,11 +14,13 @@
  * yet is reported in the page instead (pointing at the toolbar popup).
  *
  * The context-menu click grants `activeTab`, which is what allows the
- * injection without any host permissions. A cross-origin frame is outside
+ * injection without any host permissions; a shortcut only fires where the
+ * user has granted site access. A cross-origin frame is outside
  * that grant; then the top frame shows why nothing happened.
  */
 import type { ErrorPayload } from '../shared/errors';
 import type { ForegroundMessage } from '../shared/messages';
+import type { StyleId } from '../shared/styles';
 import { parseStyleMenuId } from './contextMenus';
 
 export const FOREGROUND_SCRIPT = 'foreground.js';
@@ -62,9 +65,13 @@ async function notice(deps: LauncherDeps, tabId: number, error: ErrorPayload): P
 
 export async function launchRewrite(click: MenuClick, tab: chrome.tabs.Tab | undefined, deps: LauncherDeps): Promise<void> {
   const style = parseStyleMenuId(click.menuItemId);
-  if (!style || tab?.id === undefined) return;
+  if (!style) return;
+  await launchStyle(style, click.frameId ?? 0, tab, deps);
+}
+
+export async function launchStyle(style: StyleId, frameId: number, tab: chrome.tabs.Tab | undefined, deps: LauncherDeps): Promise<void> {
+  if (tab?.id === undefined) return;
   const tabId = tab.id;
-  const frameId = click.frameId ?? 0;
   const isOwnPage = tab.url?.startsWith(deps.extensionOrigin) ?? false;
 
   if (!isOwnPage) {
