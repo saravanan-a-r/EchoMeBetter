@@ -9,6 +9,7 @@
  * that changed while the model was working is never overwritten.
  */
 import { EchoError } from '../../shared/errors';
+import { rectOf, textControlSelectionRect, type Rect } from './selectionRect';
 
 /** Input types whose selection can be read and replaced (the HTML selection APIs apply to these). */
 export const TEXT_INPUT_TYPES = new Set(['text', 'search', 'url', 'tel']);
@@ -109,14 +110,19 @@ export function captureTarget(doc: Document = document): EditTarget {
   throw new EchoError(focusedSomething ? 'UNSUPPORTED_FIELD' : 'NO_SELECTION');
 }
 
-/** Bounding box of the selection on screen, for placing the loader and toasts. */
-export function targetRect(target: EditTarget): DOMRect {
+/**
+ * Bounding box of the selection on screen, for placing the loader and toasts.
+ * A text control only reports its own box, so the selection is measured
+ * inside it; falling back to the control's box when that is not possible.
+ */
+export function targetRect(target: EditTarget): Rect {
   if (target.kind === 'content-editable') {
     const rect = target.range.getBoundingClientRect();
-    if (rect.width > 0 || rect.height > 0) return rect;
-    return target.host.getBoundingClientRect();
+    if (rect.width > 0 || rect.height > 0) return rectOf(rect.top, rect.left, rect.bottom, rect.right);
+    const host = target.host.getBoundingClientRect();
+    return rectOf(host.top, host.left, host.bottom, host.right);
   }
-  return target.element.getBoundingClientRect();
+  return textControlSelectionRect(target.element, target.start, target.end);
 }
 
 /** Split off leading/trailing whitespace: the model sees the core, the page keeps its spacing. */
