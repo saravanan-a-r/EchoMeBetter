@@ -13,9 +13,16 @@
     "test:e2e": "node src/test/e2e/run-e2e.mjs"
   },
   "dependencies": {
-    "onnxruntime-web": "1.30.0",
+    "onnxruntime-web": "file:vendor/onnxruntime-web-1.31.0.tgz",
     "react": "19.3.0",
     "react-dom": "19.3.0"
+  },
+  "overrides": {
+    "onnxruntime-common": "file:vendor/onnxruntime-common-1.31.0.tgz"
+  },
+  "allowScripts": {
+    "onnxruntime-common": false,
+    "onnxruntime-web": false
   },
   "devDependencies": {
     "@babel/core": "7.29.7",
