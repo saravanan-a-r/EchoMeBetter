@@ -47,10 +47,6 @@ export class UnigramModel {
     this.unkScore = minScore - UNK_PENALTY;
   }
 
-  get vocabSize(): number {
-    return this.pieces.length;
-  }
-
   tokenToId(piece: string): number | undefined {
     return this.pieceToId.get(piece);
   }

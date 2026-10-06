@@ -7,7 +7,7 @@ import type { StyleId } from '../../../shared/styles';
 import { EngineHost, type LoadedEngine } from '../../../worker/engineHost';
 import { readJsonFixture } from '../../helpers/fixtures';
 
-const manifest = parseModelManifest(readJsonFixture('tiny-t5/model.json'));
+const manifest = parseModelManifest(readJsonFixture('tiny-echo/model.json'));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

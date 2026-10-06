@@ -1,5 +1,6 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import { showInstallState, type BadgeApi } from '../../../background/installBadge';
+import { installedRecord } from '../../helpers/fixtures';
 
 function action() {
   return {
@@ -10,7 +11,7 @@ function action() {
 }
 
 const SOURCE = 'https://models.example.test/m/';
-const record = { sourceUrl: SOURCE, model: { id: 'x', displayName: 'X', placeholder: false, precision: 'int8', sizeBytes: 1 } };
+const record = installedRecord(SOURCE);
 
 describe('toolbar badge', () => {
   test('flags a missing model on the icon', async () => {
@@ -26,7 +27,14 @@ describe('toolbar badge', () => {
     expect(api.setBadgeText).toHaveBeenCalledWith({ text: '!' });
   });
 
-  test('clears the flag once the model is downloaded', async () => {
+  test('a model without any style still has nothing to rewrite with', async () => {
+    const api = action();
+    await showInstallState(installedRecord(SOURCE, []), SOURCE, api as unknown as BadgeApi);
+    expect(api.setBadgeText).toHaveBeenCalledWith({ text: '!' });
+    expect(api.setTitle).toHaveBeenCalledWith({ title: 'EchoMeBetter: download a style to start' });
+  });
+
+  test('clears the flag once the model and a style are downloaded', async () => {
     const api = action();
     await showInstallState(record, SOURCE, api as unknown as BadgeApi);
     expect(api.setBadgeText).toHaveBeenCalledWith({ text: '' });

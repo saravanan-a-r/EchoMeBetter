@@ -15,8 +15,8 @@ export type EngineStatus =
 export interface ModelSummary {
   readonly id: string;
   readonly displayName: string;
-  readonly placeholder: boolean;
   readonly precision: string;
+  /** The base model's files; adapters are counted separately. */
   readonly sizeBytes: number;
 }
 

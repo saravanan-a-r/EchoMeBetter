@@ -82,11 +82,14 @@ export function startBridge(worker: WorkerLike, runtime: RuntimeLike, config: Wo
           storage
             .persist()
             .catch(() => false)
-            .then(() => worker.postMessage({ type: 'download' })),
+            .then(() => worker.postMessage({ type: 'download', adapters: message.adapters })),
         );
         break;
       case 'model/cancel-download':
         inOrder(() => worker.postMessage({ type: 'cancel-download' }));
+        break;
+      case 'model/remove-adapter':
+        inOrder(() => worker.postMessage({ type: 'remove-adapter', adapter: message.adapter }));
         break;
       case 'model/remove':
         inOrder(() => worker.postMessage({ type: 'remove-model' }));

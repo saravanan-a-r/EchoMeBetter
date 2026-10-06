@@ -84,3 +84,10 @@ htmlcov/
 # makes the fingerprint worthless. It must never be committed, and belongs
 # outside the repo entirely once the run is configured.
 ownership/secrets/
+
+# ---------------------------------------------------------------------------
+# Model files and the custom onnxruntime-web tarball stay on the developer's
+# machine; the extension downloads its model at run time.
+# ---------------------------------------------------------------------------
+/serving_onnx_package/
+/*.tgz

@@ -1,8 +1,8 @@
 /**
  * Development aid: shows the URL the model is downloaded from.
  *
- * Temporary. Remove this file and its one use in ModelDownloadCard before
- * the extension is published.
+ * Temporary. Remove this file and its uses in ModelSetupCard and
+ * ModelDownloadCard before the extension is published.
  */
 import { MODEL_SOURCE_URL } from '../../shared/modelSource';
 

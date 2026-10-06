@@ -1,8 +1,9 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import { styleMenuId } from '../../../background/contextMenus';
 import { launchRewrite, launchStyle, type LauncherDeps } from '../../../background/rewriteLauncher';
+import type { ErrorPayload } from '../../../shared/errors';
 
-function deps(options: { injectFails?: (frameId: number) => boolean; modelReady?: boolean } = {}) {
+function deps(options: { injectFails?: (frameId: number) => boolean; problem?: ErrorPayload } = {}) {
   const calls: string[] = [];
   const value: LauncherDeps = {
     scripting: {
@@ -26,7 +27,7 @@ function deps(options: { injectFails?: (frameId: number) => boolean; modelReady?
     } as unknown as LauncherDeps['action'],
     extensionOrigin: 'chrome-extension://abc/',
     prepareEngine: jest.fn(() => void calls.push('prepare')),
-    modelReady: async () => options.modelReady ?? true,
+    checkStyle: async () => options.problem ?? null,
     newJobId: () => 'job-1',
   };
   return { value, calls };
@@ -60,12 +61,15 @@ describe('launchRewrite', () => {
     expect(calls).toEqual(['inject:0', 'badge:!']);
   });
 
-  test('without a downloaded model the clicked frame is told how to get it, and nothing loads', async () => {
-    const { value, calls } = deps({ modelReady: false });
-    await launchRewrite({ menuItemId: styleMenuId('friendly'), frameId: 2 }, tab, value);
-    expect(calls).toEqual(['inject:2', 'echo/notice:2']);
-    expect(value.tabs.sendMessage).toHaveBeenCalledWith(7, { kind: 'echo/notice', error: { code: 'MODEL_NOT_DOWNLOADED' } }, { frameId: 2 });
-  });
+  test.each<ErrorPayload>([{ code: 'MODEL_NOT_DOWNLOADED' }, { code: 'STYLE_NOT_DOWNLOADED', details: { style: 'Friendly', adapter: 'Professional' } }])(
+    'a style that cannot run yet ($code) is explained in the clicked frame, and nothing loads',
+    async (problem) => {
+      const { value, calls } = deps({ problem });
+      await launchRewrite({ menuItemId: styleMenuId('friendly'), frameId: 2 }, tab, value);
+      expect(calls).toEqual(['inject:2', 'echo/notice:2']);
+      expect(value.tabs.sendMessage).toHaveBeenCalledWith(7, { kind: 'echo/notice', error: problem }, { frameId: 2 });
+    },
+  );
 
   test('a shortcut starts the same journey in the frame it was pressed in', async () => {
     const { value, calls } = deps();

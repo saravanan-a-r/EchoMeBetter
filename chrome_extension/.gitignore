@@ -11,3 +11,9 @@ playwright-report/
 models/
 
 *.tsbuildinfo
+
+# Custom onnxruntime-web build (with LoRA adapter support) and the matching
+# onnxruntime-common, installed from here by package.json. Large binaries:
+# kept on the developer's machine, not in git.
+vendor/
+*.tgz
