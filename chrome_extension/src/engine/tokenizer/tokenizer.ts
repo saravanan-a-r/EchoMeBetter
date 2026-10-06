@@ -1,50 +1,41 @@
 /**
- * A HuggingFace-compatible Unigram tokenizer built from a `tokenizer.json`.
+ * EchoMeBetter's tokenizer, built from its `tokenizer.json`.
  *
- * Pipeline (HuggingFace `Tokenizer::encode`):
- *   added tokens cut out → normaliser → pre-tokenizer → Unigram → post-processor
+ * The format is the one tokenizer/training/export_hf.py writes from the
+ * SentencePiece model: no normaliser; a Metaspace pre-tokenizer that turns
+ * spaces into "▁" without adding a prefix or splitting; a Unigram model with
+ * byte fallback; no added tokens and no post-processor. Control pieces (`</s>`,
+ * the style and frame markers) are ordinary vocabulary pieces, so text that
+ * spells one encodes to it -- the prompt builder refuses such user text.
  *
- * Covers what T5-family checkpoints use -- Flan-T5's precompiled NFKC map,
- * and EchoMeBetter's identity-normalised, byte-fallback SentencePiece -- and
- * refuses to load a tokenizer.json that needs anything else.
+ * A tokenizer.json in any other format is refused when it is loaded.
  */
-import { AddedVocabulary } from './addedTokens';
 import { buildDecoder, type Decoder } from './decoders';
-import { buildNormalizer, type Normalizer } from './normalizers';
-import { buildPreTokenizer, type PreTokenizer } from './preTokenizers';
 import { UnigramModel } from './unigram';
-import { UnsupportedTokenizerError, type PostProcessorJson, type TokenizerJson } from './types';
+import { UnsupportedTokenizerError, type MetaspaceJson, type TokenizerJson } from './types';
 
-export interface EncodeOptions {
-  /** Apply the post-processor (e.g. append `</s>`). Default true, as in HuggingFace. */
-  readonly addSpecialTokens?: boolean;
-  /** Recognise special tokens written in the text. Default true; false for untrusted user text. */
-  readonly allowSpecialTokens?: boolean;
-}
-
-export interface DecodeOptions {
-  readonly skipSpecialTokens?: boolean;
+function metaspaceReplacement(json: TokenizerJson['pre_tokenizer']): string {
+  if (json?.type !== 'Metaspace') throw new UnsupportedTokenizerError('pre_tokenizer', String(json?.type ?? null));
+  const metaspace = json as MetaspaceJson;
+  const scheme = metaspace.prepend_scheme ?? (metaspace.add_prefix_space === false ? 'never' : 'always');
+  if (scheme !== 'never') throw new UnsupportedTokenizerError('pre_tokenizer', `Metaspace with prepend_scheme ${scheme}`);
+  if (metaspace.split !== false) throw new UnsupportedTokenizerError('pre_tokenizer', 'Metaspace with split');
+  return metaspace.replacement;
 }
 
 export class Tokenizer {
-  private readonly normalizer: Normalizer | null;
-  private readonly preTokenizer: PreTokenizer | null;
+  private readonly replacement: string;
   private readonly decoder: Decoder | null;
   private readonly model: UnigramModel;
-  private readonly added: AddedVocabulary;
-  private readonly postProcessor: PostProcessorJson | null;
 
   private constructor(json: TokenizerJson) {
     if (json.model?.type !== 'Unigram') throw new UnsupportedTokenizerError('model', String(json.model?.type));
-    if (json.post_processor && json.post_processor.type !== 'TemplateProcessing') {
-      throw new UnsupportedTokenizerError('post_processor', json.post_processor.type);
-    }
-    this.normalizer = buildNormalizer(json.normalizer);
-    this.preTokenizer = buildPreTokenizer(json.pre_tokenizer);
+    if (json.normalizer !== null) throw new UnsupportedTokenizerError('normalizer', json.normalizer.type);
+    if (json.post_processor !== null) throw new UnsupportedTokenizerError('post_processor', json.post_processor.type);
+    if ((json.added_tokens ?? []).length > 0) throw new UnsupportedTokenizerError('added_tokens', `${json.added_tokens!.length} tokens`);
+    this.replacement = metaspaceReplacement(json.pre_tokenizer);
     this.decoder = buildDecoder(json.decoder);
     this.model = new UnigramModel(json.model);
-    this.added = new AddedVocabulary(json.added_tokens ?? [], this.normalizer);
-    this.postProcessor = json.post_processor;
   }
 
   static fromJson(json: unknown): Tokenizer {
@@ -52,65 +43,21 @@ export class Tokenizer {
     return new Tokenizer(json as TokenizerJson);
   }
 
-  get vocabSize(): number {
-    return this.model.vocabSize;
-  }
-
-  /** The id of a vocabulary piece or added token, or undefined. */
+  /** The id of a vocabulary piece, or undefined. */
   tokenToId(token: string): number | undefined {
-    return this.added.idOf(token) ?? this.model.tokenToId(token);
+    return this.model.tokenToId(token);
   }
 
-  idToToken(id: number): string | undefined {
-    return this.added.contentOf(id) ?? this.model.idToToken(id);
+  encode(text: string): number[] {
+    return this.model.tokenize(text.replaceAll(' ', this.replacement));
   }
 
-  isSpecial(id: number): boolean {
-    return this.added.isSpecial(id);
-  }
-
-  /** Special added-token ids, `<unk>` excluded: unknown characters legitimately produce it. */
-  controlIds(): number[] {
-    return this.added.specialIds().filter((id) => id !== this.model.unkId);
-  }
-
-  encode(text: string, options: EncodeOptions = {}): number[] {
-    const { addSpecialTokens = true, allowSpecialTokens = true } = options;
-    const ids: number[] = [];
-    for (const split of this.added.extractAndNormalize(text, this.normalizer, allowSpecialTokens)) {
-      if (split.id !== undefined) {
-        ids.push(split.id);
-        continue;
-      }
-      const words = this.preTokenizer ? this.preTokenizer(split) : [split];
-      for (const word of words) ids.push(...this.model.tokenize(word.text));
-    }
-    return addSpecialTokens ? this.postProcess(ids) : ids;
-  }
-
-  decode(ids: readonly number[], options: DecodeOptions = {}): string {
-    const { skipSpecialTokens = false } = options;
+  decode(ids: readonly number[]): string {
     const tokens: string[] = [];
     for (const id of ids) {
-      if (skipSpecialTokens && this.added.isSpecial(id)) continue;
-      const token = this.idToToken(id);
+      const token = this.model.idToToken(id);
       if (token !== undefined) tokens.push(token);
     }
-    return this.decoder ? this.decoder(tokens).join('') : tokens.join(' ');
-  }
-
-  private postProcess(ids: number[]): number[] {
-    if (!this.postProcessor) return ids;
-    const out: number[] = [];
-    for (const piece of this.postProcessor.single) {
-      if ('Sequence' in piece) {
-        out.push(...ids);
-      } else {
-        const special = this.postProcessor.special_tokens[piece.SpecialToken.id];
-        if (!special) throw new Error(`post-processor names unknown special token ${piece.SpecialToken.id}`);
-        out.push(...special.ids);
-      }
-    }
-    return out;
+    return this.decoder ? this.decoder(tokens).join('') : tokens.join('');
   }
 }

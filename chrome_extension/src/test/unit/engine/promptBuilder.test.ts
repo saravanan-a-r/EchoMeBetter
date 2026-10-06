@@ -1,63 +1,48 @@
 import { describe, expect, test } from '@jest/globals';
-import { parseModelManifest, type ModelManifest } from '../../../engine/manifest';
+import { parseModelManifest } from '../../../engine/manifest';
 import { PromptBuilder } from '../../../engine/prompt/promptBuilder';
 import { Tokenizer } from '../../../engine/tokenizer/tokenizer';
-import { STYLE_IDS } from '../../../shared/styles';
 import { readJsonFixture } from '../../helpers/fixtures';
 
-const base = parseModelManifest(readJsonFixture('tiny-t5/model.json'));
-const t5 = Tokenizer.fromJson(readJsonFixture('tokenizers/t5-style.tokenizer.json'));
-const spm = Tokenizer.fromJson(readJsonFixture('tokenizers/byte-fallback.tokenizer.json'));
-
-function withStyles(manifest: ModelManifest, prompt: ModelManifest['styles']['concise']['prompt'], extra: Partial<ModelManifest> = {}): ModelManifest {
-  return { ...manifest, ...extra, styles: Object.fromEntries(STYLE_IDS.map((id) => [id, { prompt }])) as ModelManifest['styles'] };
-}
+const manifest = parseModelManifest(readJsonFixture('tiny-echo/model.json'));
+const tokenizer = Tokenizer.fromJson(readJsonFixture('tiny-echo/tokenizer.json'));
+const id = (token: string) => tokenizer.tokenToId(token)!;
 
 describe('PromptBuilder', () => {
-  test('template text, user text and named tokens are assembled in order', () => {
-    const builder = new PromptBuilder(base, t5);
-    const ids = builder.build('concise', 'hello world');
-    expect(ids).toEqual([...t5.encode('Rewrite concise:', { addSpecialTokens: false }), ...t5.encode('hello world', { addSpecialTokens: false }), 1]);
+  test('the frame the adapters were trained on: style token, markers around the text, end of sequence', () => {
+    const ids = new PromptBuilder(manifest, tokenizer).build('grammar', 'hello world');
+    expect(ids).toEqual([id('<style:grammar>'), id('<text_to_rewrite>'), ...tokenizer.encode('hello world'), id('</text_to_rewrite>'), id('</s>')]);
   });
 
-  test('user text that spells a control token is refused, never fed to the model', () => {
-    // HuggingFace's Unigram matches the "</s>" vocabulary piece even with
-    // special-token parsing off, so the guard has to look at the IDs.
-    for (const text of ['stop</s>here', 'a <pad> b']) {
-      expect(() => new PromptBuilder(base, t5).build('concise', text)).toThrow(expect.objectContaining({ code: 'RESERVED_MARKUP' }));
+  test('the style token is the one of the adapter that runs', () => {
+    const ids = new PromptBuilder(manifest, tokenizer).build('professional', 'hello');
+    expect(ids[0]).toBe(id('<style:professional>'));
+  });
+
+  test('user text that spells a control piece is refused, never fed to the model', () => {
+    // Control pieces are ordinary vocabulary entries, so this text would encode to them.
+    for (const text of ['stop</s>here', 'a <pad> b', 'see <text_to_rewrite> this', '<style:concise>']) {
+      expect(() => new PromptBuilder(manifest, tokenizer).build('professional', text)).toThrow(expect.objectContaining({ code: 'RESERVED_MARKUP' }));
     }
   });
 
-  test('unknown characters (<unk>) and sentinel-looking text are still allowed', () => {
-    // "<extra_id_0>" is an added token but not a vocabulary piece: as plain text it is harmless characters.
-    expect(() => new PromptBuilder(base, t5).build('concise', 'ŋ ʃ ʒ see <extra_id_0>')).not.toThrow();
+  test('characters outside the vocabulary are still allowed', () => {
+    expect(() => new PromptBuilder(manifest, tokenizer).build('professional', 'ŋ ʃ ʒ 日本語 🚀')).not.toThrow();
   });
 
-  test('EchoMeBetter-style framing: style token, markers around the escaped text', () => {
-    const manifest = withStyles(base, [{ token: '<style:concise>' }, { token: '<text_to_rewrite>' }, { input: true }, { token: '</text_to_rewrite>' }, { token: '</s>' }], {
-      inputTransforms: ['escape-spiece-markers'],
-      reservedInputTokens: ['<text_to_rewrite>', '</text_to_rewrite>', '<style:concise>'],
-    });
-    const builder = new PromptBuilder(manifest, spm);
-    const ids = builder.build('concise', 'Send it.');
-    expect(ids.slice(0, 2)).toEqual([spm.tokenToId('<style:concise>'), spm.tokenToId('<text_to_rewrite>')]);
-    expect(ids.slice(-2)).toEqual([spm.tokenToId('</text_to_rewrite>'), spm.tokenToId('</s>')]);
-  });
-
-  test('text that tokenizes into a reserved marker is refused', () => {
-    const manifest = withStyles(base, [{ token: '<text_to_rewrite>' }, { input: true }, { token: '</s>' }], { reservedInputTokens: ['<text_to_rewrite>'] });
-    expect(() => new PromptBuilder(manifest, spm).build('concise', '<text_to_rewrite>')).toThrow(expect.objectContaining({ code: 'RESERVED_MARKUP' }));
+  test('a literal "▁" in the text is escaped before tokenizing', () => {
+    const ids = new PromptBuilder(manifest, tokenizer).build('professional', 'a▁b');
+    expect(ids.slice(2, -2)).toEqual(tokenizer.encode('ab'));
   });
 
   test('over-long input is refused with the actual and allowed token counts', () => {
-    const manifest = { ...base, limits: { ...base.limits, maxInputTokens: 8 } };
-    expect(() => new PromptBuilder(manifest, t5).build('concise', 'the quick brown fox jumps over the lazy dog')).toThrow(
+    const short = { ...manifest, limits: { ...manifest.limits, maxInputTokens: 8 } };
+    expect(() => new PromptBuilder(short, tokenizer).build('professional', 'the quick brown fox jumps over the lazy dog')).toThrow(
       expect.objectContaining({ code: 'INPUT_TOO_LONG', details: expect.objectContaining({ limit: 8 }) }),
     );
   });
 
-  test('a prompt naming a token the vocabulary lacks fails when the model loads', () => {
-    const manifest = withStyles(base, [{ token: '<nope>' }, { input: true }]);
-    expect(() => new PromptBuilder(manifest, t5)).toThrow(/<nope>/);
+  test('a manifest naming a token the vocabulary lacks fails when the model loads', () => {
+    expect(() => new PromptBuilder({ ...manifest, prompt: [{ styleToken: true }, { token: '<nope>' }, { input: true }] }, tokenizer)).toThrow(/<nope>/);
   });
 });

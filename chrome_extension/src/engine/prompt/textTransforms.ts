@@ -55,18 +55,3 @@ export function applyInputTransforms(text: string, names: readonly TextTransform
 export function undoInputTransforms(text: string, names: readonly TextTransformName[]): string {
   return [...names].reverse().reduce((current, name) => TRANSFORMS[name].undo(current), text);
 }
-
-/** transformers' `clean_up_tokenization`, verbatim, for tokenizers that ask for it. */
-export function cleanUpTokenization(text: string): string {
-  return text
-    .replaceAll(' .', '.')
-    .replaceAll(' ?', '?')
-    .replaceAll(' !', '!')
-    .replaceAll(' ,', ',')
-    .replaceAll(" ' ", "'")
-    .replaceAll(" n't", "n't")
-    .replaceAll(" 'm", "'m")
-    .replaceAll(" 's", "'s")
-    .replaceAll(" 've", "'ve")
-    .replaceAll(" 're", "'re");
-}

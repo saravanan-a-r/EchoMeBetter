@@ -3,7 +3,9 @@
  * server does: 200 for a whole file, 206 for `Range: bytes=<start>-`, 404
  * for anything else. Knobs simulate the failures a real download meets.
  */
-import { readFixture } from './fixtures';
+import { readdirSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { FIXTURES, readFixture } from './fixtures';
 
 export const FIXTURE_URL = 'https://models.example.test/tiny/';
 
@@ -22,11 +24,13 @@ export interface ServedRequest {
   readonly cache: RequestCache | undefined;
 }
 
-/** A tiny test model (int8 by default), as the files a server would hold. */
-export function tinyModelFiles(fixture: 'tiny-t5-int8' | 'tiny-t5' = 'tiny-t5-int8'): Map<string, Uint8Array> {
-  return new Map(
-    ['model.json', 'encoder.onnx', 'decoder.onnx', 'tokenizer.json'].map((name) => [name, new Uint8Array(readFixture(`${fixture}/${name}`))]),
-  );
+/** A tiny test model (int8 by default) with its adapters, as the files a server would hold. */
+export function tinyModelFiles(fixture: 'tiny-echo-int8' | 'tiny-echo' = 'tiny-echo-int8'): Map<string, Uint8Array> {
+  const folder = join(FIXTURES, fixture);
+  const paths = readdirSync(folder, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name !== 'parity.json')
+    .map((entry) => relative(folder, join(entry.parentPath, entry.name)));
+  return new Map(paths.map((path) => [path, new Uint8Array(readFixture(`${fixture}/${path}`))]));
 }
 
 function abortError(): DOMException {

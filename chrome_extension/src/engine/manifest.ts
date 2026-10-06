@@ -1,29 +1,36 @@
 /**
  * `model.json`: everything model-specific, as data.
  *
- * The extension's code knows how to run *a* T5-family encoder-decoder that
- * honours the "t5-cross-kv/1" I/O contract (input/output tensor names and
- * shapes, see onnx/t5Runner.ts). Which checkpoint, how each style is
- * prompted, its special tokens and length limits all come from this file,
- * which ships next to the ONNX files. Replacing the stand-in Flan-T5 with
- * EchoMeBetter is a new model folder with a new manifest; no code changes.
+ * EchoMeBetter is a base model plus one LoRA adapter per writing style. The
+ * extension's code knows how to run a T5-family encoder-decoder that honours
+ * the "t5-cross-kv/1" I/O contract (see onnx/t5Runner.ts) with an adapter
+ * active. Which files make up the base and each style's adapter, the prompt
+ * frame, the special tokens and the length limits all come from this file,
+ * served next to the model files.
  *
- * The manifest is validated in full before anything is loaded, so a
- * mismatched or hand-edited model fails at load time with a precise message
- * instead of producing wrong text later.
+ * Adapters are keyed by style. A style without an adapter of its own (still
+ * in training) runs with `fallbackAdapter`, under that adapter's style token;
+ * a newly trained adapter is one more entry under `adapters`, no code changes.
+ *
+ * The manifest is validated in full before anything is downloaded or loaded,
+ * so a mismatched or hand-edited model fails with a precise message instead
+ * of producing wrong text later.
  */
-import { STYLE_IDS, type StyleId } from '../shared/styles';
+import type { AdapterSummary, ModelCatalog } from '../shared/modelInstall';
+import type { ModelSummary } from '../shared/status';
+import { isStyleId, type StyleId } from '../shared/styles';
 
-export const SUPPORTED_SCHEMA_VERSION = 1;
+export const SUPPORTED_SCHEMA_VERSION = 2;
 export const SUPPORTED_IO_CONTRACT = 't5-cross-kv/1';
 export const TEXT_TRANSFORMS = ['escape-spiece-markers'] as const;
 
 export type TextTransformName = (typeof TEXT_TRANSFORMS)[number];
 
-export type PromptSegment =
-  | { readonly text: string }
-  | { readonly token: string }
-  | { readonly input: true };
+/**
+ * The encoder input, one segment at a time: a vocabulary piece by name (frame
+ * markers, `</s>`), the active adapter's style token, or the user's text.
+ */
+export type PromptSegment = { readonly token: string } | { readonly styleToken: true } | { readonly input: true };
 
 export interface ModelFile {
   readonly path: string;
@@ -31,13 +38,18 @@ export interface ModelFile {
   readonly sha256: string;
 }
 
+export interface AdapterManifest {
+  /** The style marker the adapter was trained with. */
+  readonly styleToken: string;
+  /** One half per graph: each session rejects weights it does not have. */
+  readonly files: { readonly encoder: ModelFile; readonly decoder: ModelFile };
+}
+
 export interface ModelManifest {
   readonly schemaVersion: number;
   readonly ioContract: string;
   readonly id: string;
   readonly displayName: string;
-  readonly description: string;
-  readonly placeholder: boolean;
   readonly precision: string;
   readonly files: { readonly encoder: ModelFile; readonly decoder: ModelFile; readonly tokenizer: ModelFile };
   readonly architecture: {
@@ -49,10 +61,12 @@ export interface ModelManifest {
   readonly tokens: { readonly decoderStartId: number; readonly eosId: number; readonly padId: number };
   readonly limits: { readonly maxInputTokens: number; readonly maxNewTokens: number };
   readonly generation: { readonly repetitionPenalty: number; readonly noRepeatNgramSize: number };
-  readonly decode: { readonly cleanUpTokenizationSpaces: boolean };
   readonly inputTransforms: readonly TextTransformName[];
   readonly reservedInputTokens: readonly string[];
-  readonly styles: Readonly<Record<StyleId, { readonly prompt: readonly PromptSegment[] }>>;
+  readonly prompt: readonly PromptSegment[];
+  readonly adapters: Readonly<Partial<Record<StyleId, AdapterManifest>>>;
+  /** The adapter a style without one of its own runs with; null once every style has its own. */
+  readonly fallbackAdapter: StyleId | null;
 }
 
 export class ManifestError extends Error {
@@ -84,8 +98,8 @@ function integer(value: unknown, where: string, min: number): number {
 function file(value: unknown, where: string): ModelFile {
   const json = object(value, where);
   const path = string(json.path, `${where}.path`);
-  if (path.includes('..') || path.startsWith('/') || path.includes('://')) {
-    throw new ManifestError(`${where}.path must be a plain file name inside the model folder`);
+  if (path.split('/').includes('..') || path.startsWith('/') || path.includes('://')) {
+    throw new ManifestError(`${where}.path must be a relative path inside the model folder`);
   }
   // The hash is also the file's name in the extension's model storage.
   const sha256 = string(json.sha256, `${where}.sha256`);
@@ -93,19 +107,37 @@ function file(value: unknown, where: string): ModelFile {
   return { path, bytes: integer(json.bytes, `${where}.bytes`, 1), sha256 };
 }
 
-function prompt(value: unknown, where: string): PromptSegment[] {
-  if (!Array.isArray(value) || value.length === 0) throw new ManifestError(`${where} must be a non-empty array`);
+function prompt(value: unknown): PromptSegment[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ManifestError('prompt must be a non-empty array');
   const segments = value.map((raw, index): PromptSegment => {
-    const segment = object(raw, `${where}[${index}]`);
+    const segment = object(raw, `prompt[${index}]`);
     if (segment.input === true) return { input: true };
-    if (typeof segment.token === 'string') return { token: string(segment.token, `${where}[${index}].token`) };
-    if (typeof segment.text === 'string') return { text: string(segment.text, `${where}[${index}].text`) };
-    throw new ManifestError(`${where}[${index}] must be {"text"}, {"token"} or {"input": true}`);
+    if (segment.styleToken === true) return { styleToken: true };
+    if (typeof segment.token === 'string') return { token: string(segment.token, `prompt[${index}].token`) };
+    throw new ManifestError(`prompt[${index}] must be {"token"}, {"styleToken": true} or {"input": true}`);
   });
-  if (segments.filter((segment) => 'input' in segment).length !== 1) {
-    throw new ManifestError(`${where} must contain exactly one {"input": true} segment`);
+  for (const kind of ['input', 'styleToken'] as const) {
+    if (segments.filter((segment) => kind in segment).length !== 1) {
+      throw new ManifestError(`prompt must contain exactly one {"${kind}": true} segment`);
+    }
   }
   return segments;
+}
+
+function adapters(value: unknown): Partial<Record<StyleId, AdapterManifest>> {
+  const json = object(value, 'adapters');
+  const parsed: Partial<Record<StyleId, AdapterManifest>> = {};
+  for (const [id, raw] of Object.entries(json)) {
+    if (!isStyleId(id)) throw new ManifestError(`adapters.${id}: adapters are named after the style they are trained for`);
+    const adapter = object(raw, `adapters.${id}`);
+    const files = object(adapter.files, `adapters.${id}.files`);
+    parsed[id] = {
+      styleToken: string(adapter.styleToken, `adapters.${id}.styleToken`),
+      files: { encoder: file(files.encoder, `adapters.${id}.files.encoder`), decoder: file(files.decoder, `adapters.${id}.files.decoder`) },
+    };
+  }
+  if (Object.keys(parsed).length === 0) throw new ManifestError('adapters must name at least one adapter');
+  return parsed;
 }
 
 export function parseModelManifest(raw: unknown): ModelManifest {
@@ -122,8 +154,6 @@ export function parseModelManifest(raw: unknown): ModelManifest {
   const tokens = object(json.tokens, 'tokens');
   const limits = object(json.limits, 'limits');
   const generation = object(json.generation ?? {}, 'generation');
-  const decode = object(json.decode ?? {}, 'decode');
-  const styles = object(json.styles, 'styles');
 
   const inputTransforms = (json.inputTransforms ?? []) as unknown;
   if (!Array.isArray(inputTransforms) || !inputTransforms.every((name) => (TEXT_TRANSFORMS as readonly unknown[]).includes(name))) {
@@ -134,10 +164,10 @@ export function parseModelManifest(raw: unknown): ModelManifest {
     throw new ManifestError('reservedInputTokens must be a list of strings');
   }
 
-  const parsedStyles = {} as Record<StyleId, { prompt: PromptSegment[] }>;
-  for (const id of STYLE_IDS) {
-    if (!(id in styles)) throw new ManifestError(`styles.${id} is missing: the model must support every style the menu offers`);
-    parsedStyles[id] = { prompt: prompt(object(styles[id], `styles.${id}`).prompt, `styles.${id}.prompt`) };
+  const parsedAdapters = adapters(json.adapters);
+  const fallback = json.fallbackAdapter ?? null;
+  if (fallback !== null && !(isStyleId(fallback) && fallback in parsedAdapters)) {
+    throw new ManifestError(`fallbackAdapter ${String(fallback)} is not in adapters`);
   }
 
   const repetitionPenalty = generation.repetitionPenalty ?? 1;
@@ -150,8 +180,6 @@ export function parseModelManifest(raw: unknown): ModelManifest {
     ioContract: SUPPORTED_IO_CONTRACT,
     id: string(json.id, 'id'),
     displayName: string(json.displayName, 'displayName'),
-    description: typeof json.description === 'string' ? json.description : '',
-    placeholder: json.placeholder === true,
     precision: typeof json.precision === 'string' ? json.precision : 'unknown',
     files: {
       encoder: file(files.encoder, 'files.encoder'),
@@ -177,19 +205,52 @@ export function parseModelManifest(raw: unknown): ModelManifest {
       repetitionPenalty,
       noRepeatNgramSize: integer(generation.noRepeatNgramSize ?? 0, 'generation.noRepeatNgramSize', 0),
     },
-    decode: { cleanUpTokenizationSpaces: decode.cleanUpTokenizationSpaces === true },
     inputTransforms: inputTransforms as TextTransformName[],
     reservedInputTokens: reserved as string[],
-    styles: parsedStyles,
+    prompt: prompt(json.prompt),
+    adapters: parsedAdapters,
+    fallbackAdapter: fallback,
   };
 }
 
-/** Every file the model needs, smallest first. */
-export function modelFiles(manifest: ModelManifest): ModelFile[] {
+/** The base model's files, smallest first. */
+export function baseFiles(manifest: ModelManifest): ModelFile[] {
   const { encoder, decoder, tokenizer } = manifest.files;
   return [tokenizer, encoder, decoder];
 }
 
-export function totalModelBytes(manifest: ModelManifest): number {
-  return modelFiles(manifest).reduce((sum, file) => sum + file.bytes, 0);
+export function adapterFiles(adapter: AdapterManifest): ModelFile[] {
+  return [adapter.files.encoder, adapter.files.decoder];
+}
+
+export function bytesOf(files: readonly ModelFile[]): number {
+  return files.reduce((sum, file) => sum + file.bytes, 0);
+}
+
+/**
+ * Identifies the base weights. Adapters are trained against one base, so a
+ * manifest with a different base cannot add adapters to an installed one.
+ */
+export function baseFingerprint(manifest: ModelManifest): string {
+  return baseFiles(manifest)
+    .map((file) => file.sha256)
+    .join(':');
+}
+
+export function summarize(manifest: ModelManifest): ModelSummary {
+  return {
+    id: manifest.id,
+    displayName: manifest.displayName,
+    precision: manifest.precision,
+    sizeBytes: bytesOf(baseFiles(manifest)),
+  };
+}
+
+/** What the manifest offers, as the extension's pages show it. */
+export function catalogOf(manifest: ModelManifest): ModelCatalog {
+  const adapterList: AdapterSummary[] = [];
+  for (const [style, adapter] of Object.entries(manifest.adapters) as [StyleId, AdapterManifest][]) {
+    adapterList.push({ style, sizeBytes: bytesOf(adapterFiles(adapter)) });
+  }
+  return { base: baseFingerprint(manifest), model: summarize(manifest), adapters: adapterList, fallbackAdapter: manifest.fallbackAdapter };
 }

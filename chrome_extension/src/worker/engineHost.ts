@@ -1,6 +1,6 @@
 /**
- * The worker's state: one model, loaded on first need, and a strictly serial
- * queue of rewrite jobs.
+ * The worker's state: the base model, loaded on first need, and a strictly
+ * serial queue of rewrite jobs (each loads and releases its style's adapter).
  *
  * Serial on purpose: the model already uses several threads for one job, and
  * two concurrent jobs would only slow each other down while doubling memory.
@@ -9,28 +9,18 @@
  */
 import { EchoError, toErrorPayload } from '../shared/errors';
 import type { EngineEvent } from '../shared/messages';
-import type { ModelSummary } from '../shared/status';
 import type { StyleId } from '../shared/styles';
-import { totalModelBytes, type ModelManifest } from '../engine/manifest';
+import { summarize, type ModelManifest } from '../engine/manifest';
 import type { RewriteOptions, RewriteResult } from '../engine/rewriteEngine';
 
 export interface LoadedEngine {
+  /** The manifest the base was loaded from. */
   readonly manifest: ModelManifest;
   rewrite(style: StyleId, text: string, options?: RewriteOptions): Promise<RewriteResult>;
   release(): Promise<void>;
 }
 
 export type EngineLoader = (onProgress: (fraction: number) => void) => Promise<LoadedEngine>;
-
-export function summarize(manifest: ModelManifest): ModelSummary {
-  return {
-    id: manifest.id,
-    displayName: manifest.displayName,
-    placeholder: manifest.placeholder,
-    precision: manifest.precision,
-    sizeBytes: totalModelBytes(manifest),
-  };
-}
 
 export class EngineHost {
   private engine: LoadedEngine | null = null;

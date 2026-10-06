@@ -1,18 +1,20 @@
 /**
- * Download the model in the folder at `sourceUrl` into the ModelStore.
+ * Download model files from the folder at `sourceUrl` into the ModelStore.
  *
  *   1. model.json: validated in full; it names every file with its size and sha256
  *   2. enough free space for what is still missing, or a clear error
  *   3. each file, resuming whatever an earlier attempt left on disk (HTTP Range)
  *   4. each file checked against its sha256; a mismatch deletes it
- *   5. installed.json written last, then the files of any other model removed
+ *
+ * Which files to fetch (the base, adapters) and recording them as installed
+ * is the caller's part (modelLibrary.ts).
  *
  * Responses bypass the HTTP cache (`no-store`), or Chrome would keep a second
  * copy of every file there.
  */
 import { EchoError } from '../shared/errors';
-import { modelFiles, parseModelManifest, type ModelFile } from '../engine/manifest';
-import { ModelStore, type StoredModel } from './modelStore';
+import { parseModelManifest, type ModelFile, type ModelManifest } from '../engine/manifest';
+import type { ModelStore } from './modelStore';
 
 export interface DownloadProgress {
   readonly phase: 'fetching' | 'verifying';
@@ -160,17 +162,18 @@ async function fetchFile(
   }
 }
 
-async function download(store: ModelStore, sourceUrl: string, transport: DownloadTransport, options: DownloadOptions): Promise<StoredModel> {
-  const { signal } = options;
-  const rawManifest: unknown = await (await request(transport, new URL('model.json', sourceUrl), signal)).json();
-  let manifest;
+/** model.json from `sourceUrl`, validated. */
+export async function fetchManifest(sourceUrl: string, transport: DownloadTransport, signal: AbortSignal): Promise<ModelManifest> {
+  const raw: unknown = await (await request(transport, new URL('model.json', sourceUrl), signal)).json();
   try {
-    manifest = parseModelManifest(rawManifest);
+    return parseModelManifest(raw);
   } catch (error) {
     throw failed(error instanceof Error ? error.message : String(error));
   }
+}
 
-  const files = modelFiles(manifest);
+async function download(store: ModelStore, sourceUrl: string, files: readonly ModelFile[], transport: DownloadTransport, options: DownloadOptions): Promise<void> {
+  const { signal } = options;
   const total = files.reduce((sum, file) => sum + file.bytes, 0);
   // A file longer than declared is restarted by fetchFile, so it counts as nothing on disk.
   const onDisk = await Promise.all(
@@ -193,25 +196,28 @@ async function download(store: ModelStore, sourceUrl: string, transport: Downloa
       throw failed('checksum mismatch', { file: file.path });
     }
   }
-
-  await store.commit(sourceUrl, rawManifest);
-  await store.prune(ModelStore.namesOf(manifest));
-  return { sourceUrl, manifest };
 }
 
-export async function downloadModel(
+/** Fetch and verify `files` (listed in the model.json at `sourceUrl`). */
+export async function downloadFiles(
   store: ModelStore,
   sourceUrl: string,
+  files: readonly ModelFile[],
   transport: DownloadTransport,
   options: DownloadOptions,
-): Promise<StoredModel> {
+): Promise<void> {
   try {
-    return await download(store, sourceUrl, transport, options);
+    await download(store, sourceUrl, files, transport, options);
   } catch (error) {
-    if (options.signal.aborted) throw new EchoError('CANCELLED');
-    if (error instanceof EchoError) throw error;
-    if (error instanceof DOMException && error.name === 'QuotaExceededError') throw new EchoError('STORAGE_FULL');
-    // fetch rejects with a TypeError when the network or CORS fails.
-    throw failed(error instanceof Error ? error.message : String(error));
+    throw downloadError(error, options.signal);
   }
+}
+
+/** Any failure of a download, as the error the user is shown. */
+export function downloadError(error: unknown, signal: AbortSignal): EchoError {
+  if (signal.aborted) return new EchoError('CANCELLED');
+  if (error instanceof EchoError) return error;
+  if (error instanceof DOMException && error.name === 'QuotaExceededError') return new EchoError('STORAGE_FULL');
+  // fetch rejects with a TypeError when the network or CORS fails.
+  return failed(error instanceof Error ? error.message : String(error));
 }
