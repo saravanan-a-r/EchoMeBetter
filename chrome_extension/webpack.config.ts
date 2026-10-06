@@ -5,8 +5,10 @@
  *               the inference worker, as ES modules (MV3 runs a module service
  *               worker; the worker loads onnxruntime-web's WebAssembly glue
  *               with a dynamic import).
- *   foreground  the script injected into pages on demand. chrome.scripting
- *               injects classic scripts, so this one is a self-contained IIFE.
+ *   foreground  the script injected into pages on demand, and the small
+ *               shortcut listener registered on pages once the user allows it.
+ *               chrome.scripting injects classic scripts, so both are
+ *               self-contained IIFEs.
  *
  * Loaded through @babel/register (see babel.config.cjs).
  *
@@ -67,8 +69,8 @@ export default (_env: unknown, argv: { mode?: string }): Configuration[] => {
       publicPath: '/',
       filename: ({ chunk }) => (chunk?.name === 'background' ? 'background.js' : 'assets/[name].[contenthash:8].js'),
       chunkFilename: 'assets/[name].[contenthash:8].js',
-      // The foreground build writes foreground.js into the same folder after this one.
-      clean: { keep: /^foreground\.js/ },
+      // The foreground build writes foreground.js and shortcuts.js into the same folder after this one.
+      clean: { keep: /^(foreground|shortcuts)\.js/ },
     },
     resolve: {
       ...shared(production).resolve,
@@ -125,7 +127,7 @@ export default (_env: unknown, argv: { mode?: string }): Configuration[] => {
     name: 'foreground',
     dependencies: ['extension'],
     target: ['web', 'es2022'],
-    entry: { foreground: './src/foreground/index.ts' },
+    entry: { foreground: './src/foreground/index.ts', shortcuts: './src/foreground/shortcuts.ts' },
     output: { path: dist, filename: '[name].js', iife: true, clean: false },
     module: { rules: [scripts, inlineStylesheet] },
     optimization: { splitChunks: false, runtimeChunk: false },

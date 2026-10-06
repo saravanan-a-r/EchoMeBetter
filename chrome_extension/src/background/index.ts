@@ -4,17 +4,20 @@
  * exist when the worker starts).
  */
 import { toErrorPayload } from '../shared/errors';
-import { isOffscreenEventMessage, isUiRequest, JOB_PORT_NAME, type EngineEvent, type OffscreenCommand, type UiReply, type UiRequest } from '../shared/messages';
+import { isOffscreenEventMessage, isShortcutRequest, isUiRequest, JOB_PORT_NAME, type EngineEvent, type OffscreenCommand, type UiReply, type UiRequest } from '../shared/messages';
 import { modelFrom, readDownloadState, readInstalledModel, writeDownloadState, writeInstalledModel } from '../shared/modelInstall';
 import { MODEL_SOURCE_URL } from '../shared/modelSource';
-import { loadSettings } from '../shared/settings';
+import { loadSettings, parseSettings, SETTINGS_STORAGE_KEY } from '../shared/settings';
+import { platformFromOs, shortcutLabel } from '../shared/shortcuts';
+import type { StyleId } from '../shared/styles';
 import { writeStatus } from '../shared/statusStore';
 import { registerContextMenus } from './contextMenus';
 import { IDLE_ALARM, lastActivity, recordActivity, shouldUnload } from './idleUnloader';
 import { showInstallState } from './installBadge';
 import { JobRouter } from './jobRouter';
 import { OffscreenManager } from './offscreenManager';
-import { launchRewrite } from './rewriteLauncher';
+import { launchRewrite, launchStyle, type LauncherDeps } from './rewriteLauncher';
+import { shortcutsActive, syncShortcutScript } from './shortcutAccess';
 
 const WELCOME_PAGE = 'ui/welcome/welcome.html';
 
@@ -89,6 +92,43 @@ async function mirrorEngineEvent(event: EngineEvent): Promise<void> {
   }
 }
 
+const launcher: LauncherDeps = {
+  scripting: chrome.scripting,
+  tabs: chrome.tabs,
+  action: chrome.action,
+  extensionOrigin: chrome.runtime.getURL(''),
+  prepareEngine,
+  modelReady,
+  newJobId: () => crypto.randomUUID(),
+};
+
+async function shortcutsOn(): Promise<boolean> {
+  return shortcutsActive((await loadSettings()).shortcutsEnabled, chrome.permissions);
+}
+
+async function applyShortcuts(): Promise<void> {
+  const active = await shortcutsOn();
+  await syncShortcutScript(active, { scripting: chrome.scripting, permissions: chrome.permissions, tabs: chrome.tabs });
+  const platform = platformFromOs((await chrome.runtime.getPlatformInfo()).os);
+  await registerContextMenus(chrome.contextMenus, (style) => (active ? shortcutLabel(style, platform) : null));
+}
+
+// One at a time: rebuilding the menu while another rebuild runs would create duplicate ids.
+let shortcutsApplied: Promise<void> = Promise.resolve();
+function refreshShortcuts(): void {
+  shortcutsApplied = shortcutsApplied.then(applyShortcuts).catch((error: unknown) => console.error('EchoMeBetter: could not update shortcuts', error));
+}
+
+async function handleShortcut(style: StyleId, sender: chrome.runtime.MessageSender): Promise<void> {
+  const tab = sender.tab;
+  if (!tab) return;
+  // The welcome page listens on its own; websites only while shortcuts are on.
+  const ownPage = tab.url?.startsWith(launcher.extensionOrigin) ?? false;
+  if (!ownPage && !(await shortcutsOn())) return;
+  if (ownPage && !(await loadSettings()).shortcutsEnabled) return;
+  await launchStyle(style, sender.frameId ?? 0, tab, launcher);
+}
+
 const router = new JobRouter({
   ensureEngineHost,
   sendToEngine: (command) => offscreen.send(command),
@@ -96,7 +136,7 @@ const router = new JobRouter({
 });
 
 chrome.runtime.onInstalled.addListener((details) => {
-  void registerContextMenus();
+  refreshShortcuts();
   void refreshInstallBadge();
   if (details.reason === chrome.runtime.OnInstalledReason.INSTALL) {
     void chrome.tabs.create({ url: chrome.runtime.getURL(WELCOME_PAGE) });
@@ -107,25 +147,29 @@ chrome.runtime.onInstalled.addListener((details) => {
 chrome.runtime.onStartup.addListener(() => void refreshInstallBadge());
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  void launchRewrite(info, tab, {
-    scripting: chrome.scripting,
-    tabs: chrome.tabs,
-    action: chrome.action,
-    extensionOrigin: chrome.runtime.getURL(''),
-    prepareEngine,
-    modelReady,
-    newJobId: () => crypto.randomUUID(),
-  });
+  void launchRewrite(info, tab, launcher);
+});
+
+chrome.permissions.onAdded.addListener(refreshShortcuts);
+chrome.permissions.onRemoved.addListener(refreshShortcuts);
+chrome.storage.onChanged.addListener((changes, area) => {
+  const change = changes[SETTINGS_STORAGE_KEY];
+  if (area !== 'local' || !change) return;
+  if (parseSettings(change.oldValue).shortcutsEnabled !== parseSettings(change.newValue).shortcutsEnabled) refreshShortcuts();
 });
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === JOB_PORT_NAME) router.handlePort(port);
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (isOffscreenEventMessage(message)) {
     router.handleEngineEvent(message.event);
     void mirrorEngineEvent(message.event);
+    return undefined;
+  }
+  if (isShortcutRequest(message)) {
+    void handleShortcut(message.style, sender);
     return undefined;
   }
   if (isUiRequest(message)) sendResponse(handleUiRequest(message));
