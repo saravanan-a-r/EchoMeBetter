@@ -21,3 +21,9 @@ export function formatDuration(ms: number): string {
   const seconds = Math.round((ms - minutes * 60_000) / 1000);
   return seconds === 0 ? `${minutes} min` : `${minutes} min ${seconds} s`;
 }
+
+/** "A", "A and B", "A, B and C". */
+export function formatList(items: readonly string[]): string {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items.at(-1)!}`;
+}

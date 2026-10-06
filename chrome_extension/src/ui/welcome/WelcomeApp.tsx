@@ -1,13 +1,22 @@
+import { canRewrite } from '../../shared/modelInstall';
 import { shortcutLabel, type KeyPlatform } from '../../shared/shortcuts';
 import type { EngineStatus } from '../../shared/status';
+import type { StyleId } from '../../shared/styles';
 import { Logo, Wordmark } from '../brand/Logo';
 import { ContextMenuPreview } from '../components/ContextMenuPreview';
-import { ModelDownloadCard } from '../components/ModelDownloadCard';
+import { ModelCard } from '../components/ModelCard';
 import { ShortcutAccessCard } from '../components/ShortcutAccessCard';
-import { StatusCard } from '../components/StatusCard';
 import { StyleList } from '../components/StyleList';
 import { requestWarmUp, useEngineStatus } from '../hooks/useEngineStatus';
-import { requestCancelDownload, requestDownload, useModelAvailability, type ModelAvailability } from '../hooks/useModel';
+import {
+  modelSetup,
+  requestCancelDownload,
+  requestDownload,
+  useCatalog,
+  useModelAvailability,
+  type CatalogState,
+  type ModelAvailability,
+} from '../hooks/useModel';
 import { useSettings } from '../hooks/useSettings';
 import { PLATFORM, requestSiteAccess, shortcutAvailability, useSiteAccess, type ShortcutAvailability } from '../hooks/useShortcuts';
 
@@ -24,16 +33,19 @@ const JOURNEY = [
 export interface WelcomeViewProps {
   readonly status: EngineStatus;
   readonly model: ModelAvailability;
+  readonly catalog: CatalogState;
   readonly onLoadModel: () => void;
-  readonly onDownloadModel: () => void;
+  readonly onDownload: (adapters: StyleId[]) => void;
   readonly onCancelDownload: () => void;
+  readonly onRetryCatalog: () => void;
   readonly platform: KeyPlatform;
   readonly shortcuts: ShortcutAvailability;
   readonly onAllowSiteAccess: () => void;
 }
 
-export function WelcomeView({ status, model, onLoadModel, onDownloadModel, onCancelDownload, platform, shortcuts, onAllowSiteAccess }: WelcomeViewProps) {
-  const needsDownload = model.known && !model.installed;
+export function WelcomeView(props: WelcomeViewProps) {
+  const { model, platform, shortcuts, onAllowSiteAccess } = props;
+  const setup = modelSetup(model.installed, props.catalog);
   // This page listens for shortcuts itself, so they work here even before websites are allowed.
   const showKeys = shortcuts === 'on' || shortcuts === 'needs-access' ? platform : undefined;
   return (
@@ -78,9 +90,11 @@ export function WelcomeView({ status, model, onLoadModel, onDownloadModel, onCan
             <div>
               <h2 id="try-title" className="_echo_$_text-2xl _echo_$_font-bold">Try it here</h2>
               <p className="_echo_$_mt-1 _echo_$_text-sm _echo_$_text-ink-500 dark:_echo_$_text-ink-300">
-                {needsDownload
-                  ? 'Download the model, then select text below, right-click and choose EchoMeBetter.'
-                  : 'Select some of the text below, right-click, and choose EchoMeBetter.'}
+                {!model.known || canRewrite(model.installed)
+                  ? 'Select some of the text below, right-click, and choose EchoMeBetter.'
+                  : model.installed
+                    ? 'Download a style, then select text below, right-click and choose EchoMeBetter.'
+                    : 'Download the model, then select text below, right-click and choose EchoMeBetter.'}
               </p>
               {showKeys ? (
                 <p className="_echo_$_mt-1 _echo_$_text-sm _echo_$_text-ink-500 dark:_echo_$_text-ink-300">
@@ -89,11 +103,15 @@ export function WelcomeView({ status, model, onLoadModel, onDownloadModel, onCan
               ) : null}
             </div>
             <div className="_echo_$_w-full sm:_echo_$_w-80">
-              {!model.known ? null : model.installed ? (
-                <StatusCard status={status} onLoad={onLoadModel} />
-              ) : (
-                <ModelDownloadCard download={model.download} onDownload={onDownloadModel} onCancel={onCancelDownload} />
-              )}
+              <ModelCard
+                status={props.status}
+                model={model}
+                catalog={props.catalog}
+                onLoadModel={props.onLoadModel}
+                onDownload={props.onDownload}
+                onCancelDownload={props.onCancelDownload}
+                onRetryCatalog={props.onRetryCatalog}
+              />
             </div>
           </div>
           {shortcuts === 'needs-access' ? (
@@ -116,7 +134,13 @@ export function WelcomeView({ status, model, onLoadModel, onDownloadModel, onCan
         <section aria-labelledby="styles-title">
           <h2 id="styles-title" className="_echo_$_text-2xl _echo_$_font-bold">Five styles, one right-click away</h2>
           <div className="_echo_$_mt-6">
-            <StyleList columns={3} shortcuts={showKeys} />
+            <StyleList
+              columns={3}
+              shortcuts={showKeys}
+              readiness={setup.readiness}
+              onDownload={(adapter) => props.onDownload([adapter])}
+              busy={model.download.state === 'downloading'}
+            />
           </div>
         </section>
 
@@ -144,6 +168,7 @@ export function WelcomeView({ status, model, onLoadModel, onDownloadModel, onCan
 export function WelcomeApp() {
   const status = useEngineStatus();
   const model = useModelAvailability();
+  const [catalog, retryCatalog] = useCatalog();
   const [settings, , settingsLoaded] = useSettings();
   const siteAccess = useSiteAccess();
   return (
@@ -153,9 +178,11 @@ export function WelcomeApp() {
       onAllowSiteAccess={requestSiteAccess}
       status={status}
       model={model}
+      catalog={catalog}
       onLoadModel={requestWarmUp}
-      onDownloadModel={requestDownload}
+      onDownload={requestDownload}
       onCancelDownload={requestCancelDownload}
+      onRetryCatalog={retryCatalog}
     />
   );
 }

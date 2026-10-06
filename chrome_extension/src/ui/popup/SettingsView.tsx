@@ -8,6 +8,7 @@ import type { KeyPlatform } from '../../shared/shortcuts';
 import { STYLES } from '../../shared/styles';
 import { ShortcutAccessCard } from '../components/ShortcutAccessCard';
 import { ShortcutKeys } from '../components/ShortcutKeys';
+import { StorageSettings, type StorageSettingsProps } from '../components/StorageSettings';
 import { Switch } from '../components/Switch';
 import type { ShortcutAvailability } from '../hooks/useShortcuts';
 
@@ -16,7 +17,7 @@ const KEEP_LABELS: Record<KeepLoadedMinutes, string> = { 5: '5 minutes', 15: '15
 export const SHORTCUT_NOTE =
   'Shortcuts only act when text is selected in a text box; every other key press goes to the website as usual. If one clashes with a site you use, turn shortcuts off here.';
 
-export interface SettingsViewProps {
+export interface SettingsViewProps extends StorageSettingsProps {
   readonly platform: KeyPlatform;
   readonly shortcuts: ShortcutAvailability;
   readonly onShortcutsChange: (on: boolean) => void;
@@ -112,6 +113,10 @@ export function SettingsView(props: SettingsViewProps) {
               ))}
             </select>
           </div>
+        </Section>
+
+        <Section id="storage-title" title="Storage">
+          <StorageSettings installed={props.installed} onRemoveModel={props.onRemoveModel} onRemoveAdapter={props.onRemoveAdapter} />
         </Section>
       </div>
     </main>

@@ -51,14 +51,6 @@ export function StatusCard({ status, onLoad }: { status: EngineStatus; onLoad: (
             <span aria-hidden="true" className={`_echo_$_h-2 _echo_$_w-2 _echo_$_rounded-full ${view.dot}`} />
           )}
           <span className="_echo_$_text-sm _echo_$_font-semibold _echo_$_text-ink-900 dark:_echo_$_text-white">{view.label}</span>
-          {status.state === 'ready' && status.model.placeholder ? (
-            <span
-              title="A general-purpose stand-in until the EchoMeBetter model ships"
-              className="_echo_$_rounded-full _echo_$_bg-echo-50 _echo_$_px-2 _echo_$_py-0.5 _echo_$_text-[11px] _echo_$_font-medium _echo_$_text-echo-700 dark:_echo_$_bg-echo-950 dark:_echo_$_text-echo-200"
-            >
-              Preview model
-            </span>
-          ) : null}
         </div>
         {view.action ? (
           <button

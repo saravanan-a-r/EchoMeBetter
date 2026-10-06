@@ -3,9 +3,9 @@
  *
  * Spawned by the offscreen document, so inference never runs on any page's
  * thread, nor on the offscreen document's own. It also owns the model's
- * files: downloading, reading and removing them needs the synchronous file
- * handles only a dedicated worker has. Messages in are WorkerRequest;
- * messages out are EngineEvent.
+ * files (the base and the style adapters): downloading, reading and removing
+ * them needs the synchronous file handles only a dedicated worker has.
+ * Messages in are WorkerRequest; messages out are EngineEvent.
  */
 import * as ort from 'onnxruntime-web/wasm';
 import type { EngineEvent, WorkerConfig, WorkerRequest } from '../shared/messages';
@@ -27,8 +27,7 @@ let library: ModelLibrary | null = null;
 
 const host = new EngineHost(async (onProgress) => {
   if (!config || !library) throw new Error('inference worker used before it was configured');
-  const { model, store } = await library.require();
-  return loadEngine(ort, config, model, store, onProgress);
+  return loadEngine(ort, config, library, onProgress);
 }, emit);
 
 function configure(next: WorkerConfig): void {
@@ -65,10 +64,16 @@ scope.addEventListener('message', ({ data }) => {
       host.cancel(data.jobId);
       break;
     case 'download':
-      void library?.startDownload();
+      void library?.startDownload(data.adapters);
       break;
     case 'cancel-download':
       library?.cancelDownload();
+      break;
+    case 'remove-adapter':
+      library?.removeAdapter(data.adapter).catch((error: unknown) => {
+        console.error('EchoMeBetter: could not remove the style', error);
+        void library?.inspect();
+      });
       break;
     case 'remove-model':
       library?.remove().catch((error: unknown) => {

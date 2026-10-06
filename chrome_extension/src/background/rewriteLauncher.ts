@@ -10,8 +10,9 @@
  * 3. Tell the frame to start the job; from there the page owns the UI and
  *    talks to the service worker over its job port.
  *
- * Before any of that costs anything, a model that has not been downloaded
- * yet is reported in the page instead (pointing at the toolbar popup).
+ * Before any of that costs anything, a style that cannot run yet (the model
+ * or its adapter is not downloaded) is reported in the page instead,
+ * pointing at the toolbar popup.
  *
  * The context-menu click grants `activeTab`, which is what allows the
  * injection without any host permissions; a shortcut only fires where the
@@ -32,8 +33,8 @@ export interface LauncherDeps {
   /** URL prefix of this extension's own pages, which load the foreground themselves. */
   readonly extensionOrigin: string;
   readonly prepareEngine: () => void;
-  /** Whether the model is downloaded, as far as the service worker knows. */
-  readonly modelReady: () => Promise<boolean>;
+  /** Why the style cannot run yet (model or adapter not downloaded), as far as the service worker knows; null when it can. */
+  readonly checkStyle: (style: StyleId) => Promise<ErrorPayload | null>;
   readonly newJobId: () => string;
 }
 
@@ -84,9 +85,10 @@ export async function launchStyle(style: StyleId, frameId: number, tab: chrome.t
     }
   }
 
-  if (!(await deps.modelReady())) {
+  const problem = await deps.checkStyle(style);
+  if (problem) {
     try {
-      await deps.tabs.sendMessage(tabId, { kind: 'echo/notice', error: { code: 'MODEL_NOT_DOWNLOADED' } }, { frameId });
+      await deps.tabs.sendMessage(tabId, { kind: 'echo/notice', error: problem }, { frameId });
     } catch {
       await flagUnreachable(deps, tabId);
     }
