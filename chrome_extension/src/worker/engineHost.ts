@@ -6,7 +6,11 @@
  * two concurrent jobs would only slow each other down while doubling memory.
  * A job can be cancelled while queued (it never starts) or while running
  * (the decoding loop stops at its next step).
+ *
+ * An engine whose GPU failed mid-rewrite can't run again: it is dropped, and
+ * the job runs once more on a freshly loaded one.
  */
+import type { RunningOn } from '../shared/compute';
 import { EchoError, toErrorPayload } from '../shared/errors';
 import type { EngineEvent } from '../shared/messages';
 import type { StyleId } from '../shared/styles';
@@ -16,8 +20,17 @@ import type { RewriteOptions, RewriteResult } from '../engine/rewriteEngine';
 export interface LoadedEngine {
   /** The manifest the base was loaded from. */
   readonly manifest: ModelManifest;
+  readonly runningOn: RunningOn;
   rewrite(style: StyleId, text: string, options?: RewriteOptions): Promise<RewriteResult>;
   release(): Promise<void>;
+}
+
+/** Thrown by an engine that must not run again; the host loads a new one and runs the job once more. */
+export class EngineBrokenError extends Error {
+  constructor(readonly reason: unknown) {
+    super(reason instanceof Error ? reason.message : String(reason));
+    this.name = 'EngineBrokenError';
+  }
 }
 
 export type EngineLoader = (onProgress: (fraction: number) => void) => Promise<LoadedEngine>;
@@ -52,7 +65,7 @@ export class EngineHost {
       }).then(
         (engine) => {
           this.engine = engine;
-          this.emit({ type: 'status', status: { state: 'ready', model: summarize(engine.manifest) } });
+          this.emit({ type: 'status', status: { state: 'ready', model: summarize(engine.manifest), runningOn: engine.runningOn } });
           return engine;
         },
         (error: unknown) => {
@@ -109,25 +122,49 @@ export class EngineHost {
 
   private async run(jobId: string, style: StyleId, text: string, signal: AbortSignal): Promise<void> {
     try {
-      if (signal.aborted) throw new EchoError('CANCELLED');
-      let engine = this.engine;
-      if (!engine) {
-        this.waitingForModel.add(jobId);
-        this.emit({ type: 'job-phase', jobId, phase: 'loading-model', progress: 0 });
-        try {
-          engine = await this.ensureEngine();
-        } finally {
-          this.waitingForModel.delete(jobId);
-        }
+      let result: RewriteResult;
+      try {
+        result = await this.attempt(jobId, style, text, signal);
+      } catch (error) {
+        if (!(error instanceof EngineBrokenError)) throw error;
+        result = await this.attempt(jobId, style, text, signal);
       }
-      if (signal.aborted) throw new EchoError('CANCELLED');
-      this.emit({ type: 'job-phase', jobId, phase: 'rewriting' });
-      const result = await engine.rewrite(style, text, { signal });
       this.emit({ type: 'job-done', jobId, text: result.text });
     } catch (error) {
-      this.emit({ type: 'job-failed', jobId, error: toErrorPayload(error, 'INFERENCE_FAILED') });
+      this.emit({ type: 'job-failed', jobId, error: toErrorPayload(error instanceof EngineBrokenError ? error.reason : error, 'INFERENCE_FAILED') });
     } finally {
       this.controllers.delete(jobId);
     }
+  }
+
+  private async attempt(jobId: string, style: StyleId, text: string, signal: AbortSignal): Promise<RewriteResult> {
+    if (signal.aborted) throw new EchoError('CANCELLED');
+    let engine = this.engine;
+    if (!engine) {
+      this.waitingForModel.add(jobId);
+      this.emit({ type: 'job-phase', jobId, phase: 'loading-model', progress: 0 });
+      try {
+        engine = await this.ensureEngine();
+      } finally {
+        this.waitingForModel.delete(jobId);
+      }
+    }
+    if (signal.aborted) throw new EchoError('CANCELLED');
+    this.emit({ type: 'job-phase', jobId, phase: 'rewriting' });
+    try {
+      return await engine.rewrite(style, text, { signal });
+    } catch (error) {
+      if (error instanceof EngineBrokenError) this.discard(engine);
+      throw error;
+    }
+  }
+
+  /** Forget a broken engine; the next job loads a new one. Releasing it is not waited on: it must not hold the job up. */
+  private discard(engine: LoadedEngine): void {
+    if (this.engine === engine) {
+      this.engine = null;
+      this.loading = null;
+    }
+    engine.release().catch(() => undefined);
   }
 }

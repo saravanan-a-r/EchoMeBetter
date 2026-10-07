@@ -5,13 +5,16 @@
  * thread, nor on the offscreen document's own. It also owns the model's
  * files (the base and the style adapters): downloading, reading and removing
  * them needs the synchronous file handles only a dedicated worker has.
+ * onnxruntime-web is imported on the first model load, in the build the
+ * compute settings call for (see inferenceBackend.ts).
  * Messages in are WorkerRequest; messages out are EngineEvent.
  */
-import * as ort from 'onnxruntime-web/wasm';
+import type { GpuLike } from '../shared/compute';
 import type { EngineEvent, WorkerConfig, WorkerRequest } from '../shared/messages';
-import { EngineHost } from './engineHost';
+import { EngineHost, type EngineLoader } from './engineHost';
+import { InferenceBackend, type OrtBuild, type OrtModule } from './inferenceBackend';
 import { ModelLibrary } from './modelLibrary';
-import { loadEngine } from './modelLoader';
+import { engineLoader } from './modelLoader';
 import { sha256Hex } from './modelDownloader';
 import { ModelStore, type DirectoryHandleLike } from './modelStore';
 
@@ -22,17 +25,18 @@ interface WorkerScope {
 
 const scope = globalThis as unknown as WorkerScope;
 const emit = (event: EngineEvent) => scope.postMessage(event);
-let config: WorkerConfig | null = null;
 let library: ModelLibrary | null = null;
+let load: EngineLoader | null = null;
 
-const host = new EngineHost(async (onProgress) => {
-  if (!config || !library) throw new Error('inference worker used before it was configured');
-  return loadEngine(ort, config, library, onProgress);
+const importOrt = (build: OrtBuild): Promise<OrtModule> => (build === 'webgpu' ? import('onnxruntime-web/webgpu') : import('onnxruntime-web/wasm'));
+
+const host = new EngineHost((onProgress) => {
+  if (!load) throw new Error('inference worker used before it was configured');
+  return load(onProgress);
 }, emit);
 
-function configure(next: WorkerConfig): void {
-  config = next;
-  library = new ModelLibrary(next.modelSourceUrl, {
+function configure(config: WorkerConfig): void {
+  library = new ModelLibrary(config.modelSourceUrl, {
     openStore: async () => ModelStore.open((await navigator.storage.getDirectory()) as unknown as DirectoryHandleLike),
     transport: {
       fetch: (url, init) => fetch(url, init),
@@ -43,6 +47,14 @@ function configure(next: WorkerConfig): void {
     engine: host,
     emit,
   });
+  const backendHost = {
+    gpu: (navigator as { gpu?: GpuLike }).gpu,
+    hardwareConcurrency: navigator.hardwareConcurrency,
+    crossOriginIsolated: globalThis.crossOriginIsolated,
+    wasmBaseUrl: config.wasmBaseUrl,
+    importOrt,
+  };
+  load = engineLoader(() => InferenceBackend.start(config.compute, backendHost), library, (problem) => emit({ type: 'gpu-problem', problem }));
   library.inspect().catch((error: unknown) => {
     console.error('EchoMeBetter: could not read the model storage', error);
     emit({ type: 'installed', installed: null });

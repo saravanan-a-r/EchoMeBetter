@@ -1,5 +1,6 @@
 import { describe, expect, jest, test } from '@jest/globals';
-import { chooseThreadCount, startBridge, type RuntimeLike, type WorkerLike } from '../../../offscreen/bridge';
+import { startBridge, type RuntimeLike, type WorkerLike } from '../../../offscreen/bridge';
+import { DEFAULT_COMPUTE } from '../../../shared/compute';
 import type { EngineEvent, OffscreenEventMessage, WorkerRequest } from '../../../shared/messages';
 
 function harness() {
@@ -20,7 +21,7 @@ function harness() {
     onMessage: { addListener: (listener) => (runtimeListener = listener) },
   };
   const storage = { persist: jest.fn(async () => true) };
-  startBridge(worker, runtime, { modelSourceUrl: 'https://models.example.test/m/', wasmBaseUrl: 'ext://ort/', threads: 2 }, storage);
+  startBridge(worker, runtime, { modelSourceUrl: 'https://models.example.test/m/', wasmBaseUrl: 'ext://ort/' }, storage);
   const send = (message: unknown) => {
     const replies: unknown[] = [];
     runtimeListener(message, {}, (reply) => replies.push(reply));
@@ -30,17 +31,28 @@ function harness() {
   return { toWorker, toBackground, send, emit, workerListeners, storage };
 }
 
+const GPU_START = { target: 'offscreen', kind: 'engine/start', compute: DEFAULT_COMPUTE } as const;
+
+/** A bridge whose worker the service worker has started. */
+function started() {
+  const bridge = harness();
+  bridge.send(GPU_START);
+  return bridge;
+}
+
 describe('offscreen bridge', () => {
-  test('configures the worker first', () => {
-    expect(harness().toWorker[0]).toEqual({
-      type: 'configure',
-      config: { modelSourceUrl: 'https://models.example.test/m/', wasmBaseUrl: 'ext://ort/', threads: 2 },
-    });
+  test('configures the worker when the service worker starts it, once, with the compute settings it sends', () => {
+    const { toWorker, send } = harness();
+    expect(toWorker).toEqual([]);
+    expect(send(GPU_START)).toEqual([{ ok: true }]);
+    send({ ...GPU_START, compute: { ...DEFAULT_COMPUTE, processor: 'cpu' } });
+    expect(toWorker).toEqual([
+      { type: 'configure', config: { modelSourceUrl: 'https://models.example.test/m/', wasmBaseUrl: 'ext://ort/', compute: DEFAULT_COMPUTE } },
+    ]);
   });
 
-  test('relays service-worker commands to the worker and answers pings', () => {
-    const { send, toWorker } = harness();
-    expect(send({ target: 'offscreen', kind: 'engine/ping' })).toEqual([{ ok: true }]);
+  test('relays service-worker commands to the worker', () => {
+    const { send, toWorker } = started();
     send({ target: 'offscreen', kind: 'engine/rewrite', jobId: 'j', style: 'concise', text: 'hi' });
     send({ target: 'offscreen', kind: 'engine/cancel', jobId: 'j' });
     expect(toWorker.slice(1)).toEqual([
@@ -50,7 +62,7 @@ describe('offscreen bridge', () => {
   });
 
   test('relays model commands, asking for persistent storage before a download', async () => {
-    const { send, toWorker, storage } = harness();
+    const { send, toWorker, storage } = started();
     let grant!: (granted: boolean) => void;
     storage.persist.mockImplementationOnce(() => new Promise<boolean>((resolve) => (grant = resolve)));
     send({ target: 'offscreen', kind: 'model/download' });
@@ -66,7 +78,7 @@ describe('offscreen bridge', () => {
   });
 
   test('a refused persistence request does not stop the download', async () => {
-    const { send, toWorker, storage } = harness();
+    const { send, toWorker, storage } = started();
     storage.persist.mockRejectedValueOnce(new Error('not allowed'));
     send({ target: 'offscreen', kind: 'model/download' });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -74,7 +86,7 @@ describe('offscreen bridge', () => {
   });
 
   test('ignores messages meant for other contexts', () => {
-    const { send, toWorker } = harness();
+    const { send, toWorker } = started();
     expect(send({ kind: 'ui/warm-up' })).toEqual([]);
     expect(toWorker).toHaveLength(1);
   });
@@ -88,14 +100,4 @@ describe('offscreen bridge', () => {
       { target: 'background', kind: 'engine/event', event: { type: 'status', status: { state: 'error', message: 'boom' } } },
     ]);
   });
-});
-
-test.each([
-  [8, true, 4],
-  [4, true, 2],
-  [1, true, 1],
-  [16, true, 4],
-  [8, false, 1],
-])('chooseThreadCount(%i cores, isolated=%s) = %i', (cores, isolated, threads) => {
-  expect(chooseThreadCount(cores, isolated)).toBe(threads);
 });

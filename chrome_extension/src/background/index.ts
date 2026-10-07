@@ -3,6 +3,7 @@
  * synchronously at top level (MV3 only delivers events to listeners that
  * exist when the worker starts).
  */
+import { computeToRun, GPU_PROBLEM_STORAGE_KEY, parseGpuProblem, readGpuProblem, sameCompute, writeGpuProblem, type ComputeSettings } from '../shared/compute';
 import { toErrorPayload } from '../shared/errors';
 import { isOffscreenEventMessage, isShortcutRequest, isUiRequest, JOB_PORT_NAME, type EngineEvent, type OffscreenCommand, type UiReply, type UiRequest } from '../shared/messages';
 import { modelFrom, readDownloadState, readInstalledModel, styleProblem, writeDownloadState, writeInstalledModel } from '../shared/modelInstall';
@@ -10,8 +11,9 @@ import { MODEL_SOURCE_URL } from '../shared/modelSource';
 import { loadSettings, parseSettings, SETTINGS_STORAGE_KEY } from '../shared/settings';
 import { platformFromOs, shortcutLabel } from '../shared/shortcuts';
 import type { StyleId } from '../shared/styles';
-import { writeStatus } from '../shared/statusStore';
+import { readStatus, writeStatus } from '../shared/statusStore';
 import { registerContextMenus } from './contextMenus';
+import { EngineRestarter, readEngineCompute, recordEngineCompute } from './engineRestart';
 import { IDLE_ALARM, lastActivity, recordActivity, shouldUnload } from './idleUnloader';
 import { showInstallState } from './installBadge';
 import { JobRouter } from './jobRouter';
@@ -21,7 +23,15 @@ import { shortcutsActive, syncShortcutScript } from './shortcutAccess';
 
 const WELCOME_PAGE = 'ui/welcome/welcome.html';
 
-const offscreen = new OffscreenManager();
+async function computeToStart(): Promise<ComputeSettings> {
+  return computeToRun(await loadSettings(), await readGpuProblem());
+}
+
+const offscreen = new OffscreenManager(async () => {
+  const compute = await computeToStart();
+  await recordEngineCompute(compute);
+  return compute;
+});
 
 async function ensureEngineHost(): Promise<void> {
   await recordActivity();
@@ -81,6 +91,25 @@ function handleUiRequest(request: UiRequest): UiReply {
   }
 }
 
+/** Close the engine host to apply new compute settings, and load the model again if it was loaded. */
+async function restartEngineHost(): Promise<boolean> {
+  const { state } = await readStatus();
+  // Checked right before closing, nothing awaited in between: a job that arrives later waits for the new document.
+  if (router.activeJobCount > 0) return false;
+  await offscreen.close();
+  await writeStatus({ state: 'unloaded' });
+  if (state === 'ready' || state === 'loading') prepareEngine();
+  return true;
+}
+
+const restarter = new EngineRestarter({
+  storage: chrome.storage.session,
+  wanted: computeToStart,
+  hostRunning: () => offscreen.exists(),
+  busy: async () => router.activeJobCount > 0 || (await readDownloadState()).state === 'downloading',
+  restart: restartEngineHost,
+});
+
 async function mirrorEngineEvent(event: EngineEvent): Promise<void> {
   switch (event.type) {
     case 'status':
@@ -99,6 +128,18 @@ async function mirrorEngineEvent(event: EngineEvent): Promise<void> {
       return;
     case 'download':
       await writeDownloadState(event.download);
+      if (event.download.state !== 'downloading') void restarter.settle();
+      return;
+    case 'gpu-problem': {
+      await writeGpuProblem(event.problem);
+      // The worker carries on on the processor, so no restart is owed for the change.
+      const running = await readEngineCompute();
+      if (running) await recordEngineCompute({ ...running, processor: 'cpu' });
+      return;
+    }
+    case 'job-done':
+    case 'job-failed':
+      void restarter.settle();
       return;
     default:
       return;
@@ -166,9 +207,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.permissions.onAdded.addListener(refreshShortcuts);
 chrome.permissions.onRemoved.addListener(refreshShortcuts);
 chrome.storage.onChanged.addListener((changes, area) => {
-  const change = changes[SETTINGS_STORAGE_KEY];
-  if (area !== 'local' || !change) return;
-  if (parseSettings(change.oldValue).shortcutsEnabled !== parseSettings(change.newValue).shortcutsEnabled) refreshShortcuts();
+  if (area !== 'local') return;
+  const settings = changes[SETTINGS_STORAGE_KEY];
+  if (settings) {
+    const before = parseSettings(settings.oldValue);
+    const after = parseSettings(settings.newValue);
+    if (before.shortcutsEnabled !== after.shortcutsEnabled) refreshShortcuts();
+    if (!sameCompute(before, after)) void restarter.request();
+  }
+  const problem = changes[GPU_PROBLEM_STORAGE_KEY];
+  // Cleared from the settings, to try the GPU again.
+  if (problem && !parseGpuProblem(problem.newValue)) void restarter.request();
 });
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -192,6 +241,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== IDLE_ALARM) return;
   void (async () => {
+    await restarter.settle();
     if (!(await offscreen.exists())) {
       await chrome.alarms.clear(IDLE_ALARM);
       return;

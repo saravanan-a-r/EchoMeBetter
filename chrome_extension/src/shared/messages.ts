@@ -8,6 +8,7 @@
  * job's events back to the port of the frame that asked for it. Nothing on
  * the page ever talks to the model directly.
  */
+import type { ComputeSettings, GpuProblem } from './compute';
 import type { ErrorPayload } from './errors';
 import type { DownloadState, InstalledModelRecord } from './modelInstall';
 import { isStyleId, type StyleId } from './styles';
@@ -93,7 +94,8 @@ export function isJobEvent(value: unknown): value is JobEvent {
 // ---------------------------------------------------------------------------
 
 export type OffscreenCommand =
-  | { readonly target: 'offscreen'; readonly kind: 'engine/ping' }
+  /** Sent once, right after the document is created: starts the worker. The reply proves the round trip. */
+  | { readonly target: 'offscreen'; readonly kind: 'engine/start'; readonly compute: ComputeSettings }
   | { readonly target: 'offscreen'; readonly kind: 'engine/warm-up' }
   | { readonly target: 'offscreen'; readonly kind: 'engine/rewrite'; readonly jobId: string; readonly style: StyleId; readonly text: string }
   | { readonly target: 'offscreen'; readonly kind: 'engine/cancel'; readonly jobId: string }
@@ -128,9 +130,10 @@ export function isOffscreenEventMessage(value: unknown): value is OffscreenEvent
 export interface WorkerConfig {
   /** Absolute URL of the folder the model is downloaded from (model.json and the files it names). */
   readonly modelSourceUrl: string;
-  /** Absolute URL of the folder holding onnxruntime-web's .wasm binary. */
+  /** Absolute URL of the folder holding onnxruntime-web's .wasm binaries. */
   readonly wasmBaseUrl: string;
-  readonly threads: number;
+  /** Fixed for the worker's lifetime: onnxruntime reads it once. The service worker restarts the worker to change it. */
+  readonly compute: ComputeSettings;
 }
 
 export type WorkerRequest =
@@ -150,7 +153,9 @@ export type EngineEvent =
   | { readonly type: 'job-done'; readonly jobId: string; readonly text: string }
   | { readonly type: 'job-failed'; readonly jobId: string; readonly error: ErrorPayload }
   | { readonly type: 'installed'; readonly installed: InstalledModelRecord | null }
-  | { readonly type: 'download'; readonly download: DownloadState };
+  | { readonly type: 'download'; readonly download: DownloadState }
+  /** The GPU could not run the model at all; the engine moved to the processor. */
+  | { readonly type: 'gpu-problem'; readonly problem: GpuProblem };
 
 // ---------------------------------------------------------------------------
 // extension pages (popup, welcome) → service worker
