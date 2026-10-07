@@ -7,6 +7,9 @@
  * extension page exists purely to give the worker a home that outlives any
  * single tab.
  *
+ * The worker is configured when the service worker starts it, with the
+ * compute settings to run the model with (this document can't read storage).
+ *
  * Before a download it also asks for persistent storage (a window-only API),
  * so the browser does not evict the downloaded model when disk space runs low.
  */
@@ -27,21 +30,11 @@ export interface RuntimeLike {
   };
 }
 
-/**
- * Inference threads: half the cores, at most four, at least one -- the rest
- * stay free for the page the user is typing into. Threads need
- * SharedArrayBuffer, i.e. a cross-origin isolated document.
- */
-export function chooseThreadCount(hardwareConcurrency: number, crossOriginIsolated: boolean): number {
-  if (!crossOriginIsolated) return 1;
-  return Math.max(1, Math.min(4, Math.floor((hardwareConcurrency || 2) / 2)));
-}
-
 export interface StorageLike {
   persist(): Promise<boolean>;
 }
 
-export function startBridge(worker: WorkerLike, runtime: RuntimeLike, config: WorkerConfig, storage: StorageLike): void {
+export function startBridge(worker: WorkerLike, runtime: RuntimeLike, config: Omit<WorkerConfig, 'compute'>, storage: StorageLike): void {
   const forward = (event: EngineEvent) => {
     runtime.sendMessage({ target: 'background', kind: 'engine/event', event }).catch(() => {
       // The service worker may be between lifetimes; it re-reads state on wake.
@@ -52,7 +45,8 @@ export function startBridge(worker: WorkerLike, runtime: RuntimeLike, config: Wo
   worker.addEventListener('error', (event) => {
     forward({ type: 'status', status: { state: 'error', message: event.message || 'inference worker crashed' } });
   });
-  worker.postMessage({ type: 'configure', config });
+
+  let started = false;
 
   // Model commands reach the worker in the order they were sent, even while
   // a download is still waiting on the persistence request.
@@ -64,9 +58,11 @@ export function startBridge(worker: WorkerLike, runtime: RuntimeLike, config: Wo
   runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!isOffscreenCommand(message)) return undefined;
     switch (message.kind) {
-      case 'engine/ping':
-        sendResponse({ ok: true });
-        return undefined;
+      case 'engine/start':
+        // Once per document: the service worker opens a new document to change the settings.
+        if (!started) worker.postMessage({ type: 'configure', config: { ...config, compute: message.compute } });
+        started = true;
+        break;
       case 'engine/warm-up':
         worker.postMessage({ type: 'warm-up' });
         break;

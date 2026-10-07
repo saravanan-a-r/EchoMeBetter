@@ -6,10 +6,12 @@
  * `chrome.storage.session`, so they survive the service worker being
  * suspended between events.
  */
+import type { RunningOn } from './compute';
+
 export type EngineStatus =
   | { readonly state: 'unloaded' }
   | { readonly state: 'loading'; readonly progress: number }
-  | { readonly state: 'ready'; readonly model: ModelSummary }
+  | { readonly state: 'ready'; readonly model: ModelSummary; readonly runningOn: RunningOn }
   | { readonly state: 'error'; readonly message: string };
 
 export interface ModelSummary {

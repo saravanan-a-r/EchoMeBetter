@@ -29,7 +29,7 @@ export function presentStatus(status: EngineStatus): Presentation {
       return {
         label: 'Ready',
         dot: '_echo_$_bg-better-500',
-        detail: `${status.model.displayName} · ${status.model.precision} · ${formatBytes(status.model.sizeBytes)} · on-device`,
+        detail: `${status.model.displayName} · ${status.model.precision} · ${formatBytes(status.model.sizeBytes)} · on-device ${status.runningOn.processor === 'gpu' ? 'GPU' : 'CPU'}`,
       };
     case 'error':
       return { label: "Couldn't load", dot: '_echo_$_bg-danger-500', detail: status.message, action: 'Try again' };

@@ -6,6 +6,7 @@ import { Logo, Wordmark } from '../brand/Logo';
 import { ModelCard } from '../components/ModelCard';
 import { ShortcutAccessCard } from '../components/ShortcutAccessCard';
 import { StyleList } from '../components/StyleList';
+import { MACHINE, retryGpu, useGpu, useGpuProblem } from '../hooks/useCompute';
 import { requestWarmUp, useEngineStatus } from '../hooks/useEngineStatus';
 import {
   modelSetup,
@@ -140,6 +141,8 @@ export function PopupApp() {
   const [catalog, retryCatalog] = useCatalog();
   const [settings, setSettings, settingsLoaded] = useSettings();
   const siteAccess = useSiteAccess();
+  const gpu = useGpu();
+  const gpuProblem = useGpuProblem();
   const [modelRemoved, setModelRemoved] = useState(false);
   const [page, setPage] = useState<'home' | 'settings'>('home');
   const shortcuts = shortcutAvailability(settingsLoaded ? settings.shortcutsEnabled : null, siteAccess);
@@ -160,6 +163,20 @@ export function PopupApp() {
         onAllowSiteAccess={requestSiteAccess}
         keepLoaded={settings.keepModelLoadedMinutes}
         onKeepLoadedChange={(minutes) => setSettings({ ...settings, keepModelLoadedMinutes: minutes })}
+        performance={
+          settingsLoaded
+            ? {
+                compute: settings,
+                gpu,
+                gpuProblem,
+                cores: MACHINE.cores,
+                crossOriginIsolated: MACHINE.crossOriginIsolated,
+                status,
+                onChange: (compute) => setSettings({ ...settings, ...compute }),
+                onRetryGpu: retryGpu,
+              }
+            : null
+        }
         installed={model.installed}
         onRemoveModel={async () => {
           const reply = await requestRemoveModel();

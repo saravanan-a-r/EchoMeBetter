@@ -4,7 +4,7 @@ import type { RewriteOptions } from '../../../engine/rewriteEngine';
 import { EchoError } from '../../../shared/errors';
 import type { EngineEvent } from '../../../shared/messages';
 import type { StyleId } from '../../../shared/styles';
-import { EngineHost, type LoadedEngine } from '../../../worker/engineHost';
+import { EngineBrokenError, EngineHost, type LoadedEngine } from '../../../worker/engineHost';
 import { readJsonFixture } from '../../helpers/fixtures';
 
 const manifest = parseModelManifest(readJsonFixture('tiny-echo/model.json'));
@@ -22,6 +22,7 @@ function deferred<T>() {
 function fakeEngine(rewrite: (style: StyleId, text: string, options?: RewriteOptions) => Promise<string>): LoadedEngine {
   return {
     manifest,
+    runningOn: { processor: 'cpu', threads: 2 },
     rewrite: async (style, text, options) => ({ text: await rewrite(style, text, options), inputTokens: 1, outputTokens: 1 }),
     release: async () => undefined,
   };
@@ -117,6 +118,51 @@ describe('EngineHost', () => {
     host.cancel('1');
     await host.idle();
     expect(events.at(-1)).toMatchObject({ type: 'job-failed', jobId: '1', error: { code: 'CANCELLED' } });
+  });
+});
+
+describe('EngineHost with an engine that breaks', () => {
+  test('a broken engine is dropped and the job runs again on a freshly loaded one, which the status names', async () => {
+    const events: EngineEvent[] = [];
+    const release = jest.fn(async () => undefined);
+    const broken: LoadedEngine = {
+      ...fakeEngine(async () => {
+        throw new EngineBrokenError(new Error('GPU device lost'));
+      }),
+      runningOn: { processor: 'gpu', threads: 2 },
+      release,
+    };
+    const loader = jest
+      .fn<(onProgress: (fraction: number) => void) => Promise<LoadedEngine>>()
+      .mockResolvedValueOnce(broken)
+      .mockResolvedValueOnce(fakeEngine(async (_style, text) => `cpu: ${text}`));
+    const host = new EngineHost(loader, (event) => events.push(event));
+
+    host.enqueue('j', 'concise', 'x');
+    await host.idle();
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(events.at(-1)).toEqual({ type: 'job-done', jobId: 'j', text: 'cpu: x' });
+    const ready = events.flatMap((event) => (event.type === 'status' && event.status.state === 'ready' ? [event.status.runningOn.processor] : []));
+    expect(ready).toEqual(['gpu', 'cpu']);
+
+    host.enqueue('k', 'concise', 'y');
+    await host.idle();
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
+  test('an engine that breaks again is a failed job, reported with the original error', async () => {
+    const events: EngineEvent[] = [];
+    const breaks = () =>
+      fakeEngine(async () => {
+        throw new EngineBrokenError(new Error('still broken'));
+      });
+    const loader = jest.fn(async () => breaks());
+    const host = new EngineHost(loader, (event) => events.push(event));
+    host.enqueue('j', 'concise', 'x');
+    await host.idle();
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(events.at(-1)).toEqual({ type: 'job-failed', jobId: 'j', error: { code: 'INFERENCE_FAILED', details: { message: 'still broken' } } });
   });
 });
 

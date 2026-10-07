@@ -11,6 +11,7 @@ import { describe, expect, test } from '@jest/globals';
 import { JobRouter, type PortLike } from '../../background/jobRouter';
 import { startBridge, type RuntimeLike, type WorkerLike } from '../../offscreen/bridge';
 import { parseModelManifest } from '../../engine/manifest';
+import { DEFAULT_COMPUTE } from '../../shared/compute';
 import { EchoError } from '../../shared/errors';
 import { isOffscreenEventMessage, type EngineEvent, type JobEvent, type OffscreenCommand, type WorkerRequest } from '../../shared/messages';
 import { EngineHost, type LoadedEngine } from '../../worker/engineHost';
@@ -44,7 +45,7 @@ function wire(engine: LoadedEngine) {
     },
     onMessage: { addListener: (listener) => (offscreenListener = listener) },
   };
-  startBridge(worker, runtime, { modelSourceUrl: 'https://models.example.test/m/', wasmBaseUrl: 'o/', threads: 1 }, { persist: async () => true });
+  startBridge(worker, runtime, { modelSourceUrl: 'https://models.example.test/m/', wasmBaseUrl: 'o/' }, { persist: async () => true });
   router = new JobRouter({
     ensureEngineHost: async () => undefined,
     sendToEngine: async (command: OffscreenCommand) => void offscreenListener(command, {}, () => undefined),
@@ -63,15 +64,18 @@ function wire(engine: LoadedEngine) {
   };
   router.handlePort(port);
   const command = (message: OffscreenCommand) => offscreenListener(message, {}, () => undefined);
+  command({ target: 'offscreen', kind: 'engine/start', compute: DEFAULT_COMPUTE });
   return { received, send: (message: unknown) => toRouter(message), disconnect: () => disconnect(), host, requests, command };
 }
 
 const manifest = parseModelManifest(readJsonFixture('tiny-echo/model.json'));
+const runningOn = { processor: 'gpu', threads: 2 } as const;
 
 describe('page → service worker → offscreen → worker and back', () => {
   test('a job comes back as phases then the rewritten text', async () => {
     const { received, send, host } = wire({
       manifest,
+      runningOn,
       rewrite: async (style, text) => ({ text: `[${style}] ${text}`, inputTokens: 1, outputTokens: 1 }),
       release: async () => undefined,
     });
@@ -87,6 +91,7 @@ describe('page → service worker → offscreen → worker and back', () => {
     let aborted = false;
     const { send, disconnect, host } = wire({
       manifest,
+      runningOn,
       rewrite: (_style, _text, options) =>
         new Promise((_resolve, reject) =>
           options?.signal?.addEventListener('abort', () => {
@@ -105,7 +110,7 @@ describe('page → service worker → offscreen → worker and back', () => {
   });
 
   test('model commands reach the worker in order, with the adapters they name', async () => {
-    const { command, requests } = wire({ manifest, rewrite: async () => ({ text: '', inputTokens: 0, outputTokens: 0 }), release: async () => undefined });
+    const { command, requests } = wire({ manifest, runningOn, rewrite: async () => ({ text: '', inputTokens: 0, outputTokens: 0 }), release: async () => undefined });
     command({ target: 'offscreen', kind: 'model/download', adapters: ['professional', 'grammar'] });
     command({ target: 'offscreen', kind: 'model/remove-adapter', adapter: 'grammar' });
     command({ target: 'offscreen', kind: 'model/remove' });

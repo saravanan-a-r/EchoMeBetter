@@ -6,6 +6,7 @@ import type { ReactNode } from 'react';
 import { KEEP_LOADED_CHOICES, type KeepLoadedMinutes } from '../../shared/settings';
 import type { KeyPlatform } from '../../shared/shortcuts';
 import { STYLES } from '../../shared/styles';
+import { PerformanceSettings, type PerformanceSettingsProps } from '../components/PerformanceSettings';
 import { ShortcutAccessCard } from '../components/ShortcutAccessCard';
 import { ShortcutKeys } from '../components/ShortcutKeys';
 import { StorageSettings, type StorageSettingsProps } from '../components/StorageSettings';
@@ -24,6 +25,8 @@ export interface SettingsViewProps extends StorageSettingsProps {
   readonly onAllowSiteAccess: () => void;
   readonly keepLoaded: KeepLoadedMinutes;
   readonly onKeepLoadedChange: (minutes: KeepLoadedMinutes) => void;
+  /** Null until the settings have been read. */
+  readonly performance: PerformanceSettingsProps | null;
   readonly onBack: () => void;
 }
 
@@ -57,6 +60,12 @@ export function SettingsView(props: SettingsViewProps) {
       </header>
 
       <div className="_echo_$_space-y-5 _echo_$_px-4 _echo_$_py-4">
+        {props.performance && props.performance.gpu.state !== 'checking' ? (
+          <Section id="performance-title" title="Performance">
+            <PerformanceSettings {...props.performance} />
+          </Section>
+        ) : null}
+
         <Section id="shortcuts-title" title="Keyboard">
           <div className="_echo_$_flex _echo_$_items-start _echo_$_justify-between _echo_$_gap-3">
             <div>

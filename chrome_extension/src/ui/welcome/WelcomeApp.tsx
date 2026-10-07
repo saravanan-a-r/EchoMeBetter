@@ -5,8 +5,10 @@ import type { StyleId } from '../../shared/styles';
 import { Logo, Wordmark } from '../brand/Logo';
 import { ContextMenuPreview } from '../components/ContextMenuPreview';
 import { ModelCard } from '../components/ModelCard';
+import { PerformanceSettings, type PerformanceSettingsProps } from '../components/PerformanceSettings';
 import { ShortcutAccessCard } from '../components/ShortcutAccessCard';
 import { StyleList } from '../components/StyleList';
+import { MACHINE, retryGpu, useGpu, useGpuProblem } from '../hooks/useCompute';
 import { requestWarmUp, useEngineStatus } from '../hooks/useEngineStatus';
 import {
   modelSetup,
@@ -41,6 +43,8 @@ export interface WelcomeViewProps {
   readonly platform: KeyPlatform;
   readonly shortcuts: ShortcutAvailability;
   readonly onAllowSiteAccess: () => void;
+  /** Null until the settings have been read. */
+  readonly performance: PerformanceSettingsProps | null;
 }
 
 export function WelcomeView(props: WelcomeViewProps) {
@@ -144,6 +148,24 @@ export function WelcomeView(props: WelcomeViewProps) {
           </div>
         </section>
 
+        {props.performance && props.performance.gpu.state !== 'checking' ? (
+          <section aria-labelledby="performance-title" className="_echo_$_grid _echo_$_items-start _echo_$_gap-6 md:_echo_$_grid-cols-[1fr_minmax(0,24rem)]">
+            <div>
+              <h2 id="performance-title" className="_echo_$_text-2xl _echo_$_font-bold">
+                Speed and power
+              </h2>
+              <p className="_echo_$_mt-2 _echo_$_text-sm _echo_$_leading-6 _echo_$_text-ink-500 dark:_echo_$_text-ink-300">
+                {props.performance.gpu.state === 'available'
+                  ? 'EchoMeBetter runs on your graphics chip (GPU), the fastest way to rewrite. Rather keep it on the processor, or save battery? Choose here, or later in the settings of the toolbar popup.'
+                  : 'EchoMeBetter runs on your processor. Choose how much of it a rewrite may use, here or later in the settings of the toolbar popup.'}
+              </p>
+            </div>
+            <div className="_echo_$_rounded-2xl _echo_$_border _echo_$_border-ink-100 _echo_$_bg-white _echo_$_p-5 dark:_echo_$_border-ink-800 dark:_echo_$_bg-ink-900">
+              <PerformanceSettings {...props.performance} />
+            </div>
+          </section>
+        ) : null}
+
         <section className="_echo_$_grid _echo_$_gap-4 md:_echo_$_grid-cols-3">
           {[
             ['Private by design', 'The model runs inside your browser. Your text is never uploaded, logged or shared.'],
@@ -169,10 +191,26 @@ export function WelcomeApp() {
   const status = useEngineStatus();
   const model = useModelAvailability();
   const [catalog, retryCatalog] = useCatalog();
-  const [settings, , settingsLoaded] = useSettings();
+  const [settings, setSettings, settingsLoaded] = useSettings();
   const siteAccess = useSiteAccess();
+  const gpu = useGpu();
+  const gpuProblem = useGpuProblem();
   return (
     <WelcomeView
+      performance={
+        settingsLoaded
+          ? {
+              compute: settings,
+              gpu,
+              gpuProblem,
+              cores: MACHINE.cores,
+              crossOriginIsolated: MACHINE.crossOriginIsolated,
+              status,
+              onChange: (compute) => setSettings({ ...settings, ...compute }),
+              onRetryGpu: retryGpu,
+            }
+          : null
+      }
       platform={PLATFORM}
       shortcuts={shortcutAvailability(settingsLoaded ? settings.shortcutsEnabled : null, siteAccess)}
       onAllowSiteAccess={requestSiteAccess}
