@@ -74,8 +74,8 @@ export default (_env: unknown, argv: { mode?: string }): Configuration[] => {
     },
     resolve: {
       ...shared(production).resolve,
-      // onnxruntime-web's build that loads its WebAssembly glue at run time
-      // from env.wasm.wasmPaths (dist/ort/), so its threads start from that
+      // onnxruntime-web's builds that load their WebAssembly glue at run time
+      // from env.wasm.wasmPaths (dist/ort/), so their threads start from that
       // file rather than from our bundle.
       conditionNames: ['onnxruntime-web-use-extern-wasm', 'browser', 'import', 'module', 'default'],
     },
@@ -110,12 +110,15 @@ export default (_env: unknown, argv: { mode?: string }): Configuration[] => {
       new CopyWebpackPlugin({
         patterns: [
           { from: 'public', to: '.' },
-          ...['ort-wasm-simd-threaded.mjs', 'ort-wasm-simd-threaded.wasm'].map((file) => ({
-            from: `node_modules/onnxruntime-web/dist/${file}`,
-            to: `ort/${file}`,
-            // 14 MB of WebAssembly that is already optimised; skip minifier passes.
-            info: { minimized: true },
-          })),
+          // The processor build, and the WebGPU build (asyncify) loaded only when the model runs on the GPU.
+          ...['ort-wasm-simd-threaded', 'ort-wasm-simd-threaded.asyncify'].flatMap((name) =>
+            ['mjs', 'wasm'].map((extension) => ({
+              from: `node_modules/onnxruntime-web/dist/${name}.${extension}`,
+              to: `ort/${name}.${extension}`,
+              // 15 and 28 MB of WebAssembly that is already optimised; skip minifier passes.
+              info: { minimized: true },
+            })),
+          ),
         ],
       }),
       new ExtensionAssetsPlugin({ version }),
