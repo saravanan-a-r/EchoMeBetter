@@ -4,7 +4,8 @@
  *
  * Every change is reported as an EngineEvent ('installed' and 'download'),
  * which the service worker mirrors for the popup and welcome page. One
- * download runs at a time; asking again while one runs does nothing.
+ * download runs at a time; asking again while one runs does nothing. A
+ * download that completes loads the model, ready for the first rewrite.
  */
 import { baseFingerprint, catalogOf, type ModelFile } from '../engine/manifest';
 import { EchoError, toErrorPayload } from '../shared/errors';
@@ -17,8 +18,8 @@ import { filesOf, ModelStore, type StoredModel } from './modelStore';
 export interface LibraryDeps {
   readonly openStore: () => Promise<ModelStore>;
   readonly transport: DownloadTransport;
-  /** The loaded engine, which must let go of the base before its files go. */
-  readonly engine: { unload(): Promise<void> };
+  /** The engine: it must let go of the base before its files go, and loads it once a download is done. */
+  readonly engine: { unload(): Promise<void>; warmUp(): void };
   readonly emit: (event: EngineEvent) => void;
 }
 
@@ -121,6 +122,9 @@ export class ModelLibrary {
       await store.commit(next);
       await store.prune(ModelStore.namesOf(next));
       this.deps.emit({ type: 'installed', installed: toRecord(next) });
+      // Downloaded to be used: load it now rather than ask for another click. Started
+      // before the download is reported done, so whoever hears that already sees it loading.
+      this.deps.engine.warmUp();
       emitDownload({ state: 'idle' });
     } catch (thrown) {
       const error = downloadError(thrown, controller.signal);
