@@ -76,6 +76,8 @@ export class ModelLibrary {
 
   /** The installed model and its store, for the engine to load. */
   async require(): Promise<{ model: StoredModel; store: ModelStore }> {
+    // A worker asked to load the model as it starts must not read the record while the inspection holds it open.
+    await this.inspection.catch(() => undefined);
     const model = this.removing ? null : await this.current();
     if (!model) {
       // The files may have gone behind the mirror's back (the browser can evict site data).
