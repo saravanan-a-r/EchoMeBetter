@@ -12,13 +12,15 @@
 /*
  * The baseline sits on a container *inside* the shadow root: the host's own
  * styles can be overridden from the page, but nothing outside can reach this.
+ * The same container carries the inverse theme's colour variables (see
+ * tailwind.foreground.config.cjs); `all: initial` leaves custom properties alone.
  */
 .echomebetter-root {
   all: initial;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-family: theme('fontFamily.sans');
   font-size: 14px;
   line-height: 1.45;
-  color: #fff;
+  color: rgb(var(--echo-color-fg));
   -webkit-font-smoothing: antialiased;
 }
 

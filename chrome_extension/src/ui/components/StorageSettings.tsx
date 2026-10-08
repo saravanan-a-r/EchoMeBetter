@@ -63,13 +63,13 @@ function Confirm({ item, onDone }: { item: Item; onDone: () => void }) {
     setProblem(reply.error.code === 'BUSY' ? 'Wait for the current rewrite to finish.' : "Couldn't remove it. Please try again.");
   };
   return (
-    <div role="group" aria-labelledby={`remove-${item.key}-title`} className="_echo_$_mt-2 _echo_$_rounded-xl _echo_$_border _echo_$_border-danger-400/40 _echo_$_bg-danger-50 _echo_$_p-3 dark:_echo_$_bg-danger-950">
-      <p id={`remove-${item.key}-title`} className="_echo_$_text-sm _echo_$_font-semibold _echo_$_text-ink-900 dark:_echo_$_text-white">
+    <div role="group" aria-labelledby={`remove-${item.key}-title`} className="_echo_$_mt-2 _echo_$_rounded-xl _echo_$_border _echo_$_border-danger-line/40 _echo_$_bg-danger-subtle _echo_$_p-3">
+      <p id={`remove-${item.key}-title`} className="_echo_$_text-sm _echo_$_font-semibold _echo_$_text-fg">
         {item.question}
       </p>
-      <p className="_echo_$_mt-1 _echo_$_text-xs _echo_$_leading-5 _echo_$_text-ink-600 dark:_echo_$_text-ink-200">{item.consequence}</p>
+      <p className="_echo_$_mt-1 _echo_$_text-xs _echo_$_leading-5 _echo_$_text-fg-soft">{item.consequence}</p>
       {problem ? (
-        <p role="alert" className="_echo_$_mt-2 _echo_$_text-xs _echo_$_font-medium _echo_$_text-danger-500">
+        <p role="alert" className="_echo_$_mt-2 _echo_$_text-xs _echo_$_font-medium _echo_$_text-danger">
           {problem}
         </p>
       ) : null}
@@ -88,7 +88,7 @@ function Confirm({ item, onDone }: { item: Item; onDone: () => void }) {
 export function StorageSettings(props: StorageSettingsProps) {
   const [confirming, setConfirming] = useState<Item['key'] | null>(null);
   if (!props.installed) {
-    return <p className="_echo_$_text-sm _echo_$_text-ink-500 dark:_echo_$_text-ink-300">Nothing downloaded yet.</p>;
+    return <p className="_echo_$_text-sm _echo_$_text-fg-muted">Nothing downloaded yet.</p>;
   }
   return (
     <ul aria-label="Downloaded" className="_echo_$_space-y-2">
@@ -96,12 +96,12 @@ export function StorageSettings(props: StorageSettingsProps) {
         <li key={item.key}>
           <div className="_echo_$_flex _echo_$_items-center _echo_$_gap-3 _echo_$_text-sm">
             <span className="_echo_$_font-medium">{item.label}</span>
-            <span className="_echo_$_ml-auto _echo_$_text-xs _echo_$_tabular-nums _echo_$_text-ink-500 dark:_echo_$_text-ink-300">{formatBytes(item.sizeBytes)}</span>
+            <span className="_echo_$_ml-auto _echo_$_text-xs _echo_$_tabular-nums _echo_$_text-fg-muted">{formatBytes(item.sizeBytes)}</span>
             <button
               type="button"
               aria-label={`Remove ${item.label.toLowerCase()}`}
               onClick={() => setConfirming(item.key)}
-              className="_echo_$_rounded _echo_$_text-xs _echo_$_font-medium _echo_$_text-ink-500 _echo_$_underline-offset-2 hover:_echo_$_text-danger-500 hover:_echo_$_underline focus-visible:_echo_$_outline focus-visible:_echo_$_outline-2 focus-visible:_echo_$_outline-echo-500 dark:_echo_$_text-ink-300"
+              className="_echo_$_rounded _echo_$_text-xs _echo_$_font-medium _echo_$_text-fg-muted _echo_$_underline-offset-2 hover:_echo_$_text-danger hover:_echo_$_underline focus-visible:_echo_$_outline focus-visible:_echo_$_outline-2 focus-visible:_echo_$_outline-focus"
             >
               Remove
             </button>

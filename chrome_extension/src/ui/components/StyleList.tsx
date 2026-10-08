@@ -32,7 +32,7 @@ function PreviewBadge({ style, adapter }: { style: StyleId; adapter: StyleId }) 
   return (
     <span
       title={explanation}
-      className="_echo_$_shrink-0 _echo_$_rounded-full _echo_$_bg-echo-50 _echo_$_px-1.5 _echo_$_py-0.5 _echo_$_text-[10px] _echo_$_font-semibold _echo_$_uppercase _echo_$_tracking-wide _echo_$_text-echo-700 dark:_echo_$_bg-echo-950 dark:_echo_$_text-echo-200"
+      className="_echo_$_shrink-0 _echo_$_rounded-full _echo_$_bg-accent-subtle _echo_$_px-1.5 _echo_$_py-0.5 _echo_$_text-[10px] _echo_$_font-semibold _echo_$_uppercase _echo_$_tracking-wide _echo_$_text-accent-fg-strong"
     >
       Preview<span className="_echo_$_sr-only">: {explanation}</span>
     </span>
@@ -42,11 +42,11 @@ function PreviewBadge({ style, adapter }: { style: StyleId; adapter: StyleId }) 
 /** What stands to the right of a style: a way to get it, what it waits for, or its shortcut. */
 function StyleEnd({ style, props, fallback }: { style: StyleDescriptor; props: StyleListProps; fallback: ReactNode }) {
   const readiness = props.readiness?.[style.id];
-  if (readiness?.state === 'unavailable') return <span className="_echo_$_ml-auto _echo_$_shrink-0 _echo_$_text-xs _echo_$_text-ink-400">Not available yet</span>;
+  if (readiness?.state === 'unavailable') return <span className="_echo_$_ml-auto _echo_$_shrink-0 _echo_$_text-xs _echo_$_text-fg-subtle">Not available yet</span>;
   if (readiness?.state !== 'needs-download') return <>{fallback}</>;
   const { adapter } = readiness;
   if (adapter.style !== style.id) {
-    return <span className="_echo_$_ml-auto _echo_$_shrink-0 _echo_$_text-xs _echo_$_text-ink-500 dark:_echo_$_text-ink-300">Needs {styleLabel(adapter.style)}</span>;
+    return <span className="_echo_$_ml-auto _echo_$_shrink-0 _echo_$_text-xs _echo_$_text-fg-muted">Needs {styleLabel(adapter.style)}</span>;
   }
   return (
     <button
@@ -75,13 +75,13 @@ export function StyleList(props: StyleListProps) {
   const { columns = 1, dense = false, shortcuts, readiness } = props;
   if (dense) {
     return (
-      <ul className="_echo_$_divide-y _echo_$_divide-ink-100 _echo_$_overflow-hidden _echo_$_rounded-xl _echo_$_border _echo_$_border-ink-100 _echo_$_bg-white dark:_echo_$_divide-ink-800 dark:_echo_$_border-ink-800 dark:_echo_$_bg-ink-900">
+      <ul className="_echo_$_divide-y _echo_$_divide-line _echo_$_overflow-hidden _echo_$_rounded-xl _echo_$_border _echo_$_border-line _echo_$_bg-surface">
         {STYLES.map((style) => (
           <li key={style.id} className="_echo_$_flex _echo_$_items-center _echo_$_gap-2.5 _echo_$_px-3 _echo_$_py-2">
-            <span className="_echo_$_flex _echo_$_h-6 _echo_$_w-6 _echo_$_shrink-0 _echo_$_items-center _echo_$_justify-center _echo_$_rounded-md _echo_$_bg-echo-50 _echo_$_text-echo-600 dark:_echo_$_bg-echo-950 dark:_echo_$_text-echo-300">
+            <span className="_echo_$_flex _echo_$_h-6 _echo_$_w-6 _echo_$_shrink-0 _echo_$_items-center _echo_$_justify-center _echo_$_rounded-md _echo_$_bg-accent-subtle _echo_$_text-accent-fg">
               <StyleGlyph style={style.id} size={14} />
             </span>
-            <Label style={style} readiness={readiness?.[style.id]} className="_echo_$_text-sm _echo_$_font-semibold _echo_$_text-ink-900 dark:_echo_$_text-white" />
+            <Label style={style} readiness={readiness?.[style.id]} className="_echo_$_text-sm _echo_$_font-semibold _echo_$_text-fg" />
             <StyleEnd
               style={style}
               props={props}
@@ -92,7 +92,7 @@ export function StyleList(props: StyleListProps) {
                     <ShortcutKeys style={style.id} platform={shortcuts} compact />
                   </span>
                 ) : (
-                  <span className="_echo_$_ml-auto _echo_$_truncate _echo_$_text-xs _echo_$_text-ink-500 dark:_echo_$_text-ink-300">{style.hint}</span>
+                  <span className="_echo_$_ml-auto _echo_$_truncate _echo_$_text-xs _echo_$_text-fg-muted">{style.hint}</span>
                 )
               }
             />
@@ -107,14 +107,14 @@ export function StyleList(props: StyleListProps) {
       {STYLES.map((style) => (
         <li
           key={style.id}
-          className="_echo_$_flex _echo_$_items-center _echo_$_gap-3 _echo_$_rounded-xl _echo_$_border _echo_$_border-ink-100 _echo_$_bg-white _echo_$_px-3 _echo_$_py-2.5 dark:_echo_$_border-ink-800 dark:_echo_$_bg-ink-900"
+          className="_echo_$_flex _echo_$_items-center _echo_$_gap-3 _echo_$_rounded-xl _echo_$_border _echo_$_border-line _echo_$_bg-surface _echo_$_px-3 _echo_$_py-2.5"
         >
-          <span className="_echo_$_flex _echo_$_h-8 _echo_$_w-8 _echo_$_shrink-0 _echo_$_items-center _echo_$_justify-center _echo_$_rounded-lg _echo_$_bg-echo-50 _echo_$_text-echo-600 dark:_echo_$_bg-echo-950 dark:_echo_$_text-echo-300">
+          <span className="_echo_$_flex _echo_$_h-8 _echo_$_w-8 _echo_$_shrink-0 _echo_$_items-center _echo_$_justify-center _echo_$_rounded-lg _echo_$_bg-accent-subtle _echo_$_text-accent-fg">
             <StyleGlyph style={style.id} />
           </span>
           <span className="_echo_$_min-w-0 _echo_$_flex-1">
-            <Label style={style} readiness={readiness?.[style.id]} className="_echo_$_block _echo_$_text-sm _echo_$_font-semibold _echo_$_text-ink-900 dark:_echo_$_text-white" />
-            <span className="_echo_$_block _echo_$_text-xs _echo_$_text-ink-500 dark:_echo_$_text-ink-300">{style.hint}</span>
+            <Label style={style} readiness={readiness?.[style.id]} className="_echo_$_block _echo_$_text-sm _echo_$_font-semibold _echo_$_text-fg" />
+            <span className="_echo_$_block _echo_$_text-xs _echo_$_text-fg-muted">{style.hint}</span>
           </span>
           <StyleEnd style={style} props={props} fallback={shortcuts ? <ShortcutKeys style={style.id} platform={shortcuts} /> : null} />
         </li>
