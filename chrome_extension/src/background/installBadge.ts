@@ -6,6 +6,7 @@
  * This is the icon-wide badge; the per-tab badge for "can't edit text on
  * this page" (rewriteLauncher.ts) takes precedence on its own tab.
  */
+import { brand } from '../design/tokens.cjs';
 import { canRewrite, modelFrom, type InstalledModelRecord } from '../shared/modelInstall';
 
 export type BadgeApi = Pick<typeof chrome.action, 'setBadgeText' | 'setBadgeBackgroundColor' | 'setTitle'>;
@@ -17,7 +18,7 @@ export async function showInstallState(installed: InstalledModelRecord | null, s
     await action.setTitle({ title: 'EchoMeBetter' });
     return;
   }
-  await action.setBadgeBackgroundColor({ color: '#6236F5' });
+  await action.setBadgeBackgroundColor({ color: brand.badge });
   await action.setBadgeText({ text: '!' });
   await action.setTitle({ title: model ? 'EchoMeBetter: download a style to start' : 'EchoMeBetter: download the writing model to start' });
 }

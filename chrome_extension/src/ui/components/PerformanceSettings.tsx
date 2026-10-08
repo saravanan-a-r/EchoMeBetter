@@ -41,8 +41,8 @@ function cores(count: number): string {
 }
 
 const SELECT =
-  '_echo_$_rounded-lg _echo_$_border _echo_$_border-ink-200 _echo_$_bg-white _echo_$_px-2 _echo_$_py-1 _echo_$_text-sm dark:_echo_$_border-ink-700 dark:_echo_$_bg-ink-800';
-const HINT = '_echo_$_mt-1 _echo_$_text-xs _echo_$_leading-5 _echo_$_text-ink-500 dark:_echo_$_text-ink-300';
+  '_echo_$_rounded-lg _echo_$_border _echo_$_border-line-strong _echo_$_bg-surface-raised _echo_$_px-2 _echo_$_py-1 _echo_$_text-sm';
+const HINT = '_echo_$_mt-1 _echo_$_text-xs _echo_$_leading-5 _echo_$_text-fg-muted';
 
 function SelectRow<T extends string>(props: {
   id: string;
@@ -85,16 +85,16 @@ function ProcessorChoice({ value, onChange }: { value: Processor; onChange: (pro
     { value: 'cpu', title: 'CPU', subtitle: 'Processor' },
   ];
   return (
-    <div role="radiogroup" aria-labelledby="processor-label" className="_echo_$_mt-2 _echo_$_grid _echo_$_grid-cols-2 _echo_$_gap-1 _echo_$_rounded-xl _echo_$_bg-ink-100 _echo_$_p-1 dark:_echo_$_bg-ink-800">
+    <div role="radiogroup" aria-labelledby="processor-label" className="_echo_$_mt-2 _echo_$_grid _echo_$_grid-cols-2 _echo_$_gap-1 _echo_$_rounded-xl _echo_$_bg-muted _echo_$_p-1">
       {choices.map((choice) => {
         const checked = choice.value === value;
         return (
           <label
             key={choice.value}
-            className={`_echo_$_cursor-pointer _echo_$_rounded-lg _echo_$_px-3 _echo_$_py-1.5 _echo_$_transition has-[:focus-visible]:_echo_$_outline has-[:focus-visible]:_echo_$_outline-2 has-[:focus-visible]:_echo_$_outline-echo-500 ${
+            className={`_echo_$_cursor-pointer _echo_$_rounded-lg _echo_$_px-3 _echo_$_py-1.5 _echo_$_transition has-[:focus-visible]:_echo_$_outline has-[:focus-visible]:_echo_$_outline-2 has-[:focus-visible]:_echo_$_outline-focus ${
               checked
-                ? '_echo_$_bg-white _echo_$_shadow-sm dark:_echo_$_bg-ink-950'
-                : '_echo_$_text-ink-600 hover:_echo_$_bg-white/60 dark:_echo_$_text-ink-200 dark:hover:_echo_$_bg-ink-900'
+                ? '_echo_$_bg-segment-active _echo_$_shadow-sm'
+                : '_echo_$_text-fg-soft hover:_echo_$_bg-segment-hover'
             }`}
           >
             <input
@@ -106,8 +106,8 @@ function ProcessorChoice({ value, onChange }: { value: Processor; onChange: (pro
               aria-describedby={`processor-${choice.value}-subtitle`}
               className="_echo_$_sr-only"
             />
-            <span className={`_echo_$_block _echo_$_text-sm _echo_$_font-semibold ${checked ? '_echo_$_text-echo-700 dark:_echo_$_text-echo-300' : ''}`}>{choice.title}</span>
-            <span id={`processor-${choice.value}-subtitle`} className="_echo_$_block _echo_$_text-[11px] _echo_$_text-ink-500 dark:_echo_$_text-ink-300">
+            <span className={`_echo_$_block _echo_$_text-sm _echo_$_font-semibold ${checked ? '_echo_$_text-accent-fg-strong' : ''}`}>{choice.title}</span>
+            <span id={`processor-${choice.value}-subtitle`} className="_echo_$_block _echo_$_text-[11px] _echo_$_text-fg-muted">
               {choice.subtitle}
             </span>
           </label>
@@ -146,8 +146,8 @@ export function PerformanceSettings(props: PerformanceSettingsProps) {
           </p>
           <ProcessorChoice value={compute.processor} onChange={(processor) => onChange({ ...compute, processor })} />
           {compute.processor === 'gpu' && gpuProblem ? (
-            <div role="status" className="_echo_$_mt-2 _echo_$_flex _echo_$_items-start _echo_$_justify-between _echo_$_gap-3 _echo_$_rounded-lg _echo_$_bg-danger-50 _echo_$_p-2.5 dark:_echo_$_bg-danger-950">
-              <p className="_echo_$_text-xs _echo_$_leading-5 _echo_$_text-ink-700 dark:_echo_$_text-ink-100">{GPU_PROBLEM_NOTE}</p>
+            <div role="status" className="_echo_$_mt-2 _echo_$_flex _echo_$_items-start _echo_$_justify-between _echo_$_gap-3 _echo_$_rounded-lg _echo_$_bg-danger-subtle _echo_$_p-2.5">
+              <p className="_echo_$_text-xs _echo_$_leading-5 _echo_$_text-fg-secondary">{GPU_PROBLEM_NOTE}</p>
               <button type="button" onClick={props.onRetryGpu} className={SECONDARY_BUTTON}>
                 Try the GPU again
               </button>
@@ -183,8 +183,8 @@ export function PerformanceSettings(props: PerformanceSettingsProps) {
       )}
 
       {now ? (
-        <p aria-live="polite" className="_echo_$_flex _echo_$_items-center _echo_$_gap-1.5 _echo_$_border-t _echo_$_border-ink-100 _echo_$_pt-2.5 _echo_$_text-xs _echo_$_text-ink-500 dark:_echo_$_border-ink-800 dark:_echo_$_text-ink-300">
-          <span aria-hidden="true" className={`_echo_$_h-1.5 _echo_$_w-1.5 _echo_$_rounded-full ${props.status.state === 'ready' ? '_echo_$_bg-better-500' : '_echo_$_bg-echo-500 _echo_$_animate-pulse'}`} />
+        <p aria-live="polite" className="_echo_$_flex _echo_$_items-center _echo_$_gap-1.5 _echo_$_border-t _echo_$_border-line _echo_$_pt-2.5 _echo_$_text-xs _echo_$_text-fg-muted">
+          <span aria-hidden="true" className={`_echo_$_h-1.5 _echo_$_w-1.5 _echo_$_rounded-full ${props.status.state === 'ready' ? '_echo_$_bg-success' : '_echo_$_bg-info _echo_$_animate-pulse'}`} />
           {now}
         </p>
       ) : null}

@@ -60,17 +60,17 @@ export function ModelDownloadCard({ download, onRetry, onCancel }: ModelDownload
   return (
     <section
       aria-label="Download"
-      className="_echo_$_rounded-2xl _echo_$_border _echo_$_border-ink-100 _echo_$_bg-white _echo_$_p-4 _echo_$_shadow-card dark:_echo_$_border-ink-800 dark:_echo_$_bg-ink-900"
+      className="_echo_$_rounded-2xl _echo_$_border _echo_$_border-line _echo_$_bg-surface _echo_$_p-4 _echo_$_shadow-card"
     >
       <div className="_echo_$_flex _echo_$_items-center _echo_$_gap-2">
         {running ? (
           <EchoLoader size={16} label="Downloading" />
         ) : (
-          <span aria-hidden="true" className="_echo_$_h-2 _echo_$_w-2 _echo_$_rounded-full _echo_$_bg-danger-500" />
+          <span aria-hidden="true" className="_echo_$_h-2 _echo_$_w-2 _echo_$_rounded-full _echo_$_bg-danger" />
         )}
-        <span className="_echo_$_text-sm _echo_$_font-semibold _echo_$_text-ink-900 dark:_echo_$_text-white">{view.label}</span>
+        <span className="_echo_$_text-sm _echo_$_font-semibold _echo_$_text-fg">{view.label}</span>
       </div>
-      <p className="_echo_$_mt-1 _echo_$_text-xs _echo_$_font-medium _echo_$_text-ink-700 dark:_echo_$_text-ink-100">{describeTarget(download.target)}</p>
+      <p className="_echo_$_mt-1 _echo_$_text-xs _echo_$_font-medium _echo_$_text-fg-secondary">{describeTarget(download.target)}</p>
 
       {view.percent !== undefined ? (
         <div
@@ -79,7 +79,7 @@ export function ModelDownloadCard({ download, onRetry, onCancel }: ModelDownload
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={view.percent}
-          className="_echo_$_mt-3 _echo_$_h-1.5 _echo_$_overflow-hidden _echo_$_rounded-full _echo_$_bg-ink-100 dark:_echo_$_bg-ink-800"
+          className="_echo_$_mt-3 _echo_$_h-1.5 _echo_$_overflow-hidden _echo_$_rounded-full _echo_$_bg-muted"
         >
           <div
             className={`_echo_$_h-full _echo_$_rounded-full _echo_$_bg-echo-gradient _echo_$_transition-[width] _echo_$_duration-300 ${
@@ -90,7 +90,7 @@ export function ModelDownloadCard({ download, onRetry, onCancel }: ModelDownload
         </div>
       ) : null}
 
-      <p className="_echo_$_mt-2 _echo_$_text-xs _echo_$_leading-5 _echo_$_text-ink-500 dark:_echo_$_text-ink-300">{view.detail}</p>
+      <p className="_echo_$_mt-2 _echo_$_text-xs _echo_$_leading-5 _echo_$_text-fg-muted">{view.detail}</p>
 
       {download.state === 'failed' ? (
         <div className="_echo_$_mt-3 _echo_$_flex _echo_$_justify-end _echo_$_gap-2">
@@ -105,7 +105,7 @@ export function ModelDownloadCard({ download, onRetry, onCancel }: ModelDownload
 
       {running && !confirming ? (
         <div className="_echo_$_mt-2 _echo_$_flex _echo_$_items-center _echo_$_justify-between _echo_$_gap-3">
-          <p className="_echo_$_text-xs _echo_$_leading-5 _echo_$_text-ink-400">You can close this window. The download keeps going.</p>
+          <p className="_echo_$_text-xs _echo_$_leading-5 _echo_$_text-fg-subtle">You can close this window. The download keeps going.</p>
           <button type="button" onClick={() => setConfirmingCancel(true)} className={SECONDARY_BUTTON}>
             Cancel download
           </button>
@@ -116,9 +116,9 @@ export function ModelDownloadCard({ download, onRetry, onCancel }: ModelDownload
         <div
           role="group"
           aria-labelledby="cancel-download-title"
-          className="_echo_$_mt-3 _echo_$_rounded-xl _echo_$_border _echo_$_border-danger-400/40 _echo_$_bg-danger-50 _echo_$_p-3 dark:_echo_$_bg-danger-950"
+          className="_echo_$_mt-3 _echo_$_rounded-xl _echo_$_border _echo_$_border-danger-line/40 _echo_$_bg-danger-subtle _echo_$_p-3"
         >
-          <p id="cancel-download-title" className="_echo_$_text-sm _echo_$_font-medium _echo_$_text-ink-900 dark:_echo_$_text-white">
+          <p id="cancel-download-title" className="_echo_$_text-sm _echo_$_font-medium _echo_$_text-fg">
             Stop and delete the partly downloaded files?
           </p>
           <div className="_echo_$_mt-2.5 _echo_$_flex _echo_$_justify-end _echo_$_gap-2">

@@ -4,6 +4,7 @@
  * but compositing.
  */
 import { useId } from 'react';
+import { brand } from '../../design/tokens.cjs';
 import { MARK } from './Logo';
 
 export function EchoLoader({ size = 24, label = 'Working' }: { size?: number; label?: string }) {
@@ -13,8 +14,8 @@ export function EchoLoader({ size = 24, label = 'Working' }: { size?: number; la
     <svg width={size} height={size} viewBox="8 6 52 52" role="img" aria-label={label}>
       <defs>
         <linearGradient id={gradient} x1="8" y1="6" x2="60" y2="58" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#B8A5FF" />
-          <stop offset="1" stopColor="#5EEAD4" />
+          <stop offset="0" stopColor={brand['loader-start']} />
+          <stop offset="1" stopColor={brand['loader-end']} />
         </linearGradient>
       </defs>
       <circle {...MARK.dot} fill={`url(#${gradient})`} className={wave} />
@@ -34,7 +35,7 @@ export function EchoLoader({ size = 24, label = 'Working' }: { size?: number; la
         fill="none"
         className={`${wave} _echo_$_[animation-delay:300ms]`}
       />
-      <path d={MARK.spark} fill="#5EEAD4" className={`${wave} _echo_$_[animation-delay:450ms]`} />
+      <path d={MARK.spark} fill={brand['loader-end']} className={`${wave} _echo_$_[animation-delay:450ms]`} />
     </svg>
   );
 }

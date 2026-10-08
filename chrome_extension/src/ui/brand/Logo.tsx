@@ -6,6 +6,7 @@
  * coming alive, and with the toolbar icons rendered from it.
  */
 import { useId } from 'react';
+import { brand } from '../../design/tokens.cjs';
 
 export const MARK = {
   dot: { cx: 20, cy: 32, r: 5 },
@@ -20,16 +21,16 @@ export function Logo({ size = 32, title = 'EchoMeBetter' }: { size?: number; tit
     <svg width={size} height={size} viewBox="0 0 64 64" role="img" aria-label={title}>
       <defs>
         <linearGradient id={gradient} x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#7650FF" />
-          <stop offset="0.55" stopColor="#5B6CFF" />
-          <stop offset="1" stopColor="#2DD4BF" />
+          <stop offset="0" stopColor={brand['logo-start']} />
+          <stop offset="0.55" stopColor={brand['logo-middle']} />
+          <stop offset="1" stopColor={brand['logo-end']} />
         </linearGradient>
       </defs>
       <rect x="2" y="2" width="60" height="60" rx="16" fill={`url(#${gradient})`} />
-      <circle {...MARK.dot} fill="#fff" />
-      <path d={MARK.innerArc} stroke="#fff" strokeWidth="4.5" strokeLinecap="round" fill="none" />
-      <path d={MARK.outerArc} stroke="#fff" strokeOpacity="0.85" strokeWidth="4.5" strokeLinecap="round" fill="none" />
-      <path d={MARK.spark} fill="#E6FFFA" />
+      <circle {...MARK.dot} fill={brand['logo-mark']} />
+      <path d={MARK.innerArc} stroke={brand['logo-mark']} strokeWidth="4.5" strokeLinecap="round" fill="none" />
+      <path d={MARK.outerArc} stroke={brand['logo-mark']} strokeOpacity="0.85" strokeWidth="4.5" strokeLinecap="round" fill="none" />
+      <path d={MARK.spark} fill={brand['logo-spark']} />
     </svg>
   );
 }
