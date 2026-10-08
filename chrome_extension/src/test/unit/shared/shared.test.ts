@@ -1,11 +1,12 @@
 import { describe, expect, test } from '@jest/globals';
 import { describeError, EchoError, toErrorPayload, type ErrorCode } from '../../../shared/errors';
-import { isForegroundMessage, isJobEvent, isJobRequest, isShortcutRequest, isUiRequest } from '../../../shared/messages';
+import { isForegroundMessage, isJobEvent, isJobRequest, isOpenSettingsRequest, isShortcutRequest, isStyleMenuRequest, isUiRequest } from '../../../shared/messages';
 import { canRewrite, isDownloadState, isInstalledModelRecord, modelFrom, offeredCatalog, styleProblem, styleReadiness } from '../../../shared/modelInstall';
 import { installedRecord, TINY_CATALOG } from '../../helpers/fixtures';
 import { MODEL_SOURCE_URL, parseModelSourceUrl } from '../../../shared/modelSource';
 import { computeToRun, DEFAULT_COMPUTE, findGpu, parseGpuProblem, sameCompute, threadsFor } from '../../../shared/compute';
-import { DEFAULT_SETTINGS, parseSettings } from '../../../shared/settings';
+import { leavePopupIntent, parsePopupIntent, POPUP_INTENT_TTL_MS, takePopupIntent } from '../../../shared/popupIntent';
+import { DEFAULT_SETTINGS, parseSettings, wantsWebsites } from '../../../shared/settings';
 import { isEngineStatus } from '../../../shared/status';
 
 const ALL_CODES: ErrorCode[] = [
@@ -44,12 +45,20 @@ describe('message guards', () => {
     expect(isUiRequest({ kind: 'ui/remove-adapter', adapter: 'grammar' })).toBe(true);
     expect(isUiRequest({ kind: 'ui/remove-adapter' })).toBe(false);
     expect(isUiRequest({ kind: 'ui/format-disk' })).toBe(false);
+    expect(isForegroundMessage({ kind: 'echo/style-menu', point: { x: 1, y: 2 } })).toBe(true);
+    expect(isForegroundMessage({ kind: 'echo/style-menu', point: { x: Number.NaN, y: 2 } })).toBe(false);
+    expect(isStyleMenuRequest({ kind: 'menu/open', point: { x: 1, y: 2 } })).toBe(true);
+    expect(isStyleMenuRequest({ kind: 'menu/open' })).toBe(false);
+    expect(isStyleMenuRequest({ kind: 'menu/rewrite', style: 'friendly' })).toBe(true);
+    expect(isStyleMenuRequest({ kind: 'menu/rewrite', style: 'loud' })).toBe(false);
+    expect(isOpenSettingsRequest({ kind: 'page/open-settings', focus: 'keep-awake' })).toBe(true);
+    expect(isOpenSettingsRequest({ kind: 'page/open-settings', focus: 'storage' })).toBe(false);
   });
 });
 
 describe('settings', () => {
   test('only known values are accepted', () => {
-    const chosen = { keepModelLoadedMinutes: 60, shortcutsEnabled: false, processor: 'cpu', cpuUsage: 'maximum', gpuPower: 'low-power' };
+    const chosen = { keepModelLoadedMinutes: 5, shortcutsEnabled: false, holdMenuEnabled: false, processor: 'cpu', cpuUsage: 'maximum', gpuPower: 'low-power' };
     expect(parseSettings(chosen)).toEqual(chosen);
     expect(parseSettings({ keepModelLoadedMinutes: 7, shortcutsEnabled: 'yes', processor: 'tpu', cpuUsage: 'all', gpuPower: 'turbo' })).toEqual(DEFAULT_SETTINGS);
     expect(parseSettings(undefined)).toEqual(DEFAULT_SETTINGS);
@@ -59,8 +68,19 @@ describe('settings', () => {
     expect(DEFAULT_SETTINGS).toMatchObject({ processor: 'gpu', cpuUsage: 'balanced', gpuPower: 'high-performance' });
   });
 
+  test('an idle model is kept for an hour before its memory is freed', () => {
+    expect(DEFAULT_SETTINGS.keepModelLoadedMinutes).toBe(60);
+  });
+
+  test('the press and hold menu is on, and like the shortcuts it is what calls for site access', () => {
+    expect(DEFAULT_SETTINGS.holdMenuEnabled).toBe(true);
+    expect(wantsWebsites({ shortcutsEnabled: false, holdMenuEnabled: true })).toBe(true);
+    expect(wantsWebsites({ shortcutsEnabled: true, holdMenuEnabled: false })).toBe(true);
+    expect(wantsWebsites({ shortcutsEnabled: false, holdMenuEnabled: false })).toBe(false);
+  });
+
   test('settings saved by an older version keep their choices and get the defaults for what is new', () => {
-    expect(parseSettings({ keepModelLoadedMinutes: 60 })).toEqual({ ...DEFAULT_SETTINGS, keepModelLoadedMinutes: 60 });
+    expect(parseSettings({ keepModelLoadedMinutes: 15 })).toEqual({ ...DEFAULT_SETTINGS, keepModelLoadedMinutes: 15 });
     expect(parseSettings({ keepModelLoadedMinutes: 5, shortcutsEnabled: false })).toEqual({ ...DEFAULT_SETTINGS, keepModelLoadedMinutes: 5, shortcutsEnabled: false });
   });
 });
@@ -199,5 +219,37 @@ describe('model install state', () => {
     expect(offeredCatalog(record, newer)).toBe(record.catalog);
     expect(offeredCatalog(record, TINY_CATALOG)).toBe(TINY_CATALOG);
     expect(offeredCatalog(record, null)).toBe(record.catalog);
+  });
+});
+
+describe('popup intent', () => {
+  function memoryStorage() {
+    const data = new Map<string, unknown>();
+    return {
+      data,
+      get: async (key: string) => (data.has(key) ? { [key]: data.get(key) } : {}),
+      set: async (items: Record<string, unknown>) => void Object.entries(items).forEach(([key, value]) => data.set(key, value)),
+      remove: async (key: string) => void data.delete(key),
+    } as unknown as chrome.storage.StorageArea & { data: Map<string, unknown> };
+  }
+
+  test('is taken once by the popup that opens next', async () => {
+    const storage = memoryStorage();
+    await leavePopupIntent('keep-awake', 1000, storage);
+    expect(await takePopupIntent(1500, storage)).toEqual({ page: 'settings', focus: 'keep-awake', at: 1000 });
+    expect(await takePopupIntent(1600, storage)).toBeNull();
+  });
+
+  test('one the popup never took goes stale, and is cleared when the user opens the popup later', async () => {
+    const storage = memoryStorage();
+    await leavePopupIntent('keep-awake', 1000, storage);
+    expect(await takePopupIntent(1000 + POPUP_INTENT_TTL_MS + 1, storage)).toBeNull();
+    expect(storage.data.size).toBe(0);
+  });
+
+  test('anything malformed is ignored', () => {
+    expect(parsePopupIntent({ page: 'settings', focus: 'everything', at: 0 }, 0)).toBeNull();
+    expect(parsePopupIntent({ page: 'home', focus: 'keep-awake', at: 0 }, 0)).toBeNull();
+    expect(parsePopupIntent('keep-awake', 0)).toBeNull();
   });
 });

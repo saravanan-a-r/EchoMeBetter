@@ -50,6 +50,7 @@ function wire(engine: LoadedEngine) {
     ensureEngineHost: async () => undefined,
     sendToEngine: async (command: OffscreenCommand) => void offscreenListener(command, {}, () => undefined),
     onActivity: () => undefined,
+    wakingFromRest: async () => null,
   });
 
   // page <-> service worker (a Port)

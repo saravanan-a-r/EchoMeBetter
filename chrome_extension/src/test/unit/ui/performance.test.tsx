@@ -39,6 +39,8 @@ function renderSettings(performanceProps: PerformanceSettingsProps | undefined) 
     <SettingsView
       platform="other"
       shortcuts="off"
+      holdMenu="off"
+      onHoldMenuChange={jest.fn()}
       keepLoaded={15}
       installed={null}
       performance={performanceProps}
@@ -138,6 +140,7 @@ describe('welcome page', () => {
     onRetryCatalog: jest.fn(),
     platform: 'other' as const,
     shortcuts: 'off' as const,
+    holdMenu: 'off' as const,
     onAllowSiteAccess: jest.fn(),
   };
 

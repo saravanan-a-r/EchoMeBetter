@@ -14,9 +14,9 @@ export function toastPosition(anchor: AnchorRect | null, viewport: { width: numb
 }
 
 const TONE_ACCENT: Record<ToastState['tone'], string> = {
-  success: '_echo_$_bg-better-400',
-  info: '_echo_$_bg-echo-400',
-  error: '_echo_$_bg-danger-400',
+  success: '_echo_$_bg-success',
+  info: '_echo_$_bg-info',
+  error: '_echo_$_bg-danger',
 };
 
 export function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }) {
@@ -40,7 +40,7 @@ export function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () =
       onMouseDown={(event) => event.preventDefault()}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className="_echo_$_pointer-events-auto _echo_$_fixed _echo_$_flex _echo_$_animate-echo-pop-in _echo_$_overflow-hidden _echo_$_rounded-2xl _echo_$_bg-ink-900 _echo_$_text-white _echo_$_shadow-float _echo_$_ring-1 _echo_$_ring-white/15"
+      className="_echo_$_pointer-events-auto _echo_$_fixed _echo_$_flex _echo_$_animate-echo-pop-in _echo_$_overflow-hidden _echo_$_rounded-2xl _echo_$_bg-surface _echo_$_text-fg _echo_$_shadow-float _echo_$_ring-1 _echo_$_ring-sheen/15"
     >
       <span aria-hidden="true" className={`_echo_$_w-1.5 _echo_$_shrink-0 ${TONE_ACCENT[toast.tone]}`} />
       <div className="_echo_$_flex _echo_$_min-w-0 _echo_$_flex-1 _echo_$_items-start _echo_$_gap-3 _echo_$_p-4">
@@ -48,9 +48,9 @@ export function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () =
           <Logo size={24} />
         </span>
         <div className="_echo_$_min-w-0 _echo_$_flex-1">
-          <p className="_echo_$_m-0 _echo_$_text-[15px] _echo_$_font-semibold _echo_$_leading-[22px] _echo_$_text-white">{toast.title}</p>
+          <p className="_echo_$_m-0 _echo_$_text-[15px] _echo_$_font-semibold _echo_$_leading-[22px] _echo_$_text-fg">{toast.title}</p>
           {toast.message ? (
-            <p className="_echo_$_m-0 _echo_$_mt-1 _echo_$_text-[14px] _echo_$_leading-5 _echo_$_text-ink-100">{toast.message}</p>
+            <p className="_echo_$_m-0 _echo_$_mt-1 _echo_$_text-[14px] _echo_$_leading-5 _echo_$_text-fg-secondary">{toast.message}</p>
           ) : null}
           {toast.actions.length > 0 ? (
             <div className="_echo_$_mt-3 _echo_$_flex _echo_$_gap-2">
@@ -62,11 +62,26 @@ export function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () =
                     action.run();
                     onDismiss();
                   }}
-                  className="_echo_$_cursor-pointer _echo_$_rounded-lg _echo_$_border-0 _echo_$_bg-better-300 _echo_$_px-3.5 _echo_$_py-1.5 _echo_$_font-sans _echo_$_text-[14px] _echo_$_font-semibold _echo_$_leading-5 _echo_$_text-ink-950 hover:_echo_$_bg-better-200 focus-visible:_echo_$_outline focus-visible:_echo_$_outline-2 focus-visible:_echo_$_outline-offset-2 focus-visible:_echo_$_outline-better-200"
+                  className="_echo_$_cursor-pointer _echo_$_rounded-lg _echo_$_border-0 _echo_$_bg-accent _echo_$_px-3.5 _echo_$_py-1.5 _echo_$_font-sans _echo_$_text-[14px] _echo_$_font-semibold _echo_$_leading-5 _echo_$_text-on-accent hover:_echo_$_bg-accent-hover focus-visible:_echo_$_outline focus-visible:_echo_$_outline-2 focus-visible:_echo_$_outline-offset-2 focus-visible:_echo_$_outline-focus"
                 >
                   {action.label}
                 </button>
               ))}
+            </div>
+          ) : null}
+          {toast.note ? (
+            <div className="_echo_$_mt-3 _echo_$_border-0 _echo_$_border-t _echo_$_border-solid _echo_$_border-sheen/15 _echo_$_pt-3">
+              <p className="_echo_$_m-0 _echo_$_text-[13px] _echo_$_leading-5 _echo_$_text-fg-soft">{toast.note.text}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  toast.note?.action.run();
+                  onDismiss();
+                }}
+                className="_echo_$_mt-2 _echo_$_cursor-pointer _echo_$_rounded-lg _echo_$_border _echo_$_border-solid _echo_$_border-sheen/25 _echo_$_bg-sheen/10 _echo_$_px-3 _echo_$_py-1.5 _echo_$_font-sans _echo_$_text-[13px] _echo_$_font-semibold _echo_$_leading-5 _echo_$_text-fg hover:_echo_$_bg-sheen/20 focus-visible:_echo_$_outline focus-visible:_echo_$_outline-2 focus-visible:_echo_$_outline-offset-2 focus-visible:_echo_$_outline-focus"
+              >
+                {toast.note.action.label}
+              </button>
             </div>
           ) : null}
         </div>
@@ -74,7 +89,7 @@ export function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () =
           type="button"
           aria-label="Dismiss"
           onClick={onDismiss}
-          className="_echo_$_m-[-4px] _echo_$_cursor-pointer _echo_$_rounded-md _echo_$_border-0 _echo_$_bg-transparent _echo_$_p-1.5 _echo_$_text-ink-200 hover:_echo_$_bg-white/10 hover:_echo_$_text-white"
+          className="_echo_$_m-[-4px] _echo_$_cursor-pointer _echo_$_rounded-md _echo_$_border-0 _echo_$_bg-transparent _echo_$_p-1.5 _echo_$_text-fg-soft hover:_echo_$_bg-sheen/10 hover:_echo_$_text-fg"
         >
           <svg width="16" height="16" viewBox="0 0 14 14" aria-hidden="true">
             <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />

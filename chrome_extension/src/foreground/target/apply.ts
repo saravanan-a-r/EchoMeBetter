@@ -145,6 +145,16 @@ function applyToContentEditable(target: ContentEditableTarget, replacement: stri
   };
 }
 
+/** Select the captured text again, as it was when captured (the caller has checked it is unchanged). */
+export function reselect(target: EditTarget): void {
+  if (target.kind === 'content-editable') {
+    selectRange(target);
+    return;
+  }
+  target.element.focus({ preventScroll: true });
+  target.element.setSelectionRange(target.start, target.end);
+}
+
 /** Replace the captured selection with `replacement`, or throw TEXT_CHANGED. */
 export function applyRewrite(target: EditTarget, replacement: string): AppliedEdit {
   if (!isUnchanged(target)) throw new EchoError('TEXT_CHANGED');

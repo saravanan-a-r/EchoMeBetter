@@ -1,6 +1,6 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import { styleMenuId } from '../../../background/contextMenus';
-import { launchRewrite, launchStyle, type LauncherDeps } from '../../../background/rewriteLauncher';
+import { launchRewrite, launchStyle, launchStyleMenu, type LauncherDeps } from '../../../background/rewriteLauncher';
 import type { ErrorPayload } from '../../../shared/errors';
 
 function deps(options: { injectFails?: (frameId: number) => boolean; problem?: ErrorPayload } = {}) {
@@ -84,5 +84,26 @@ describe('launchRewrite', () => {
     await launchRewrite({ menuItemId: 'echomebetter' }, tab, value);
     await launchRewrite({ menuItemId: 'someone-else:professional' }, tab, value);
     expect(calls).toEqual([]);
+  });
+});
+
+describe('launchStyleMenu', () => {
+  test('brings the foreground into the frame that was held in and opens the menu there, without waking the model yet', async () => {
+    const { value, calls } = deps();
+    await launchStyleMenu({ x: 12, y: 34 }, 4, tab, value);
+    expect(calls).toEqual(['inject:4', 'echo/style-menu:4']);
+    expect(value.tabs.sendMessage).toHaveBeenCalledWith(7, { kind: 'echo/style-menu', point: { x: 12, y: 34 } }, { frameId: 4 });
+  });
+
+  test("on the extension's own pages the foreground is already there", async () => {
+    const { value, calls } = deps();
+    await launchStyleMenu({ x: 1, y: 1 }, 0, { id: 7, url: 'chrome-extension://abc/ui/welcome/welcome.html' } as chrome.tabs.Tab, value);
+    expect(calls).toEqual(['echo/style-menu:0']);
+  });
+
+  test('a frame that cannot be reached gets no menu', async () => {
+    const { value, calls } = deps({ injectFails: () => true });
+    await launchStyleMenu({ x: 1, y: 1 }, 0, tab, value);
+    expect(calls).toEqual(['inject:0', 'badge:!']);
   });
 });

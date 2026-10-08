@@ -6,6 +6,7 @@ import { isBusyCursorOn, setBusyCursor } from '../../../foreground/ui/busyCursor
 import { mountOverlay, OVERLAY_TAG } from '../../../foreground/ui/mountOverlay';
 import { OverlayApp } from '../../../foreground/ui/OverlayApp';
 import { OverlayStore } from '../../../foreground/ui/overlayStore';
+import { menuPosition } from '../../../foreground/ui/StyleMenu';
 import { toastPosition } from '../../../foreground/ui/Toast';
 
 describe('overlay', () => {
@@ -30,6 +31,58 @@ describe('overlay', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
     expect(undo).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Rewritten · Friendly')).not.toBeInTheDocument();
+  });
+
+  test("a toast's note shows under its actions, and its button runs and closes the toast", () => {
+    const store = new OverlayStore();
+    render(<OverlayApp store={store} />);
+    const keepAwake = jest.fn();
+    act(() => {
+      store.showToast({
+        tone: 'success',
+        title: 'Rewritten · Concise',
+        actions: [{ label: 'Undo', run: jest.fn() }],
+        note: { text: 'Waking up took 3.4 s.', action: { label: 'Keep it awake longer', run: keepAwake } },
+        anchor: null,
+        durationMs: 0,
+      });
+    });
+    expect(screen.getByText('Waking up took 3.4 s.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep it awake longer' }));
+    expect(keepAwake).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Rewritten · Concise')).not.toBeInTheDocument();
+  });
+
+  test('the style menu lists every style with its hint; clicking one picks it, hovering makes it the active one', () => {
+    const store = new OverlayStore();
+    render(<OverlayApp store={store} />);
+    const pick = jest.fn();
+    act(() => {
+      store.openMenu({ point: { x: 20, y: 20 }, styles: ['professional', 'grammar', 'friendly', 'concise', 'elaborate'], active: 0, pick, setActive: (index) => store.setMenuActive(index) });
+    });
+    const menu = screen.getByRole('menu', { name: 'Rewrite as' });
+    const items = screen.getAllByRole('menuitem');
+    expect(items.map((item) => item.textContent)).toEqual([
+      'ProfessionalPolished and workplace-ready1',
+      'GrammarFix grammar and spelling only2',
+      'FriendlyWarm and approachable3',
+      'ConciseShorter, same meaning4',
+      'ElaborateFuller, with more detail5',
+    ]);
+    expect(menu).toBeInTheDocument();
+    fireEvent.mouseEnter(items[3]!);
+    expect(screen.getAllByRole('menuitem')[3]).toHaveAttribute('data-active', 'true');
+    fireEvent.click(items[1]!);
+    expect(pick).toHaveBeenCalledWith('grammar');
+  });
+
+  test('the menu opens beside the point, and on its other side near the edges of the window', () => {
+    const size = { width: 272, height: 300 };
+    const viewport = { width: 1000, height: 800 };
+    expect(menuPosition({ x: 100, y: 100 }, size, viewport)).toEqual({ left: 110, top: 114 });
+    expect(menuPosition({ x: 900, y: 700 }, size, viewport)).toEqual({ left: 900 - 10 - 272, top: 700 - 14 - 300 });
+    // A window too small for either side: kept on screen.
+    expect(menuPosition({ x: 150, y: 150 }, size, { width: 300, height: 320 })).toEqual({ left: 8, top: 8 });
   });
 
   test('toasts dismiss themselves after their duration', () => {

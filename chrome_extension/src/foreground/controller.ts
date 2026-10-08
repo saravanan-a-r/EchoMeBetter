@@ -4,20 +4,30 @@
  *   start   capture the selection → show the pointer loader → ask for the rewrite
  *   events  "loading model 40%" / "rewriting" update the loader
  *   done    re-check the text is untouched → replace it → toast with Undo
+ *           (and, when the model first had to wake up from an idle rest,
+ *           how long that took and a way to keep it awake longer)
  *   Esc     cancel; the page is left exactly as it was
+ *
+ * It also owns the style menu that a press and hold on selected text opens:
+ * a pick re-selects the text the menu was opened for and asks for that
+ * style the way a shortcut does; Esc or a click elsewhere closes it.
  *
  * Only one job runs per frame. Everything the controller touches outside
  * itself (port, overlay, clipboard) is injected, so the whole journey is
  * testable in a DOM without Chrome.
  */
 import { describeError, EchoError, toErrorPayload, type ErrorPayload } from '../shared/errors';
-import { isJobEvent, type ForegroundMessage, type JobEvent, type JobRequest, type StartJobReply } from '../shared/messages';
 import { formatDuration } from '../shared/format';
-import { styleLabel, type StyleId } from '../shared/styles';
-import { applyRewrite } from './target/apply';
+import { isJobEvent, type ForegroundMessage, type JobEvent, type JobRequest, type Point, type StartJobReply, type WokeFromRest } from '../shared/messages';
+import type { SettingsFocus } from '../shared/popupIntent';
+import { keepLoadedLabel } from '../shared/settings';
+import { STYLE_IDS, styleLabel, type StyleId } from '../shared/styles';
+import { takeHeldSelection } from './heldSelection';
+import { applyRewrite, isUnchanged, reselect } from './target/apply';
 import { captureTarget, splitWhitespace, targetRect, type EditTarget } from './target/capture';
 import { setBusyCursor } from './ui/busyCursor';
-import type { AnchorRect, OverlayStore, ToastAction, ToastState } from './ui/overlayStore';
+import { OVERLAY_TAG } from './ui/mountOverlay';
+import type { AnchorRect, OverlayStore, ToastAction, ToastNote, ToastState } from './ui/overlayStore';
 
 export interface JobPortLike {
   postMessage(message: JobRequest): void;
@@ -33,6 +43,10 @@ export interface ForegroundDeps {
   /** The overlay's store, mounting the overlay on first use. */
   readonly overlay: () => OverlayStore;
   readonly writeClipboard: (text: string) => Promise<void>;
+  /** Open the toolbar popup's settings at `focus`. */
+  readonly openSettings: (focus: SettingsFocus) => void;
+  /** A style was picked from the style menu: ask for it, as its shortcut would. */
+  readonly requestRewrite: (style: StyleId) => void;
   /** Milliseconds on a monotonic clock; defaults to performance.now. */
   readonly now?: () => number;
 }
@@ -52,7 +66,15 @@ interface ActiveJob {
   readonly stopListening: () => void;
 }
 
-export const TOAST_MS = { success: 6000, info: 4000, error: 7000 } as const;
+interface OpenMenu {
+  /** The selection the menu was opened for. */
+  readonly target: EditTarget;
+  readonly stopListening: () => void;
+}
+
+export const TOAST_MS = { success: 6000, info: 4000, error: 7000, withNote: 12000 } as const;
+
+export const KEEP_AWAKE_LABEL = 'Keep it awake longer';
 
 function toAnchor(rect: Pick<DOMRect, 'top' | 'left' | 'bottom' | 'right'>): AnchorRect {
   return { top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right };
@@ -60,6 +82,7 @@ function toAnchor(rect: Pick<DOMRect, 'top' | 'left' | 'bottom' | 'right'>): Anc
 
 export class ForegroundController {
   private active: ActiveJob | null = null;
+  private menu: OpenMenu | null = null;
 
   constructor(private readonly deps: ForegroundDeps) {}
 
@@ -72,10 +95,102 @@ export class ForegroundController {
       this.toastError(message.error, null);
       return { ok: true };
     }
+    if (message.kind === 'echo/style-menu') return this.openMenu(message.point);
     return this.start(message.jobId, message.style);
   }
 
+  get menuOpen(): boolean {
+    return this.menu !== null;
+  }
+
+  /** The style menu, beside `point`, for the text held there. */
+  openMenu(point: Point): StartJobReply {
+    this.closeMenu();
+    if (this.active) return this.refuse(new EchoError('BUSY'), this.active.anchor);
+    let target = takeHeldSelection(this.deps.win, point);
+    if (!target) {
+      try {
+        target = captureTarget(this.deps.doc);
+      } catch (error) {
+        return { ok: false, error: toErrorPayload(error) }; // nothing selected any more: nothing to offer
+      }
+    }
+    if (!isUnchanged(target)) return { ok: false, error: { code: 'TEXT_CHANGED' } };
+    const held = target;
+    // Letting go of the hold can drop the selection (the browser's or the editor's doing): show it again.
+    reselect(held);
+
+    const { win } = this.deps;
+    const overlay = () => this.deps.overlay();
+    const move = (by: number) => {
+      const menu = overlay().getSnapshot().menu;
+      if (menu) overlay().setMenuActive((menu.active + by + menu.styles.length) % menu.styles.length);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      const menu = overlay().getSnapshot().menu;
+      if (!menu || event.isComposing) return;
+      const plain = !event.altKey && !event.ctrlKey && !event.metaKey;
+      const digit = plain && /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : -1;
+      if (event.key === 'Escape') this.closeMenu();
+      else if (event.key === 'ArrowDown' || (event.key === 'Tab' && !event.shiftKey)) move(1);
+      else if (event.key === 'ArrowUp' || (event.key === 'Tab' && event.shiftKey)) move(-1);
+      else if (event.key === 'Home') overlay().setMenuActive(0);
+      else if (event.key === 'End') overlay().setMenuActive(menu.styles.length - 1);
+      else if (event.key === 'Enter') this.pick(menu.styles[menu.active]!);
+      else if (digit >= 0 && digit < menu.styles.length) this.pick(menu.styles[digit]!);
+      else return; // anything else is the page's
+      // The menu's keys must not reach the editor (an arrow would move the caret, Enter add a line) or the page.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const inMenu = event.composedPath().some((node) => node instanceof Element && node.localName === OVERLAY_TAG);
+      if (!inMenu) this.closeMenu();
+    };
+    let reselectTimer: number | undefined;
+    const onRelease = () => {
+      // After the release's own default action (and the editor's handlers) have run.
+      reselectTimer = win.setTimeout(() => {
+        if (this.menu?.target === held && isUnchanged(held)) reselect(held);
+      }, 0);
+    };
+    win.addEventListener('keydown', onKey, true);
+    win.addEventListener('pointerdown', onPointerDown, true);
+    win.addEventListener('pointerup', onRelease, { capture: true, once: true });
+
+    this.menu = {
+      target: held,
+      stopListening: () => {
+        win.removeEventListener('keydown', onKey, true);
+        win.removeEventListener('pointerdown', onPointerDown, true);
+        win.removeEventListener('pointerup', onRelease, true);
+        win.clearTimeout(reselectTimer);
+      },
+    };
+    overlay().openMenu({ point, styles: STYLE_IDS, active: 0, pick: (style) => this.pick(style), setActive: (index) => overlay().setMenuActive(index) });
+    return { ok: true };
+  }
+
+  closeMenu(): void {
+    const menu = this.menu;
+    if (!menu) return;
+    this.menu = null;
+    menu.stopListening();
+    this.deps.overlay().closeMenu();
+  }
+
+  private pick(style: StyleId): void {
+    const menu = this.menu;
+    if (!menu) return;
+    this.closeMenu();
+    // Typed over meanwhile: what the menu was opened for is gone.
+    if (!isUnchanged(menu.target)) return;
+    reselect(menu.target);
+    this.deps.requestRewrite(style);
+  }
+
   start(jobId: string, style: StyleId): StartJobReply {
+    this.closeMenu();
     if (this.active) return this.refuse(new EchoError('BUSY'), this.active.anchor);
 
     let target: EditTarget;
@@ -161,7 +276,7 @@ export class ForegroundController {
         return;
       case 'job/done':
         this.end();
-        this.deliver(job, event.text);
+        this.deliver(job, event.text, event.wokeFromRest);
         return;
       case 'job/failed':
         this.fail(event.error);
@@ -173,14 +288,26 @@ export class ForegroundController {
     return (this.deps.now ?? (() => performance.now()))();
   }
 
-  private deliver(job: ActiveJob, text: string): void {
+  /** How long the model took to wake up, and that a longer keep-awake time would skip it. */
+  private wakeNote(job: ActiveJob, rest: WokeFromRest | undefined): ToastNote | undefined {
+    if (!rest || job.rewriteStartedAt === null) return undefined;
+    const waking = formatDuration(job.rewriteStartedAt - job.requestedAt);
+    return {
+      text: `Waking up took ${waking}. EchoMeBetter rests after ${keepLoadedLabel(rest.idleMinutes)} without use, to keep your computer fast.`,
+      action: { label: KEEP_AWAKE_LABEL, run: () => this.deps.openSettings('keep-awake') },
+    };
+  }
+
+  private deliver(job: ActiveJob, text: string, rest?: WokeFromRest): void {
     const took = formatDuration(this.now() - (job.rewriteStartedAt ?? job.requestedAt));
+    const note = this.wakeNote(job, rest);
     if (text === job.core) {
       this.toast({
         tone: 'info',
         title: 'Looks good already',
         message: `No ${styleLabel(job.style).toLowerCase()} changes to suggest. Took ${took}.`,
         actions: [],
+        note,
         anchor: job.anchor,
       });
       return;
@@ -209,6 +336,7 @@ export class ForegroundController {
             },
           },
         ],
+        note,
         anchor: job.anchor,
       });
     } catch (error) {
@@ -262,6 +390,7 @@ export class ForegroundController {
   }
 
   private toast(toast: Omit<ToastState, 'id' | 'durationMs'>): void {
-    this.deps.overlay().showToast({ ...toast, durationMs: TOAST_MS[toast.tone] });
+    // A note is more to read; hovering the toast keeps it up as well.
+    this.deps.overlay().showToast({ ...toast, durationMs: toast.note ? TOAST_MS.withNote : TOAST_MS[toast.tone] });
   }
 }

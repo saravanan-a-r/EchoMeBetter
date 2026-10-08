@@ -1,6 +1,6 @@
 import { describe, expect, jest, test } from '@jest/globals';
 import { JobRouter, type PortLike } from '../../../background/jobRouter';
-import type { JobEvent, OffscreenCommand } from '../../../shared/messages';
+import type { JobEvent, OffscreenCommand, WokeFromRest } from '../../../shared/messages';
 
 function fakePort() {
   const sent: JobEvent[] = [];
@@ -15,10 +15,10 @@ function fakePort() {
   return { port, sent, send: (message: unknown) => onMessage(message), disconnect: () => onDisconnect() };
 }
 
-function router(ensureEngineHost: () => Promise<void> = async () => undefined) {
+function router(ensureEngineHost: () => Promise<void> = async () => undefined, wakingFromRest: () => Promise<WokeFromRest | null> = async () => null) {
   const commands: OffscreenCommand[] = [];
   const onActivity = jest.fn();
-  const instance = new JobRouter({ ensureEngineHost, sendToEngine: async (command) => void commands.push(command), onActivity });
+  const instance = new JobRouter({ ensureEngineHost, sendToEngine: async (command) => void commands.push(command), onActivity, wakingFromRest });
   return { instance, commands, onActivity };
 }
 
@@ -90,5 +90,23 @@ describe('JobRouter', () => {
     page.send('hello');
     await flush();
     expect(commands).toEqual([]);
+  });
+
+  test('a job that wakes the model from an idle rest says so when it is done; the next one does not', async () => {
+    let resting = true;
+    const { instance } = router(async () => undefined, async () => (resting ? { idleMinutes: 15 } : null));
+    const page = fakePort();
+    instance.handlePort(page.port);
+    page.send({ kind: 'job/request', jobId: 'A', style: 'concise', text: 'one' });
+    await flush();
+    resting = false; // the model loaded for A
+    instance.handleEngineEvent({ type: 'job-done', jobId: 'A', text: 'ONE' });
+    page.send({ kind: 'job/request', jobId: 'B', style: 'concise', text: 'two' });
+    await flush();
+    instance.handleEngineEvent({ type: 'job-done', jobId: 'B', text: 'TWO' });
+    expect(page.sent).toEqual([
+      { kind: 'job/done', jobId: 'A', text: 'ONE', wokeFromRest: { idleMinutes: 15 } },
+      { kind: 'job/done', jobId: 'B', text: 'TWO' },
+    ]);
   });
 });

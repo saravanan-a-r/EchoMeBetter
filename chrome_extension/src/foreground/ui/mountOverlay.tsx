@@ -78,12 +78,12 @@ export function mountOverlay(doc: Document = document): Overlay {
   const store = new OverlayStore();
   const root: Root = createRoot(container);
   root.render(<OverlayApp store={store} />);
-  // Something new to show (a job starting, a toast) re-enters the top layer,
+  // Something new to show (a job starting, a toast, the style menu) re-enters the top layer,
   // so it lands above anything the page opened in the meantime.
   let shown = store.getSnapshot();
   store.subscribe(() => {
     const next = store.getSnapshot();
-    if ((next.working && !shown.working) || (next.toast && next.toast.id !== shown.toast?.id)) showInTopLayer(host);
+    if ((next.working && !shown.working) || (next.menu && !shown.menu) || (next.toast && next.toast.id !== shown.toast?.id)) showInTopLayer(host);
     shown = next;
   });
   // Registered after createRoot, so React's own root listeners still run first.
