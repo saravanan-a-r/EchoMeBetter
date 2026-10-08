@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 import { describe, expect, jest, test } from '@jest/globals';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { formatBytes, formatDuration, formatList, formatTimeLeft } from '../../../shared/format';
 import type { UiReply } from '../../../shared/messages';
 import type { DownloadState, InstalledModelRecord, ModelCatalog } from '../../../shared/modelInstall';
@@ -11,10 +11,10 @@ import { describeTarget, presentDownload } from '../../../ui/components/ModelDow
 import { presentStatus } from '../../../ui/components/StatusCard';
 import { ACCESS_TITLE } from '../../../ui/components/ShortcutAccessCard';
 import type { CatalogState, ModelAvailability } from '../../../ui/hooks/useModel';
-import { shortcutAvailability, type ShortcutAvailability } from '../../../ui/hooks/useShortcuts';
-import { SettingsView, SHORTCUT_NOTE } from '../../../ui/popup/SettingsView';
-import { PopupView, REMOVED_NOTICE } from '../../../ui/popup/PopupApp';
-import { WelcomeView } from '../../../ui/welcome/WelcomeApp';
+import { websiteAvailability, type WebsiteAvailability } from '../../../ui/hooks/useShortcuts';
+import { HOLD_MENU_DESCRIPTION, KEEP_AWAKE_NOTE, SettingsView, SHORTCUT_NOTE } from '../../../ui/popup/SettingsView';
+import { HOLD_HINT, PopupView, REMOVED_NOTICE } from '../../../ui/popup/PopupApp';
+import { WELCOME_HOLD_HINT, WelcomeView } from '../../../ui/welcome/WelcomeApp';
 
 const summary: ModelSummary = { id: 'echomebetter-int8', displayName: 'EchoMeBetter', precision: 'int8', sizeBytes: 790_000_000 };
 /** What a model.json offers: adapters for `adapters`, every other style falling back to professional. */
@@ -39,11 +39,11 @@ const FIRST = { base: true, adapters: ['professional'] } as const;
 function renderPopup(
   status: EngineStatus,
   model: ModelAvailability = installed(),
-  options: { modelRemoved?: boolean; shortcuts?: ShortcutAvailability; catalog?: CatalogState } = {},
+  options: { modelRemoved?: boolean; shortcuts?: WebsiteAvailability; holdMenu?: WebsiteAvailability; catalog?: CatalogState } = {},
 ) {
   const handlers = {
     onAllowSiteAccess: jest.fn(),
-    onTurnOffShortcuts: jest.fn(),
+    onTurnOffWebsiteFeatures: jest.fn(),
     onOpenSettings: jest.fn(),
     onLoadModel: jest.fn(),
     onOpenGuide: jest.fn(),
@@ -59,6 +59,7 @@ function renderPopup(
       modelRemoved={options.modelRemoved ?? false}
       platform="mac"
       shortcuts={options.shortcuts ?? 'off'}
+      holdMenu={options.holdMenu ?? 'off'}
       {...handlers}
     />,
   );
@@ -163,31 +164,42 @@ describe('keyboard shortcuts in the popup', () => {
     expect(screen.queryByText(ACCESS_TITLE)).not.toBeInTheDocument();
   });
 
-  test('without site access the popup asks, and can be told not now', () => {
-    const { onAllowSiteAccess, onTurnOffShortcuts } = renderPopup(ready, installed(), { shortcuts: 'needs-access' });
-    expect(screen.getByText(ACCESS_TITLE)).toBeInTheDocument();
-    expect(screen.getByText(/shortcuts like ⌃⇧P on websites/)).toBeInTheDocument();
+  test('without site access the popup asks once for what waits on it, and can be told not now', () => {
+    const { onAllowSiteAccess, onTurnOffWebsiteFeatures } = renderPopup(ready, installed(), { shortcuts: 'needs-access', holdMenu: 'needs-access' });
+    expect(screen.getAllByText(ACCESS_TITLE)).toHaveLength(1);
+    expect(screen.getByText(/For shortcuts like ⌃⇧P and the menu that opens when you press and hold on selected text to work on websites/)).toBeInTheDocument();
     expect(screen.queryByLabelText(/Shift/)).not.toBeInTheDocument();
+    expect(screen.queryByText(HOLD_HINT)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Allow on websites' }));
     expect(onAllowSiteAccess).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
-    expect(onTurnOffShortcuts).toHaveBeenCalledTimes(1);
+    expect(onTurnOffWebsiteFeatures).toHaveBeenCalledTimes(1);
+  });
+
+  test('the press and hold menu alone asks for site access too, and once allowed is taught next to the right-click', () => {
+    renderPopup(ready, installed(), { holdMenu: 'needs-access' });
+    expect(screen.getByText(/For the menu that opens when you press and hold on selected text to work on websites/)).toBeInTheDocument();
+    cleanup();
+    renderPopup(ready, installed(), { holdMenu: 'on' });
+    expect(screen.getByText(HOLD_HINT)).toBeInTheDocument();
+    expect(screen.queryByText(ACCESS_TITLE)).not.toBeInTheDocument();
   });
 });
 
 function renderSettings(
-  shortcuts: ShortcutAvailability,
-  options: { platform?: 'mac' | 'other'; installed?: InstalledModelRecord | null; removeReply?: UiReply } = {},
+  shortcuts: WebsiteAvailability,
+  options: { platform?: 'mac' | 'other'; installed?: InstalledModelRecord | null; removeReply?: UiReply; focus?: 'keep-awake'; holdMenu?: WebsiteAvailability } = {},
 ) {
   const handlers = {
     onShortcutsChange: jest.fn(),
+    onHoldMenuChange: jest.fn(),
     onAllowSiteAccess: jest.fn(),
     onKeepLoadedChange: jest.fn(),
     onBack: jest.fn(),
     onRemoveModel: jest.fn(async (): Promise<UiReply> => options.removeReply ?? { ok: true }),
     onRemoveAdapter: jest.fn(async (_adapter: StyleId): Promise<UiReply> => options.removeReply ?? { ok: true }),
   };
-  render(<SettingsView platform={options.platform ?? 'other'} shortcuts={shortcuts} keepLoaded={15} installed={options.installed ?? null} {...handlers} />);
+  render(<SettingsView platform={options.platform ?? 'other'} shortcuts={shortcuts} holdMenu={options.holdMenu ?? 'on'} keepLoaded={15} installed={options.installed ?? null} focus={options.focus} {...handlers} />);
   return handlers;
 }
 
@@ -218,8 +230,26 @@ describe('settings page', () => {
     expect(onAllowSiteAccess).toHaveBeenCalledTimes(1);
   });
 
+  test('the press and hold menu has its own switch', () => {
+    const { onHoldMenuChange } = renderSettings('on', { holdMenu: 'on' });
+    const toggle = screen.getByRole('switch', { name: 'Press and hold menu' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(toggle).toHaveAccessibleDescription(HOLD_MENU_DESCRIPTION);
+    fireEvent.click(toggle);
+    expect(onHoldMenuChange).toHaveBeenCalledWith(false);
+  });
+
+  test('site access is asked for once, under the first setting waiting for it', () => {
+    renderSettings('needs-access', { holdMenu: 'needs-access' });
+    expect(screen.getAllByRole('button', { name: 'Allow on websites' })).toHaveLength(1);
+    cleanup();
+    renderSettings('off', { holdMenu: 'needs-access' });
+    const mouse = screen.getByRole('region', { name: 'Mouse' });
+    expect(within(mouse).getByRole('button', { name: 'Allow on websites' })).toBeInTheDocument();
+  });
+
   test('nothing is switchable before the state is known', () => {
-    renderSettings('loading');
+    renderSettings('loading', { holdMenu: 'loading' });
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
   });
 
@@ -231,12 +261,28 @@ describe('settings page', () => {
     expect(onBack).toHaveBeenCalled();
   });
 
+  test('opened for the keep-awake time, it scrolls to that setting, focuses it and says why', () => {
+    const scrolled = jest.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    renderSettings('on', { focus: 'keep-awake' });
+    const select = screen.getByLabelText(/Free memory when idle/);
+    expect(select).toHaveFocus();
+    expect(scrolled.mock.contexts).toEqual([select]);
+    expect(select).toHaveAccessibleDescription(KEEP_AWAKE_NOTE);
+  });
+
+  test('opened from the gear, no setting is singled out', () => {
+    renderSettings('on');
+    expect(screen.getByLabelText(/Free memory when idle/)).not.toHaveFocus();
+    expect(screen.queryByText(KEEP_AWAKE_NOTE)).not.toBeInTheDocument();
+  });
+
   test('availability combines the setting with the site access', () => {
-    expect(shortcutAvailability(null, true)).toBe('loading');
-    expect(shortcutAvailability(true, null)).toBe('loading');
-    expect(shortcutAvailability(false, true)).toBe('off');
-    expect(shortcutAvailability(true, false)).toBe('needs-access');
-    expect(shortcutAvailability(true, true)).toBe('on');
+    expect(websiteAvailability(null, true)).toBe('loading');
+    expect(websiteAvailability(true, null)).toBe('loading');
+    expect(websiteAvailability(false, true)).toBe('off');
+    expect(websiteAvailability(true, false)).toBe('needs-access');
+    expect(websiteAvailability(true, true)).toBe('on');
   });
 });
 
@@ -380,7 +426,8 @@ describe('welcome page', () => {
     onCancelDownload: jest.fn(),
     onRetryCatalog: jest.fn(),
     platform: 'other' as const,
-    shortcuts: 'off' as ShortcutAvailability,
+    shortcuts: 'off' as WebsiteAvailability,
+    holdMenu: 'off' as WebsiteAvailability,
     onAllowSiteAccess: jest.fn(),
   };
 
@@ -409,6 +456,12 @@ describe('welcome page', () => {
     expect(screen.getByText(/press Alt\+Shift\+P for Professional/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Allow on websites' }));
     expect(props.onAllowSiteAccess).toHaveBeenCalled();
+  });
+
+  test('teaches the press and hold while it is on', () => {
+    render(<WelcomeView {...props} model={installed()} holdMenu="on" />);
+    expect(screen.getByText(WELCOME_HOLD_HINT)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Allow on websites' })).not.toBeInTheDocument();
   });
 
   test('with shortcuts off it only teaches the right-click', () => {

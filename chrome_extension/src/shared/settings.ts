@@ -12,13 +12,22 @@ export const KEEP_LOADED_CHOICES = [5, 15, 60, 0] as const; // minutes; 0 = unti
 
 export type KeepLoadedMinutes = (typeof KEEP_LOADED_CHOICES)[number];
 
+const KEEP_LOADED_LABELS: Record<KeepLoadedMinutes, string> = { 5: '5 minutes', 15: '15 minutes', 60: '1 hour', 0: 'Never' };
+
+/** "15 minutes", "1 hour"; "Never" for 0. */
+export function keepLoadedLabel(minutes: KeepLoadedMinutes): string {
+  return KEEP_LOADED_LABELS[minutes];
+}
+
 export interface Settings extends ComputeSettings {
   readonly keepModelLoadedMinutes: KeepLoadedMinutes;
   /** Keyboard shortcuts on web pages; they also need the optional site access (see shared/shortcuts.ts). */
   readonly shortcutsEnabled: boolean;
+  /** Pressing and holding on selected text opens the style menu; needs the same site access. */
+  readonly holdMenuEnabled: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { keepModelLoadedMinutes: 15, shortcutsEnabled: true, ...DEFAULT_COMPUTE };
+export const DEFAULT_SETTINGS: Settings = { keepModelLoadedMinutes: 60, shortcutsEnabled: true, holdMenuEnabled: true, ...DEFAULT_COMPUTE };
 
 export const SETTINGS_STORAGE_KEY = 'settings';
 
@@ -33,6 +42,7 @@ export function parseSettings(raw: unknown): Settings {
   return {
     keepModelLoadedMinutes: oneOf(KEEP_LOADED_CHOICES, stored.keepModelLoadedMinutes, DEFAULT_SETTINGS.keepModelLoadedMinutes),
     shortcutsEnabled: typeof stored.shortcutsEnabled === 'boolean' ? stored.shortcutsEnabled : DEFAULT_SETTINGS.shortcutsEnabled,
+    holdMenuEnabled: typeof stored.holdMenuEnabled === 'boolean' ? stored.holdMenuEnabled : DEFAULT_SETTINGS.holdMenuEnabled,
     processor: oneOf(PROCESSORS, stored.processor, DEFAULT_SETTINGS.processor),
     cpuUsage: oneOf(CPU_USAGES, stored.cpuUsage, DEFAULT_SETTINGS.cpuUsage),
     gpuPower: oneOf(GPU_POWERS, stored.gpuPower, DEFAULT_SETTINGS.gpuPower),
@@ -46,4 +56,9 @@ export async function loadSettings(storage: chrome.storage.StorageArea = chrome.
 
 export async function saveSettings(settings: Settings, storage: chrome.storage.StorageArea = chrome.storage.local): Promise<void> {
   await storage.set({ [SETTINGS_STORAGE_KEY]: parseSettings(settings) });
+}
+
+/** Whether anything the user turned on has to run on websites (and so needs the site access). */
+export function wantsWebsites(settings: Pick<Settings, 'shortcutsEnabled' | 'holdMenuEnabled'>): boolean {
+  return settings.shortcutsEnabled || settings.holdMenuEnabled;
 }

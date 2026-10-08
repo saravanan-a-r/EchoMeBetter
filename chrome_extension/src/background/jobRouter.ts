@@ -7,7 +7,7 @@
  * spending CPU on text nobody will see.
  */
 import { toErrorPayload } from '../shared/errors';
-import { isJobRequest, type EngineEvent, type JobEvent, type OffscreenCommand } from '../shared/messages';
+import { isJobRequest, type EngineEvent, type JobEvent, type OffscreenCommand, type WokeFromRest } from '../shared/messages';
 import type { StyleId } from '../shared/styles';
 
 export interface PortLike {
@@ -23,10 +23,13 @@ export interface RouterDeps {
   readonly sendToEngine: (command: OffscreenCommand) => Promise<void>;
   /** Called whenever there is user-driven work, to postpone idle unloading. */
   readonly onActivity: () => void;
+  /** Asked as a job starts: whether it wakes the model from an idle rest (said on its job/done). */
+  readonly wakingFromRest: () => Promise<WokeFromRest | null>;
 }
 
 export class JobRouter {
   private readonly jobs = new Map<string, PortLike>();
+  private readonly wokeFromRest = new Map<string, WokeFromRest>();
 
   constructor(private readonly deps: RouterDeps) {}
 
@@ -65,13 +68,18 @@ export class JobRouter {
   }
 
   private cancel(jobId: string): void {
+    this.wokeFromRest.delete(jobId);
     // No engine host means nothing is running; a failed send is not an error.
     this.deps.sendToEngine({ target: 'offscreen', kind: 'engine/cancel', jobId }).catch(() => undefined);
   }
 
   private async start(jobId: string, style: StyleId, text: string, port: PortLike): Promise<void> {
     try {
+      // Asked as the engine host starts, not after: loading the model ends the rest. Nor before: the job must not wait for it.
+      const resting = this.deps.wakingFromRest().catch(() => null);
       await this.deps.ensureEngineHost();
+      const rest = await resting;
+      if (rest && this.jobs.get(jobId) === port) this.wokeFromRest.set(jobId, rest);
       // The page may have gone away while the engine host was starting.
       if (this.jobs.get(jobId) !== port) return;
       await this.deps.sendToEngine({ target: 'offscreen', kind: 'engine/rewrite', jobId, style, text });
@@ -87,10 +95,12 @@ export class JobRouter {
         port?.postMessage({ kind: 'job/phase', jobId: event.jobId, phase: event.phase, progress: event.progress });
         return;
       }
-      case 'job-done':
-        this.finish(event.jobId, { kind: 'job/done', jobId: event.jobId, text: event.text });
+      case 'job-done': {
+        const rest = this.wokeFromRest.get(event.jobId);
+        this.finish(event.jobId, { kind: 'job/done', jobId: event.jobId, text: event.text, ...(rest ? { wokeFromRest: rest } : {}) });
         this.deps.onActivity();
         return;
+      }
       case 'job-failed':
         this.finish(event.jobId, { kind: 'job/failed', jobId: event.jobId, error: event.error });
         return;
@@ -104,6 +114,7 @@ export class JobRouter {
   private finish(jobId: string, message: JobEvent, port = this.jobs.get(jobId)): void {
     if (!port || this.jobs.get(jobId) !== port) return;
     this.jobs.delete(jobId);
+    this.wokeFromRest.delete(jobId);
     try {
       port.postMessage(message);
     } catch {

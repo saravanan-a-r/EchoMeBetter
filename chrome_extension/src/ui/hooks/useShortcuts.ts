@@ -2,15 +2,16 @@ import { useEffect, useState } from 'react';
 import { detectPlatform, SITE_ACCESS, type KeyPlatform } from '../../shared/shortcuts';
 
 /**
- * Where keyboard shortcuts stand, as the UI shows it:
+ * Where a feature that works on websites (the keyboard shortcuts, the press
+ * and hold menu) stands, as the UI shows it:
  *   loading        not read yet; show nothing
- *   off            the user turned them off
+ *   off            the user turned it off
  *   needs-access   turned on, but websites are not allowed yet
  *   on             working on websites
  */
-export type ShortcutAvailability = 'loading' | 'off' | 'needs-access' | 'on';
+export type WebsiteAvailability = 'loading' | 'off' | 'needs-access' | 'on';
 
-export function shortcutAvailability(enabled: boolean | null, siteAccess: boolean | null): ShortcutAvailability {
+export function websiteAvailability(enabled: boolean | null, siteAccess: boolean | null): WebsiteAvailability {
   if (enabled === null || siteAccess === null) return 'loading';
   if (!enabled) return 'off';
   return siteAccess ? 'on' : 'needs-access';
@@ -50,4 +51,9 @@ export function requestSiteAccess(): void {
 
 export function releaseSiteAccess(): void {
   chrome.permissions.remove(origins()).catch(() => undefined);
+}
+
+/** Whether either feature waits for the user to allow websites. */
+export function needsSiteAccess(...features: readonly WebsiteAvailability[]): boolean {
+  return features.includes('needs-access');
 }

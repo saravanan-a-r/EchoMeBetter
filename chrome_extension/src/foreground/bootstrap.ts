@@ -3,7 +3,7 @@
  * injects this script on every menu click, and only the first injection in
  * a frame installs anything.
  */
-import { isForegroundMessage, JOB_PORT_NAME } from '../shared/messages';
+import { isForegroundMessage, JOB_PORT_NAME, type OpenSettingsRequest, type StyleMenuRequest } from '../shared/messages';
 import { ForegroundController, type JobPortLike } from './controller';
 import { mountOverlay, type Overlay } from './ui/mountOverlay';
 
@@ -33,6 +33,14 @@ export function installForeground(win: Window = window): ForegroundController {
       return overlay.store;
     },
     writeClipboard: (text) => win.navigator.clipboard.writeText(text),
+    openSettings: (focus) => {
+      const request: OpenSettingsRequest = { kind: 'page/open-settings', focus };
+      chrome.runtime.sendMessage(request).catch(() => undefined);
+    },
+    requestRewrite: (style) => {
+      const request: StyleMenuRequest = { kind: 'menu/rewrite', style };
+      chrome.runtime.sendMessage(request).catch(() => undefined);
+    },
   });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

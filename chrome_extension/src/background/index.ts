@@ -5,21 +5,23 @@
  */
 import { computeToRun, GPU_PROBLEM_STORAGE_KEY, parseGpuProblem, readGpuProblem, sameCompute, writeGpuProblem, type ComputeSettings } from '../shared/compute';
 import { toErrorPayload } from '../shared/errors';
-import { isOffscreenEventMessage, isShortcutRequest, isUiRequest, JOB_PORT_NAME, type EngineEvent, type OffscreenCommand, type UiReply, type UiRequest } from '../shared/messages';
+import { isOffscreenEventMessage, isOpenSettingsRequest, isShortcutRequest, isStyleMenuRequest, isUiRequest, JOB_PORT_NAME, type EngineEvent, type OffscreenCommand, type StyleMenuRequest, type UiReply, type UiRequest } from '../shared/messages';
 import { modelFrom, readDownloadState, readInstalledModel, styleProblem, writeDownloadState, writeInstalledModel } from '../shared/modelInstall';
 import { MODEL_SOURCE_URL } from '../shared/modelSource';
-import { loadSettings, parseSettings, SETTINGS_STORAGE_KEY } from '../shared/settings';
+import { leavePopupIntent } from '../shared/popupIntent';
+import { loadSettings, parseSettings, SETTINGS_STORAGE_KEY, wantsWebsites, type Settings } from '../shared/settings';
 import { platformFromOs, shortcutLabel } from '../shared/shortcuts';
 import type { StyleId } from '../shared/styles';
 import { readStatus, writeStatus } from '../shared/statusStore';
 import { registerContextMenus } from './contextMenus';
 import { EngineRestarter, readEngineCompute, recordEngineCompute } from './engineRestart';
-import { IDLE_ALARM, lastActivity, recordActivity, shouldUnload } from './idleUnloader';
+import { endRest, IDLE_ALARM, lastActivity, recordActivity, recordRest, shouldUnload, wakingFromRest } from './idleUnloader';
 import { showInstallState } from './installBadge';
 import { JobRouter } from './jobRouter';
 import { OffscreenManager } from './offscreenManager';
-import { launchRewrite, launchStyle, type LauncherDeps } from './rewriteLauncher';
-import { shortcutsActive, syncShortcutScript } from './shortcutAccess';
+import { launchRewrite, launchStyle, launchStyleMenu, type LauncherDeps } from './rewriteLauncher';
+import { openSettings, POPUP_PAGE } from './settingsOpener';
+import { activeOnWebsites, syncShortcutScript } from './shortcutAccess';
 
 const WELCOME_PAGE = 'ui/welcome/welcome.html';
 
@@ -114,6 +116,7 @@ async function mirrorEngineEvent(event: EngineEvent): Promise<void> {
   switch (event.type) {
     case 'status':
       await writeStatus(event.status);
+      if (event.status.state === 'ready') await endRest();
       // A crashed worker takes a running download with it.
       if (event.status.state === 'error') {
         const download = await readDownloadState();
@@ -128,7 +131,11 @@ async function mirrorEngineEvent(event: EngineEvent): Promise<void> {
       return;
     case 'download':
       await writeDownloadState(event.download);
-      if (event.download.state !== 'downloading') void restarter.settle();
+      if (event.download.state !== 'downloading') {
+        // A finished download loads the model (see ModelLibrary); its idle time starts now, not when the download began.
+        await recordActivity();
+        void restarter.settle();
+      }
       return;
     case 'gpu-problem': {
       await writeGpuProblem(event.problem);
@@ -156,15 +163,13 @@ const launcher: LauncherDeps = {
   newJobId: () => crypto.randomUUID(),
 };
 
-async function shortcutsOn(): Promise<boolean> {
-  return shortcutsActive((await loadSettings()).shortcutsEnabled, chrome.permissions);
-}
-
 async function applyShortcuts(): Promise<void> {
-  const active = await shortcutsOn();
-  await syncShortcutScript(active, { scripting: chrome.scripting, permissions: chrome.permissions, tabs: chrome.tabs });
+  const settings = await loadSettings();
+  const listening = await activeOnWebsites(wantsWebsites(settings), chrome.permissions);
+  await syncShortcutScript(listening, { scripting: chrome.scripting, permissions: chrome.permissions, tabs: chrome.tabs });
+  const shortcuts = listening && settings.shortcutsEnabled;
   const platform = platformFromOs((await chrome.runtime.getPlatformInfo()).os);
-  await registerContextMenus(chrome.contextMenus, (style) => (active ? shortcutLabel(style, platform) : null));
+  await registerContextMenus(chrome.contextMenus, (style) => (shortcuts ? shortcutLabel(style, platform) : null));
 }
 
 // One at a time: rebuilding the menu while another rebuild runs would create duplicate ids.
@@ -173,20 +178,36 @@ function refreshShortcuts(): void {
   shortcutsApplied = shortcutsApplied.then(applyShortcuts).catch((error: unknown) => console.error('EchoMeBetter: could not update shortcuts', error));
 }
 
+/**
+ * Whether a request from a page's listener may act: its feature is turned on,
+ * and the page is either the welcome page (which listens on its own) or a
+ * website the user has allowed. The listener is only on those, but one left
+ * behind in a tab after the user changed their mind must be ignored.
+ */
+async function featureOn(feature: keyof Pick<Settings, 'shortcutsEnabled' | 'holdMenuEnabled'>, tab: chrome.tabs.Tab): Promise<boolean> {
+  if (!(await loadSettings())[feature]) return false;
+  const ownPage = tab.url?.startsWith(launcher.extensionOrigin) ?? false;
+  return ownPage || activeOnWebsites(true, chrome.permissions);
+}
+
 async function handleShortcut(style: StyleId, sender: chrome.runtime.MessageSender): Promise<void> {
   const tab = sender.tab;
-  if (!tab) return;
-  // The welcome page listens on its own; websites only while shortcuts are on.
-  const ownPage = tab.url?.startsWith(launcher.extensionOrigin) ?? false;
-  if (!ownPage && !(await shortcutsOn())) return;
-  if (ownPage && !(await loadSettings()).shortcutsEnabled) return;
+  if (!tab || !(await featureOn('shortcutsEnabled', tab))) return;
   await launchStyle(style, sender.frameId ?? 0, tab, launcher);
+}
+
+async function handleStyleMenu(request: StyleMenuRequest, sender: chrome.runtime.MessageSender): Promise<void> {
+  const tab = sender.tab;
+  if (!tab || !(await featureOn('holdMenuEnabled', tab))) return;
+  if (request.kind === 'menu/open') await launchStyleMenu(request.point, sender.frameId ?? 0, tab, launcher);
+  else await launchStyle(request.style, sender.frameId ?? 0, tab, launcher);
 }
 
 const router = new JobRouter({
   ensureEngineHost,
   sendToEngine: (command) => offscreen.send(command),
   onActivity: () => void recordActivity(),
+  wakingFromRest: async () => wakingFromRest(await loadSettings()),
 });
 
 chrome.runtime.onInstalled.addListener((details) => {
@@ -212,7 +233,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (settings) {
     const before = parseSettings(settings.oldValue);
     const after = parseSettings(settings.newValue);
-    if (before.shortcutsEnabled !== after.shortcutsEnabled) refreshShortcuts();
+    if (before.shortcutsEnabled !== after.shortcutsEnabled || before.holdMenuEnabled !== after.holdMenuEnabled) refreshShortcuts();
     if (!sameCompute(before, after)) void restarter.request();
   }
   const problem = changes[GPU_PROBLEM_STORAGE_KEY];
@@ -232,6 +253,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (isShortcutRequest(message)) {
     void handleShortcut(message.style, sender);
+    return undefined;
+  }
+  if (isStyleMenuRequest(message)) {
+    void handleStyleMenu(message, sender);
+    return undefined;
+  }
+  if (isOpenSettingsRequest(message)) {
+    void openSettings(message.focus, sender.tab?.windowId, {
+      leaveIntent: (focus) => leavePopupIntent(focus),
+      openPopup: typeof chrome.action.openPopup === 'function' ? (options) => chrome.action.openPopup(options) : undefined,
+      createWindow: (options) => chrome.windows.create(options),
+      popupUrl: chrome.runtime.getURL(POPUP_PAGE),
+    }).catch((error: unknown) => console.error('EchoMeBetter: could not open the settings', error));
     return undefined;
   }
   if (isUiRequest(message)) sendResponse(handleUiRequest(message));
@@ -257,5 +291,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     await offscreen.close();
     await chrome.alarms.clear(IDLE_ALARM);
     await writeStatus({ state: 'unloaded' });
+    await recordRest();
   })();
 });

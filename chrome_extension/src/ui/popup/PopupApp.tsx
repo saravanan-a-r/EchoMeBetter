@@ -19,13 +19,16 @@ import {
   type CatalogState,
   type ModelAvailability,
 } from '../hooks/useModel';
+import { usePopupIntent } from '../hooks/usePopupIntent';
 import { useSettings } from '../hooks/useSettings';
-import { PLATFORM, releaseSiteAccess, requestSiteAccess, shortcutAvailability, useSiteAccess, type ShortcutAvailability } from '../hooks/useShortcuts';
+import { needsSiteAccess, PLATFORM, releaseSiteAccess, requestSiteAccess, websiteAvailability, useSiteAccess, type WebsiteAvailability } from '../hooks/useShortcuts';
 import { SettingsView } from './SettingsView';
 
 const STEPS = ['Right-click', 'EchoMeBetter'];
 
 export const REMOVED_NOTICE = 'Model removed. Download it again whenever you want to rewrite text.';
+
+export const HOLD_HINT = 'Or press and hold on the selected text for 2 seconds.';
 
 export interface PopupViewProps {
   readonly status: EngineStatus;
@@ -34,9 +37,11 @@ export interface PopupViewProps {
   /** The model was removed from this popup; say so until a new download starts. */
   readonly modelRemoved: boolean;
   readonly platform: KeyPlatform;
-  readonly shortcuts: ShortcutAvailability;
+  readonly shortcuts: WebsiteAvailability;
+  readonly holdMenu: WebsiteAvailability;
   readonly onAllowSiteAccess: () => void;
-  readonly onTurnOffShortcuts: () => void;
+  /** "Not now" to allowing websites: what was waiting for it is turned off. */
+  readonly onTurnOffWebsiteFeatures: () => void;
   readonly onOpenSettings: () => void;
   readonly onLoadModel: () => void;
   readonly onDownload: (adapters: StyleId[]) => void;
@@ -46,25 +51,25 @@ export interface PopupViewProps {
 }
 
 export function PopupView(props: PopupViewProps) {
-  const { status, model, catalog, modelRemoved, platform, shortcuts, onOpenGuide } = props;
+  const { status, model, catalog, modelRemoved, platform, shortcuts, holdMenu, onOpenGuide } = props;
   const setup = modelSetup(model.installed, catalog);
   return (
-    <main className="_echo_$_w-[360px] _echo_$_bg-ink-50 _echo_$_text-ink-900 dark:_echo_$_bg-ink-950 dark:_echo_$_text-white">
-      <header className="_echo_$_relative _echo_$_overflow-hidden _echo_$_bg-echo-gradient _echo_$_px-4 _echo_$_pb-5 _echo_$_pt-3.5 _echo_$_text-white">
+    <main className="_echo_$_w-[360px] _echo_$_bg-canvas _echo_$_text-fg">
+      <header className="_echo_$_relative _echo_$_overflow-hidden _echo_$_bg-echo-gradient _echo_$_px-4 _echo_$_pb-5 _echo_$_pt-3.5 _echo_$_text-on-accent">
         <div className="_echo_$_flex _echo_$_items-center _echo_$_gap-2.5">
-          <span className="_echo_$_rounded-xl _echo_$_bg-white/15 _echo_$_p-0.5 _echo_$_ring-1 _echo_$_ring-white/30">
+          <span className="_echo_$_rounded-xl _echo_$_bg-on-accent/15 _echo_$_p-0.5 _echo_$_ring-1 _echo_$_ring-on-accent/30">
             <Logo size={30} />
           </span>
           <div>
             <Wordmark className="_echo_$_text-base [&>span]:_echo_$_text-better-200" />
-            <p className="_echo_$_text-xs _echo_$_text-white/80">Rewrite anything, right where you type.</p>
+            <p className="_echo_$_text-xs _echo_$_text-on-accent/80">Rewrite anything, right where you type.</p>
           </div>
           <button
             type="button"
             aria-label="Settings"
             title="Settings"
             onClick={props.onOpenSettings}
-            className="_echo_$_ml-auto _echo_$_flex _echo_$_h-8 _echo_$_w-8 _echo_$_items-center _echo_$_justify-center _echo_$_self-start _echo_$_rounded-lg _echo_$_text-white/90 hover:_echo_$_bg-white/15 hover:_echo_$_text-white focus-visible:_echo_$_outline focus-visible:_echo_$_outline-2 focus-visible:_echo_$_outline-white"
+            className="_echo_$_ml-auto _echo_$_flex _echo_$_h-8 _echo_$_w-8 _echo_$_items-center _echo_$_justify-center _echo_$_self-start _echo_$_rounded-lg _echo_$_text-on-accent/90 hover:_echo_$_bg-on-accent/15 hover:_echo_$_text-on-accent focus-visible:_echo_$_outline focus-visible:_echo_$_outline-2 focus-visible:_echo_$_outline-on-accent"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
@@ -88,22 +93,23 @@ export function PopupView(props: PopupViewProps) {
           />
         </div>
 
-        <p className="_echo_$_flex _echo_$_flex-wrap _echo_$_items-center _echo_$_gap-1.5 _echo_$_text-[13px] _echo_$_text-ink-600 dark:_echo_$_text-ink-200">
+        <p className="_echo_$_flex _echo_$_flex-wrap _echo_$_items-center _echo_$_gap-1.5 _echo_$_text-[13px] _echo_$_text-fg-soft">
           Select text
           {STEPS.map((step) => (
             <span key={step} className="_echo_$_flex _echo_$_items-center _echo_$_gap-1.5">
-              <span aria-hidden="true" className="_echo_$_text-ink-300">›</span>
-              <kbd className="_echo_$_rounded-md _echo_$_border _echo_$_border-ink-200 _echo_$_bg-white _echo_$_px-1.5 _echo_$_py-0.5 _echo_$_font-sans _echo_$_text-xs _echo_$_font-semibold _echo_$_text-ink-800 dark:_echo_$_border-ink-700 dark:_echo_$_bg-ink-900 dark:_echo_$_text-ink-100">
+              <span aria-hidden="true" className="_echo_$_text-quiet">›</span>
+              <kbd className="_echo_$_rounded-md _echo_$_border _echo_$_border-line-strong _echo_$_bg-surface _echo_$_px-1.5 _echo_$_py-0.5 _echo_$_font-sans _echo_$_text-xs _echo_$_font-semibold _echo_$_text-fg-secondary">
                 {step}
               </kbd>
             </span>
           ))}
-          <span aria-hidden="true" className="_echo_$_text-ink-300">›</span>
+          <span aria-hidden="true" className="_echo_$_text-quiet">›</span>
           pick a style
+          {holdMenu === 'on' ? <span className="_echo_$_basis-full _echo_$_text-xs _echo_$_text-fg-muted">{HOLD_HINT}</span> : null}
         </p>
 
         <section aria-labelledby="styles-title">
-          <h2 id="styles-title" className="_echo_$_mb-2 _echo_$_text-[11px] _echo_$_font-semibold _echo_$_uppercase _echo_$_tracking-wider _echo_$_text-ink-500 dark:_echo_$_text-ink-300">
+          <h2 id="styles-title" className="_echo_$_mb-2 _echo_$_text-[11px] _echo_$_font-semibold _echo_$_uppercase _echo_$_tracking-wider _echo_$_text-fg-muted">
             Styles
           </h2>
           <StyleList
@@ -115,18 +121,23 @@ export function PopupView(props: PopupViewProps) {
           />
         </section>
 
-        {shortcuts === 'needs-access' ? (
-          <ShortcutAccessCard platform={platform} onAllow={props.onAllowSiteAccess} onNotNow={props.onTurnOffShortcuts} />
+        {needsSiteAccess(shortcuts, holdMenu) ? (
+          <ShortcutAccessCard
+            platform={platform}
+            waiting={{ shortcuts: shortcuts === 'needs-access', holdMenu: holdMenu === 'needs-access' }}
+            onAllow={props.onAllowSiteAccess}
+            onNotNow={props.onTurnOffWebsiteFeatures}
+          />
         ) : null}
 
-        <footer className="_echo_$_flex _echo_$_items-center _echo_$_justify-between _echo_$_text-xs _echo_$_text-ink-500 dark:_echo_$_text-ink-300">
+        <footer className="_echo_$_flex _echo_$_items-center _echo_$_justify-between _echo_$_text-xs _echo_$_text-fg-muted">
           <span className="_echo_$_flex _echo_$_items-center _echo_$_gap-1.5">
             <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
               <path d="M6 1 2 2.6v3c0 2.4 1.7 4.4 4 5.2 2.3-.8 4-2.8 4-5.2v-3L6 1Z" fill="none" stroke="currentColor" strokeWidth="1.2" />
             </svg>
             On-device. Your text never leaves the browser.
           </span>
-          <button type="button" onClick={onOpenGuide} className="_echo_$_font-semibold _echo_$_text-echo-600 hover:_echo_$_underline dark:_echo_$_text-echo-300">
+          <button type="button" onClick={onOpenGuide} className="_echo_$_font-semibold _echo_$_text-accent-fg hover:_echo_$_underline">
             Guide
           </button>
         </footer>
@@ -144,22 +155,38 @@ export function PopupApp() {
   const gpu = useGpu();
   const gpuProblem = useGpuProblem();
   const [modelRemoved, setModelRemoved] = useState(false);
-  const [page, setPage] = useState<'home' | 'settings'>('home');
-  const shortcuts = shortcutAvailability(settingsLoaded ? settings.shortcutsEnabled : null, siteAccess);
+  const intent = usePopupIntent();
+  // Null until the user moves between pages; until then the popup opens where it was asked to.
+  const [chosenPage, setPage] = useState<'home' | 'settings' | null>(null);
+  const page = chosenPage ?? (intent === undefined ? null : intent ? intent.page : 'home');
+  const shortcuts = websiteAvailability(settingsLoaded ? settings.shortcutsEnabled : null, siteAccess);
+  const holdMenu = websiteAvailability(settingsLoaded ? settings.holdMenuEnabled : null, siteAccess);
 
-  const setShortcuts = (on: boolean) => {
+  /** Turn website features on or off; the site access is asked for with the first and handed back with the last. */
+  const setWebsiteFeatures = (next: Pick<typeof settings, 'shortcutsEnabled' | 'holdMenuEnabled'>) => {
     // Chrome only shows the permission prompt straight from a click, so ask before anything awaits.
-    if (on) requestSiteAccess();
-    else releaseSiteAccess();
-    setSettings({ ...settings, shortcutsEnabled: on });
+    if (next.shortcutsEnabled || next.holdMenuEnabled) {
+      if ((next.shortcutsEnabled && !settings.shortcutsEnabled) || (next.holdMenuEnabled && !settings.holdMenuEnabled)) requestSiteAccess();
+    } else {
+      releaseSiteAccess();
+    }
+    setSettings({ ...settings, ...next });
   };
+  const setShortcuts = (on: boolean) => setWebsiteFeatures({ shortcutsEnabled: on, holdMenuEnabled: settings.holdMenuEnabled });
+  const setHoldMenu = (on: boolean) => setWebsiteFeatures({ shortcutsEnabled: settings.shortcutsEnabled, holdMenuEnabled: on });
+
+  // Wait the few milliseconds it takes to know where to open, rather than flash the home page.
+  if (page === null) return null;
 
   if (page === 'settings') {
     return (
       <SettingsView
+        focus={chosenPage === null ? intent?.focus : undefined}
         platform={PLATFORM}
         shortcuts={shortcuts}
         onShortcutsChange={setShortcuts}
+        holdMenu={holdMenu}
+        onHoldMenuChange={setHoldMenu}
         onAllowSiteAccess={requestSiteAccess}
         keepLoaded={settings.keepModelLoadedMinutes}
         onKeepLoadedChange={(minutes) => setSettings({ ...settings, keepModelLoadedMinutes: minutes })}
@@ -197,8 +224,9 @@ export function PopupApp() {
       modelRemoved={modelRemoved}
       platform={PLATFORM}
       shortcuts={shortcuts}
+      holdMenu={holdMenu}
       onAllowSiteAccess={requestSiteAccess}
-      onTurnOffShortcuts={() => setShortcuts(false)}
+      onTurnOffWebsiteFeatures={() => setWebsiteFeatures({ shortcutsEnabled: false, holdMenuEnabled: false })}
       onOpenSettings={() => setPage('settings')}
       onLoadModel={requestWarmUp}
       onDownload={(adapters) => {

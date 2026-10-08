@@ -10,6 +10,8 @@
  */
 import type { ComputeSettings, GpuProblem } from './compute';
 import type { ErrorPayload } from './errors';
+import { isSettingsFocus, type SettingsFocus } from './popupIntent';
+import type { KeepLoadedMinutes } from './settings';
 import type { DownloadState, InstalledModelRecord } from './modelInstall';
 import { isStyleId, type StyleId } from './styles';
 import type { EngineStatus } from './status';
@@ -32,7 +34,18 @@ export interface NoticeMessage {
   readonly error: ErrorPayload;
 }
 
-export type ForegroundMessage = StartJobMessage | NoticeMessage;
+/** Open the style menu at `point` (the frame's viewport coordinates), for the selection a press and hold was made on. */
+export interface StyleMenuMessage {
+  readonly kind: 'echo/style-menu';
+  readonly point: Point;
+}
+
+export interface Point {
+  readonly x: number;
+  readonly y: number;
+}
+
+export type ForegroundMessage = StartJobMessage | NoticeMessage | StyleMenuMessage;
 
 export type StartJobReply = { readonly ok: true } | { readonly ok: false; readonly error: ErrorPayload };
 
@@ -41,11 +54,18 @@ export function isForegroundMessage(value: unknown): value is ForegroundMessage 
   const message = value as { kind?: unknown; jobId?: unknown; style?: unknown; error?: unknown };
   if (message.kind === 'echo/start-job') return typeof message.jobId === 'string' && isStyleId(message.style);
   if (message.kind === 'echo/notice') return typeof message.error === 'object' && message.error !== null;
+  if (message.kind === 'echo/style-menu') return isPoint((value as { point?: unknown }).point);
   return false;
 }
 
+function isPoint(value: unknown): value is Point {
+  if (typeof value !== 'object' || value === null) return false;
+  const { x, y } = value as { x?: unknown; y?: unknown };
+  return typeof x === 'number' && Number.isFinite(x) && typeof y === 'number' && Number.isFinite(y);
+}
+
 // ---------------------------------------------------------------------------
-// shortcut listener (any page) → service worker
+// page listener (shortcuts, press and hold; any page) and style menu → service worker
 // ---------------------------------------------------------------------------
 
 /** A style's shortcut was pressed with text selected in an editable field of the sender's frame. */
@@ -60,6 +80,36 @@ export function isShortcutRequest(value: unknown): value is ShortcutRequest {
   return message.kind === 'shortcut/rewrite' && isStyleId(message.style);
 }
 
+/**
+ * The style menu, in the sender's frame:
+ *   menu/open      text was pressed and held at `point`: show the menu there
+ *   menu/rewrite   a style was picked from it
+ */
+export type StyleMenuRequest = { readonly kind: 'menu/open'; readonly point: Point } | { readonly kind: 'menu/rewrite'; readonly style: StyleId };
+
+export function isStyleMenuRequest(value: unknown): value is StyleMenuRequest {
+  if (typeof value !== 'object' || value === null) return false;
+  const message = value as { kind?: unknown; style?: unknown; point?: unknown };
+  if (message.kind === 'menu/open') return isPoint(message.point);
+  return message.kind === 'menu/rewrite' && isStyleId(message.style);
+}
+
+// ---------------------------------------------------------------------------
+// foreground (a toast's button) → service worker
+// ---------------------------------------------------------------------------
+
+/** Open the toolbar popup on its settings page, at `focus`. */
+export interface OpenSettingsRequest {
+  readonly kind: 'page/open-settings';
+  readonly focus: SettingsFocus;
+}
+
+export function isOpenSettingsRequest(value: unknown): value is OpenSettingsRequest {
+  if (typeof value !== 'object' || value === null) return false;
+  const message = value as { kind?: unknown; focus?: unknown };
+  return message.kind === 'page/open-settings' && isSettingsFocus(message.focus);
+}
+
 // ---------------------------------------------------------------------------
 // foreground ⇄ service worker, over a Port named JOB_PORT_NAME (one per job)
 // ---------------------------------------------------------------------------
@@ -70,9 +120,18 @@ export type JobRequest =
 
 export type JobPhase = 'loading-model' | 'rewriting';
 
+/**
+ * The model had been put to rest by the idle timer, and this job woke it up.
+ * `idleMinutes` is the user's current keep-awake time, which a longer one
+ * would have avoided.
+ */
+export interface WokeFromRest {
+  readonly idleMinutes: Exclude<KeepLoadedMinutes, 0>;
+}
+
 export type JobEvent =
   | { readonly kind: 'job/phase'; readonly jobId: string; readonly phase: JobPhase; readonly progress?: number }
-  | { readonly kind: 'job/done'; readonly jobId: string; readonly text: string }
+  | { readonly kind: 'job/done'; readonly jobId: string; readonly text: string; readonly wokeFromRest?: WokeFromRest }
   | { readonly kind: 'job/failed'; readonly jobId: string; readonly error: ErrorPayload };
 
 export function isJobRequest(value: unknown): value is JobRequest {

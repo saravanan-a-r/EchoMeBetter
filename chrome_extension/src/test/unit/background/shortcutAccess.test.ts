@@ -1,5 +1,5 @@
 import { describe, expect, jest, test } from '@jest/globals';
-import { SHORTCUT_SCRIPT, SHORTCUT_SCRIPT_ID, shortcutsActive, syncShortcutScript, type ShortcutAccessDeps } from '../../../background/shortcutAccess';
+import { SHORTCUT_SCRIPT, SHORTCUT_SCRIPT_ID, activeOnWebsites, syncShortcutScript, type ShortcutAccessDeps } from '../../../background/shortcutAccess';
 
 function deps(options: { registered?: boolean; granted?: boolean; failingTab?: number } = {}) {
   const value = {
@@ -20,10 +20,10 @@ function deps(options: { registered?: boolean; granted?: boolean; failingTab?: n
 
 describe('shortcut access', () => {
   test('active only when turned on and websites are allowed', async () => {
-    expect(await shortcutsActive(true, deps({ granted: true }).permissions)).toBe(true);
-    expect(await shortcutsActive(true, deps({ granted: false }).permissions)).toBe(false);
+    expect(await activeOnWebsites(true, deps({ granted: true }).permissions)).toBe(true);
+    expect(await activeOnWebsites(true, deps({ granted: false }).permissions)).toBe(false);
     const off = deps();
-    expect(await shortcutsActive(false, off.permissions)).toBe(false);
+    expect(await activeOnWebsites(false, off.permissions)).toBe(false);
     expect(off.permissions.contains).not.toHaveBeenCalled();
   });
 

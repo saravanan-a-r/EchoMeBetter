@@ -1,10 +1,11 @@
 /**
- * Keeps the shortcut listener on websites in step with the user's choice.
+ * Keeps the page listener (the shortcuts, and the press and hold that opens
+ * the style menu) on websites in step with the user's choices.
  *
- * It runs only while shortcuts are turned on *and* the user has granted the
- * optional site access. Then it is registered as a content script for every
- * page from now on, and injected once into the tabs already open so they do
- * not need a reload. Otherwise it is unregistered.
+ * It runs only while at least one of them is turned on *and* the user has
+ * granted the optional site access. Then it is registered as a content
+ * script for every page from now on, and injected once into the tabs already
+ * open so they do not need a reload. Otherwise it is unregistered.
  */
 import { SITE_ACCESS } from '../shared/shortcuts';
 
@@ -17,7 +18,8 @@ export interface ShortcutAccessDeps {
   readonly tabs: Pick<typeof chrome.tabs, 'query'>;
 }
 
-export async function shortcutsActive(enabled: boolean, permissions: ShortcutAccessDeps['permissions']): Promise<boolean> {
+/** Whether something turned on (`enabled`) can work on websites: the user has allowed them. */
+export async function activeOnWebsites(enabled: boolean, permissions: ShortcutAccessDeps['permissions']): Promise<boolean> {
   return enabled && (await permissions.contains({ origins: [...SITE_ACCESS.origins] }));
 }
 
