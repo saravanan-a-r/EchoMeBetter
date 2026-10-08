@@ -1,6 +1,5 @@
 /** @jest-environment jsdom */
 import { describe, expect, jest, test } from '@jest/globals';
-import { DEFAULT_COMPUTE, type ComputeSettings } from '../../../shared/compute';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { formatBytes, formatDuration, formatList, formatTimeLeft } from '../../../shared/format';
 import type { UiReply } from '../../../shared/messages';
@@ -9,7 +8,6 @@ import { MODEL_SOURCE_URL } from '../../../shared/modelSource';
 import type { EngineStatus, ModelSummary } from '../../../shared/status';
 import type { StyleId } from '../../../shared/styles';
 import { describeTarget, presentDownload } from '../../../ui/components/ModelDownloadCard';
-import { GPU_PROBLEM_NOTE, PerformanceSettings, type PerformanceSettingsProps } from '../../../ui/components/PerformanceSettings';
 import { presentStatus } from '../../../ui/components/StatusCard';
 import { ACCESS_TITLE } from '../../../ui/components/ShortcutAccessCard';
 import type { CatalogState, ModelAvailability } from '../../../ui/hooks/useModel';
@@ -179,7 +177,7 @@ describe('keyboard shortcuts in the popup', () => {
 
 function renderSettings(
   shortcuts: ShortcutAvailability,
-  options: { platform?: 'mac' | 'other'; installed?: InstalledModelRecord | null; removeReply?: UiReply; performance?: PerformanceSettingsProps } = {},
+  options: { platform?: 'mac' | 'other'; installed?: InstalledModelRecord | null; removeReply?: UiReply } = {},
 ) {
   const handlers = {
     onShortcutsChange: jest.fn(),
@@ -189,16 +187,7 @@ function renderSettings(
     onRemoveModel: jest.fn(async (): Promise<UiReply> => options.removeReply ?? { ok: true }),
     onRemoveAdapter: jest.fn(async (_adapter: StyleId): Promise<UiReply> => options.removeReply ?? { ok: true }),
   };
-  render(
-    <SettingsView
-      platform={options.platform ?? 'other'}
-      shortcuts={shortcuts}
-      keepLoaded={15}
-      installed={options.installed ?? null}
-      performance={options.performance ?? null}
-      {...handlers}
-    />,
-  );
+  render(<SettingsView platform={options.platform ?? 'other'} shortcuts={shortcuts} keepLoaded={15} installed={options.installed ?? null} {...handlers} />);
   return handlers;
 }
 
@@ -248,98 +237,6 @@ describe('settings page', () => {
     expect(shortcutAvailability(false, true)).toBe('off');
     expect(shortcutAvailability(true, false)).toBe('needs-access');
     expect(shortcutAvailability(true, true)).toBe('on');
-  });
-});
-
-function performance(overrides: Partial<PerformanceSettingsProps> = {}): PerformanceSettingsProps {
-  return {
-    compute: DEFAULT_COMPUTE,
-    gpu: { state: 'available', gpu: { vendor: 'apple' } },
-    gpuProblem: null,
-    cores: 10,
-    crossOriginIsolated: true,
-    status: { state: 'unloaded' },
-    onChange: jest.fn(),
-    onRetryGpu: jest.fn(),
-    ...overrides,
-  };
-}
-
-function renderPerformance(overrides: Partial<PerformanceSettingsProps> = {}) {
-  const props = performance(overrides);
-  render(<PerformanceSettings {...props} />);
-  return props;
-}
-
-const withCompute = (compute: Partial<ComputeSettings>) => ({ compute: { ...DEFAULT_COMPUTE, ...compute } });
-
-describe('performance settings', () => {
-  test('with a GPU on offer it is the default, named, with its power setting', () => {
-    const { onChange } = renderPerformance();
-    expect(screen.getByRole('radiogroup', { name: 'Run the model on' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /GPU/ })).toBeChecked();
-    expect(screen.getByText(/run on your Apple graphics chip/)).toBeInTheDocument();
-    expect(screen.queryByLabelText('Processor use')).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('GPU power'), { target: { value: 'low-power' } });
-    expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_COMPUTE, gpuPower: 'low-power' });
-    fireEvent.click(screen.getByRole('radio', { name: /CPU/ }));
-    expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_COMPUTE, processor: 'cpu' });
-  });
-
-  test('on the processor, its share is offered in cores of this computer', () => {
-    const { onChange } = renderPerformance(withCompute({ processor: 'cpu' }));
-    expect(screen.getByRole('radio', { name: /CPU/ })).toBeChecked();
-    expect(screen.queryByLabelText('GPU power')).not.toBeInTheDocument();
-    const usage = screen.getByLabelText('Processor use');
-    expect(within(usage).getAllByRole('option').map((option) => option.textContent)).toEqual(['Light · 2 cores', 'Balanced · 4 cores', 'Maximum · 6 cores']);
-    expect(usage).toHaveValue('balanced');
-    expect(screen.getByText(/How much of the processor \(10 cores\) a rewrite may use/)).toBeInTheDocument();
-    fireEvent.change(usage, { target: { value: 'maximum' } });
-    expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_COMPUTE, processor: 'cpu', cpuUsage: 'maximum' });
-  });
-
-  test('without a GPU there is no GPU choice at all, only the processor share', () => {
-    renderPerformance({ gpu: { state: 'none' } });
-    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
-    expect(screen.queryByText(/GPU/)).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Processor use')).toBeInTheDocument();
-  });
-
-  test('nothing is shown until it is known whether there is a GPU', () => {
-    const { container } = render(<PerformanceSettings {...performance({ gpu: { state: 'checking' } })} />);
-    expect(container).toBeEmptyDOMElement();
-  });
-
-  test('a GPU that could not run the model is explained, can be tried again, and the processor share applies meanwhile', () => {
-    const { onRetryGpu } = renderPerformance({ gpuProblem: { message: 'buffer too large' } });
-    expect(screen.getByRole('status')).toHaveTextContent(GPU_PROBLEM_NOTE);
-    expect(screen.getByLabelText('Processor use')).toBeInTheDocument();
-    expect(screen.queryByLabelText('GPU power')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Try the GPU again' }));
-    expect(onRetryGpu).toHaveBeenCalledTimes(1);
-  });
-
-  test('says where the model runs right now', () => {
-    renderPerformance({ status: ready });
-    expect(screen.getByText('Running on the GPU now.')).toBeInTheDocument();
-  });
-
-  test.each([
-    [{ state: 'ready', model: summary, runningOn: { processor: 'cpu', threads: 4 } } as EngineStatus, 'Running on the processor now, with 4 threads.'],
-    [{ state: 'loading', progress: 0.2 } as EngineStatus, 'Loading the model…'],
-  ])('status line: %j', (status, text) => {
-    renderPerformance({ status });
-    expect(screen.getByText(text)).toBeInTheDocument();
-  });
-
-  test('the settings page shows the section once the settings and the GPU are known', () => {
-    renderSettings('off', { performance: performance() });
-    expect(within(screen.getByRole('region', { name: 'Performance' })).getByRole('radio', { name: /GPU/ })).toBeChecked();
-  });
-
-  test('the settings page leaves it out while the settings are being read', () => {
-    renderSettings('off');
-    expect(screen.queryByRole('region', { name: 'Performance' })).not.toBeInTheDocument();
   });
 });
 
@@ -485,7 +382,6 @@ describe('welcome page', () => {
     platform: 'other' as const,
     shortcuts: 'off' as ShortcutAvailability,
     onAllowSiteAccess: jest.fn(),
-    performance: null,
   };
 
   test('offers the download next to the practice box until the model is there', () => {
@@ -513,21 +409,6 @@ describe('welcome page', () => {
     expect(screen.getByText(/press Alt\+Shift\+P for Professional/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Allow on websites' }));
     expect(props.onAllowSiteAccess).toHaveBeenCalled();
-  });
-
-  test('lets the user choose GPU or CPU where a GPU is on offer, saying where to change it later', () => {
-    render(<WelcomeView {...props} model={installed()} performance={performance()} />);
-    const section = screen.getByRole('region', { name: 'Speed and power' });
-    expect(within(section).getByText(/runs on your graphics chip \(GPU\)/)).toBeInTheDocument();
-    expect(within(section).getByText(/settings of the toolbar popup/)).toBeInTheDocument();
-    expect(within(section).getByRole('radio', { name: /GPU/ })).toBeChecked();
-  });
-
-  test('without a GPU it speaks only of the processor', () => {
-    render(<WelcomeView {...props} model={installed()} performance={performance({ gpu: { state: 'none' } })} />);
-    const section = screen.getByRole('region', { name: 'Speed and power' });
-    expect(within(section).queryByText(/GPU|graphics/)).not.toBeInTheDocument();
-    expect(within(section).getByLabelText('Processor use')).toBeInTheDocument();
   });
 
   test('with shortcuts off it only teaches the right-click', () => {
