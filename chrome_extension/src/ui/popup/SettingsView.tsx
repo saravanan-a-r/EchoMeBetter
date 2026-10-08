@@ -26,7 +26,7 @@ export interface SettingsViewProps extends StorageSettingsProps {
   readonly keepLoaded: KeepLoadedMinutes;
   readonly onKeepLoadedChange: (minutes: KeepLoadedMinutes) => void;
   /** Null until the settings have been read. */
-  readonly performance: PerformanceSettingsProps | null;
+  readonly performance?: PerformanceSettingsProps | null;
   readonly onBack: () => void;
 }
 

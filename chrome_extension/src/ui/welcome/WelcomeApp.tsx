@@ -44,7 +44,7 @@ export interface WelcomeViewProps {
   readonly shortcuts: ShortcutAvailability;
   readonly onAllowSiteAccess: () => void;
   /** Null until the settings have been read. */
-  readonly performance: PerformanceSettingsProps | null;
+  readonly performance?: PerformanceSettingsProps | null;
 }
 
 export function WelcomeView(props: WelcomeViewProps) {
