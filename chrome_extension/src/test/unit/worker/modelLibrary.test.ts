@@ -186,6 +186,16 @@ describe('ModelLibrary', () => {
     await removing;
   });
 
+  test('the engine asking for the model while a new worker still inspects its storage gets it', async () => {
+    const first = setup();
+    await first.library.startDownload(['professional']);
+    // A restarted worker: its start-up inspection and a warm-up arrive together.
+    const next = setup({}, FIXTURE_URL, first.root);
+    const inspecting = next.library.inspect();
+    await expect(next.library.require()).resolves.toMatchObject({ model: { adapters: ['professional'] } });
+    await inspecting;
+  });
+
   test('base files that vanished behind the mirror are reported when the engine asks for them', async () => {
     const { library, folder, installedEvents } = setup();
     await library.startDownload(['professional']);
