@@ -9,8 +9,9 @@
  *
  * Loads dist/ as an unpacked extension in a fresh profile, then:
  *   1. a rewrite before the download is refused with "download the model first"
- *   2. the popup downloads the writing model alone; a rewrite is then refused
- *      until the style it needs is there, which the popup downloads next
+ *   2. the popup downloads the writing model alone, which then loads by
+ *      itself; a rewrite is refused until the style it needs is there, which
+ *      the popup downloads next
  *   3. one full rewrite on the welcome page's practice box: foreground
  *      controller → service worker → offscreen document → inference worker
  *      (onnxruntime-web, base model plus the style's adapter, read from the
@@ -21,7 +22,13 @@
  *      restarts and reloads it), a style running on the fallback adapter
  *      and a keyboard shortcut rewrite there; a bigger share of the
  *      processor restarts it with more threads; then back to the GPU
- *   5. settings remove the style, then the writing model
+ *   5. a press and hold on the practice box's selected text opens the style
+ *      menu (Esc and a click elsewhere close it); a style picked there
+ *      rewrites the text
+ *   6. the idle timer frees the model; the next rewrite says how long waking
+ *      it took, and its "keep it awake longer" opens the popup's settings
+ *      at that setting
+ *   7. settings remove the style, then the writing model
  *
  * Progress and cancelling are covered by the unit tests: from a local server
  * the whole download finishes too quickly to be interrupted reliably.
@@ -140,8 +147,11 @@ try {
   await professionalChoice.uncheck();
   let downloadStarted = Date.now();
   await downloadButton.click();
-  await popup.getByRole('button', { name: 'Load now' }).waitFor({ timeout: 600_000 });
+  const modelStatus = popup.getByRole('region', { name: 'Writing model status' });
+  await modelStatus.waitFor({ timeout: 600_000 });
   console.log(`  writing model: download and verification took ${((Date.now() - downloadStarted) / 1000).toFixed(1)}s`);
+  await modelStatus.getByText('Ready', { exact: true }).waitFor({ timeout: 240_000 });
+  check((await popup.getByRole('button', { name: 'Load now' }).count()) === 0, 'the downloaded model loaded by itself, with no "Load now" to click');
   check((await storedModelFiles(popup)).length === 4, 'the writing model alone is stored (record and three files)');
   check((await badge()) === '!', 'toolbar icon stays flagged while no style is downloaded');
 
@@ -281,6 +291,64 @@ try {
   await keyboardToast.waitFor({ timeout: 10_000 });
   check(true, 'the shortcut named its style in the toast');
 
+  console.log('press and hold:');
+  const overlay = welcome.locator('echomebetter-overlay');
+  const styleMenu = overlay.getByRole('menu', { name: 'Rewrite as' });
+  /** Select the whole practice text, then press and hold on its first line; resolves once the menu shows, still holding. */
+  const holdOnSelection = async () => {
+    await welcome.evaluate((original) => {
+      const box = document.querySelector('#playground');
+      box.value = original;
+      box.focus();
+      box.setSelectionRange(0, box.value.length);
+    }, ORIGINAL);
+    const box = await welcome.locator('#playground').boundingBox();
+    await welcome.mouse.move(box.x + 40, box.y + 26);
+    await welcome.mouse.down();
+    await styleMenu.waitFor({ timeout: 5_000 });
+  };
+  const selectionOfBox = () => welcome.evaluate(() => {
+    const box = document.querySelector('#playground');
+    return [box.selectionStart, box.selectionEnd, box.value.length];
+  });
+
+  const held = Date.now();
+  await holdOnSelection();
+  const heldFor = Date.now() - held;
+  check(heldFor >= 1900, `holding still on selected text opened the style menu (after ${(heldFor / 1000).toFixed(1)}s)`);
+  check((await styleMenu.getByRole('menuitem').count()) === 5, 'the menu offers every style');
+  await welcome.mouse.up();
+  const [selStart, selEnd, length] = await selectionOfBox();
+  check(selStart === 0 && selEnd === length, 'letting go kept the text selected');
+  await welcome.keyboard.press('Escape');
+  await styleMenu.waitFor({ state: 'detached', timeout: 5_000 });
+  check((await welcome.evaluate(() => document.querySelector('#playground').value)) === ORIGINAL, 'Esc closed the menu and left the text alone');
+
+  await holdOnSelection();
+  await welcome.mouse.up();
+  await welcome.mouse.click(10, 10);
+  await styleMenu.waitFor({ state: 'detached', timeout: 5_000 });
+  check(true, 'a click elsewhere closed the menu');
+
+  await holdOnSelection();
+  await welcome.mouse.up();
+  await styleMenu.getByRole('menuitem', { name: /Concise/ }).click();
+  await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 120_000 });
+  await overlay.getByText('Rewritten · Concise').waitFor({ timeout: 10_000 });
+  check(true, `picking Concise in the menu rewrote the text: ${JSON.stringify(await welcome.evaluate(() => document.querySelector('#playground').value))}`);
+  await overlay.getByRole('button', { name: 'Undo' }).click();
+
+  // A plain click on the selection is still a click: no menu.
+  await welcome.evaluate(() => {
+    const box = document.querySelector('#playground');
+    box.focus();
+    box.setSelectionRange(0, box.value.length);
+  });
+  const plain = await welcome.locator('#playground').boundingBox();
+  await welcome.mouse.click(plain.x + 40, plain.y + 26);
+  await welcome.waitForTimeout(2_500);
+  check((await styleMenu.count()) === 0, 'an ordinary click on selected text opens nothing');
+
   if (gpu) {
     await popup.getByRole('button', { name: 'Settings' }).click();
     const restarted = Date.now();
@@ -309,6 +377,52 @@ try {
     return { fromTop: toast.getBoundingClientRect().top - box.top, boxHeight: box.height };
   });
   check(gap.fromTop < gap.boxHeight / 2, `toast sits beside the two selected lines (${Math.round(gap.fromTop)}px into a ${Math.round(gap.boxHeight)}px text box)`);
+
+  console.log('waking from an idle rest:');
+  // What the idle check finds after an hour without use: the alarm, due now, frees the model. A check
+  // that first applies a settings change still owed from above restarts the model instead; then the next one frees it.
+  const resting = async () => {
+    const { engineStatus, modelResting } = await worker.evaluate(() => chrome.storage.session.get(['engineStatus', 'modelResting']));
+    return engineStatus?.state === 'unloaded' && modelResting === true;
+  };
+  for (let attempt = 0; attempt < 5 && !(await resting()); attempt += 1) {
+    await worker.evaluate(async () => {
+      await chrome.storage.session.set({ lastActivityAt: 0 });
+      await chrome.alarms.create('echomebetter/idle-check', { when: Date.now() + 100 });
+    });
+    await welcome.waitForTimeout(3_000);
+  }
+  check(await resting(), 'the idle timer freed the model');
+  await welcome.evaluate((original) => {
+    const box = document.querySelector('#playground');
+    box.style.height = '';
+    box.value = original;
+    box.focus();
+    box.setSelectionRange(0, box.value.length);
+  }, ORIGINAL);
+  await startJob('e2e-wake', 'professional');
+  const wakeNote = overlay.getByText(/^Waking up took .+\. EchoMeBetter rests after 1 hour without use, to keep your computer fast\.$/);
+  await wakeNote.waitFor({ timeout: 240_000 });
+  check(true, `the rewrite says how long waking up took: "${await wakeNote.textContent()}"`);
+  // The toolbar popup opens over the browser window; automation can't drive it as a page, but Chrome lists it.
+  const cdp = await context.newCDPSession(welcome);
+  const popupTargets = async () =>
+    (await cdp.send('Target.getTargets')).targetInfos.filter((target) => target.url.endsWith('/ui/popup/popup.html')).length;
+  const popupsBefore = await popupTargets();
+  await overlay.getByRole('button', { name: 'Keep it awake longer' }).click();
+  for (const deadline = Date.now() + 10_000; (await popupTargets()) === popupsBefore && Date.now() < deadline; ) await welcome.waitForTimeout(100);
+  const intentLeft = 'popupIntent' in (await worker.evaluate(() => chrome.storage.session.get('popupIntent')));
+  check((await popupTargets()) === popupsBefore + 1 && !intentLeft, '"Keep it awake longer" opened the toolbar popup, which took the request to start at that setting');
+
+  // What that popup shows, on a page automation can read: the same request, taken the same way.
+  await worker.evaluate(() => chrome.storage.session.set({ popupIntent: { page: 'settings', focus: 'keep-awake', at: Date.now() } }));
+  const settingsPage = await context.newPage();
+  await settingsPage.goto(`chrome-extension://${extensionId}/ui/popup/popup.html`);
+  const keepAwake = settingsPage.getByLabel(/Free memory when idle for/);
+  await keepAwake.waitFor({ timeout: 10_000 });
+  check(await keepAwake.evaluate((select) => select === document.activeElement), 'the popup opens on its settings with the keep-awake time focused');
+  check(await settingsPage.getByText(/Pick a longer time to keep it awake between rewrites/).isVisible(), 'the settings say why it is worth a longer time');
+  await settingsPage.close();
 
   check(consoleErrors.length === 0, `no console errors on the page${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);
 
