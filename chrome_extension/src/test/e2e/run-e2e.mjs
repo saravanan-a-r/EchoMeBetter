@@ -15,9 +15,13 @@
  *      controller → service worker → offscreen document → inference worker
  *      (onnxruntime-web, base model plus the style's adapter, read from the
  *      extension's private storage) → text replaced in the textarea → Undo
- *      restores it; then a style running on the fallback adapter, and the
- *      same through a keyboard shortcut
- *   4. settings remove the style, then the writing model
+ *      restores it. Where the browser offers a GPU this first rewrite runs
+ *      there, the default
+ *   4. the popup's settings move the model to the processor (the engine
+ *      restarts and reloads it), a style running on the fallback adapter
+ *      and a keyboard shortcut rewrite there; a bigger share of the
+ *      processor restarts it with more threads; then back to the GPU
+ *   5. settings remove the style, then the writing model
  *
  * Progress and cancelling are covered by the unit tests: from a local server
  * the whole download finishes too quickly to be interrupted reliably.
@@ -52,6 +56,14 @@ try {
 }
 
 const profile = mkdtempSync(join(tmpdir(), 'echomebetter-e2e-'));
+
+/** Whether the browser offers extension pages a hardware GPU (what the extension checks too). */
+function gpuOffered(page) {
+  return page.evaluate(async () => {
+    const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
+    return Boolean(adapter) && adapter.info?.isFallbackAdapter !== true && adapter.isFallbackAdapter !== true;
+  });
+}
 
 /** Entries in the extension's private model folder (OPFS), read from one of its pages. */
 function storedModelFiles(page) {
@@ -94,6 +106,13 @@ try {
   await welcome.goto(`chrome-extension://${extensionId}/ui/welcome/welcome.html`);
   await welcome.waitForSelector('#playground');
   check(await welcome.evaluate(() => globalThis.crossOriginIsolated === true), 'extension pages are cross-origin isolated (threads available)');
+  const gpu = await gpuOffered(welcome);
+  const cores = await welcome.evaluate(() => navigator.hardwareConcurrency);
+  console.log(`  this browser ${gpu ? 'offers a GPU' : 'offers no GPU'}; ${cores} cores`);
+  const speed = welcome.getByRole('region', { name: 'Speed and power' });
+  await speed.getByLabel(gpu ? 'GPU power' : 'Processor use').waitFor({ timeout: 10_000 });
+  if (gpu) check(await speed.getByRole('radio', { name: /GPU/ }).isChecked(), 'the welcome page offers GPU or CPU, with the GPU chosen');
+  else check((await speed.getByRole('radiogroup').count()) === 0, 'without a GPU the welcome page offers no GPU choice, only the processor share');
 
   await welcome.evaluate((text) => {
     const box = document.querySelector('#playground');
@@ -168,10 +187,72 @@ try {
 
   const status = await worker.evaluate(() => chrome.storage.session.get('engineStatus'));
   check(status.engineStatus?.state === 'ready', `engine status is ready (${status.engineStatus?.model?.displayName})`);
+  check(status.engineStatus.runningOn.processor === (gpu ? 'gpu' : 'cpu'), `the rewrite ran on the ${gpu ? 'GPU' : 'processor'} by default`);
+  const firstRewrite = rewritten;
 
   const undo = welcome.locator('echomebetter-overlay').getByRole('button', { name: 'Undo' });
   await undo.click();
   check((await welcome.evaluate(() => document.querySelector('#playground').value)) === ORIGINAL, 'Undo restored the original text');
+
+  /** Engine status once it is ready on `processor` again after a settings change restarted it. */
+  const readyOn = async (processor) => {
+    const deadline = Date.now() + 240_000;
+    for (;;) {
+      const { engineStatus } = await worker.evaluate(() => chrome.storage.session.get('engineStatus'));
+      if (engineStatus?.state === 'ready' && engineStatus.runningOn.processor === processor) return engineStatus;
+      if (engineStatus?.state === 'error') throw new Error(`E2E check failed: the engine failed to load: ${engineStatus.message}`);
+      if (Date.now() > deadline) throw new Error(`E2E check failed: the engine never became ready on the ${processor}`);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  };
+
+  console.log('performance settings:');
+  await popup.getByRole('button', { name: 'Settings' }).click();
+  const performance = popup.getByRole('region', { name: 'Performance' });
+  await performance.getByLabel(gpu ? 'GPU power' : 'Processor use').waitFor({ timeout: 10_000 });
+  if (gpu) {
+    let restarted = Date.now();
+    await performance.getByText('CPU', { exact: true }).click();
+    const onCpu = await readyOn('cpu');
+    console.log(`  restart onto the processor and reload took ${((Date.now() - restarted) / 1000).toFixed(1)}s`);
+    check(onCpu.runningOn.threads >= 1, `choosing CPU restarted the loaded model on the processor (${onCpu.runningOn.threads} threads)`);
+    await performance.getByText(`Running on the processor now, with ${onCpu.runningOn.threads} threads.`).waitFor({ timeout: 10_000 });
+    check(true, 'the settings say where the model runs now');
+
+    await welcome.evaluate((original) => {
+      const box = document.querySelector('#playground');
+      box.value = original;
+      box.focus();
+      box.setSelectionRange(0, box.value.length);
+    }, ORIGINAL);
+    const cpuStarted = Date.now();
+    await startJob('e2e-cpu', 'professional');
+    await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 240_000 });
+    const onProcessor = await welcome.evaluate(() => document.querySelector('#playground').value);
+    console.log(`  warm rewrite on the processor took ${((Date.now() - cpuStarted) / 1000).toFixed(1)}s: ${JSON.stringify(onProcessor)}`);
+    console.log(`  the GPU and the processor wrote ${onProcessor === firstRewrite ? 'the same rewrite' : 'different rewrites'}`);
+    check(onProcessor.trim().length > 0, 'the processor rewrote the text');
+    await welcome.locator('echomebetter-overlay').getByRole('button', { name: 'Undo' }).click();
+  }
+  const usage = performance.getByLabel('Processor use');
+  const balancedThreads = (await worker.evaluate(() => chrome.storage.session.get('engineStatus'))).engineStatus.runningOn.threads;
+  await usage.selectOption('maximum');
+  const maximum = await (async () => {
+    const deadline = Date.now() + 240_000;
+    for (;;) {
+      const { engineStatus } = await worker.evaluate(() => chrome.storage.session.get('engineStatus'));
+      if (engineStatus?.state === 'ready' && engineStatus.runningOn.threads !== balancedThreads) return engineStatus;
+      if (cores < 4) return engineStatus;
+      if (Date.now() > deadline) throw new Error(`E2E check failed: the model was not restarted with more threads (status ${JSON.stringify(engineStatus)})`);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  })();
+  check(
+    cores < 4 || maximum.runningOn.threads > balancedThreads,
+    `a bigger share of the processor restarted the model with more threads (${balancedThreads} → ${maximum.runningOn.threads})`,
+  );
+  await usage.selectOption('balanced');
+  await popup.getByRole('button', { name: 'Back' }).click();
 
   // A second rewrite runs on the already-loaded model.
   await welcome.evaluate(() => {
@@ -199,6 +280,16 @@ try {
   const keyboardToast = welcome.locator('echomebetter-overlay').getByText('Rewritten · Friendly');
   await keyboardToast.waitFor({ timeout: 10_000 });
   check(true, 'the shortcut named its style in the toast');
+
+  if (gpu) {
+    await popup.getByRole('button', { name: 'Settings' }).click();
+    const restarted = Date.now();
+    await popup.getByRole('region', { name: 'Performance' }).getByText('GPU', { exact: true }).click();
+    await readyOn('gpu');
+    console.log(`  restart back onto the GPU and reload took ${((Date.now() - restarted) / 1000).toFixed(1)}s`);
+    check(true, 'choosing GPU again restarted the model on the GPU');
+    await popup.getByRole('button', { name: 'Back' }).click();
+  }
 
   // The result toast sits next to the selected text, not at the bottom of a taller text box.
   await welcome.evaluate(() => {
