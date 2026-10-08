@@ -20,7 +20,9 @@ function setup(serverOptions: ServerOptions = {}, sourceUrl = FIXTURE_URL, root 
   /** Runs after each event is recorded; tests use it to act at a precise moment. */
   const hooks = { onEvent: (_event: EngineEvent) => undefined as void };
   const server = modelServer(files, serverOptions);
-  const engine = { unload: jest.fn(async () => undefined) };
+  /** The download states reported before each warm-up: a finished download loads the model before it says it is done. */
+  const warmedAfter: string[][] = [];
+  const engine = { unload: jest.fn(async () => undefined), warmUp: jest.fn(() => void warmedAfter.push(downloadEvents().map((download) => download.state))) };
   const library = new ModelLibrary(sourceUrl, {
     openStore: () => ModelStore.open(root),
     transport: { fetch: server.fetch, estimate: async () => ({}), digest: sha256Hex, now: () => 0 },
@@ -34,7 +36,7 @@ function setup(serverOptions: ServerOptions = {}, sourceUrl = FIXTURE_URL, root 
   const installedEvents = () => events.flatMap((event) => (event.type === 'installed' ? [event.installed] : []));
   const downloadEvents = () => events.flatMap((event) => (event.type === 'download' ? [event.download] : []));
   const fileRequests = () => server.requests.filter((request) => !request.url.endsWith('model.json')).map((request) => request.url.slice(FIXTURE_URL.length));
-  return { root, library, events, hooks, server, engine, folder, installedEvents, downloadEvents, fileRequests };
+  return { root, library, events, hooks, server, engine, warmedAfter, folder, installedEvents, downloadEvents, fileRequests };
 }
 
 describe('ModelLibrary', () => {
@@ -58,6 +60,29 @@ describe('ModelLibrary', () => {
     expect((await folder()).names()).toEqual(['installed.json', ...BASE, ...PROFESSIONAL].sort());
     const { model } = await library.require();
     expect(model.manifest).toEqual(manifest);
+  });
+
+  test('a finished download loads the model straight away, before it reports the download done', async () => {
+    const { library, warmedAfter, downloadEvents } = setup();
+    await library.startDownload(['professional']);
+    expect(warmedAfter).toHaveLength(1);
+    expect(warmedAfter[0]!.at(-1)).toBe('downloading');
+    expect(downloadEvents().at(-1)).toEqual({ state: 'idle' });
+  });
+
+  test('a cancelled or failed download loads nothing', async () => {
+    const cancelled = setup({ chunkSize: 512 });
+    cancelled.hooks.onEvent = (event) => {
+      if (event.type === 'download' && event.download.state === 'downloading' && event.download.receivedBytes > 0) cancelled.library.cancelDownload();
+    };
+    await cancelled.library.startDownload(['professional']);
+    expect(cancelled.downloadEvents().at(-1)).toEqual({ state: 'idle' });
+    expect(cancelled.engine.warmUp).not.toHaveBeenCalled();
+
+    const failed = setup({ dropAfter: { path: 'base/encoder.onnx', bytes: 20_000 } });
+    await failed.library.startDownload(['professional']);
+    expect(failed.downloadEvents().at(-1)).toMatchObject({ state: 'failed' });
+    expect(failed.engine.warmUp).not.toHaveBeenCalled();
   });
 
   test('the base can come alone, and adapters can be added to it later without fetching it again', async () => {

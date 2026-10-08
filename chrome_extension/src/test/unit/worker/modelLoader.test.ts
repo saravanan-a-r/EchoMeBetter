@@ -80,7 +80,7 @@ async function installed(adapters: StyleId[]) {
       return () => ModelStore.open(root);
     })(),
     transport: { fetch: modelServer(tinyModelFiles('tiny-echo')).fetch, estimate: async () => ({}), digest: sha256Hex, now: () => 0 },
-    engine: { unload: async () => undefined },
+    engine: { unload: async () => undefined, warmUp: () => undefined },
     emit: () => undefined,
   });
   await library.startDownload(adapters);
