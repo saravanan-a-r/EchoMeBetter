@@ -19,16 +19,22 @@ import { readJsonFixture } from '../helpers/fixtures';
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function wire(engine: LoadedEngine) {
+function wire(engine: LoadedEngine, { livePreview = false } = {}) {
   // worker <-> offscreen (postMessage is asynchronous in the browser)
   const workerToBridge: ((event: { data: EngineEvent }) => void)[] = [];
-  const host = new EngineHost(async () => engine, (event) => setTimeout(() => workerToBridge.forEach((listener) => listener({ data: event }))));
+  // A clock that moves on 100 ms each time it is read, so streaming is never held back by its interval.
+  let clock = 0;
+  const host = new EngineHost(
+    async () => engine,
+    (event) => setTimeout(() => workerToBridge.forEach((listener) => listener({ data: event }))),
+    () => (clock += 100),
+  );
   const requests: WorkerRequest[] = [];
   const worker: WorkerLike = {
     postMessage: (request: WorkerRequest) =>
       setTimeout(() => {
         requests.push(request);
-        if (request.type === 'rewrite') host.enqueue(request.jobId, request.style, request.text);
+        if (request.type === 'rewrite') host.enqueue(request.jobId, request.style, request.text, { stream: request.stream });
         if (request.type === 'cancel') host.cancel(request.jobId);
       }),
     addEventListener: (type: string, listener: (event: never) => void) => {
@@ -51,6 +57,7 @@ function wire(engine: LoadedEngine) {
     sendToEngine: async (command: OffscreenCommand) => void offscreenListener(command, {}, () => undefined),
     onActivity: () => undefined,
     wakingFromRest: async () => null,
+    livePreview: async () => livePreview,
   });
 
   // page <-> service worker (a Port)
@@ -86,6 +93,28 @@ describe('page → service worker → offscreen → worker and back', () => {
     for (let i = 0; i < 5; i++) await tick();
     expect(received.map((event) => event.kind)).toEqual(['job/phase', 'job/phase', 'job/done']);
     expect(received.at(-1)).toEqual({ kind: 'job/done', jobId: 'J', text: '[friendly] hello' });
+  });
+
+  test('with the live preview on, the rewrite so far reaches the page before the result; off, only the result does', async () => {
+    const engine: LoadedEngine = {
+      manifest,
+      runningOn,
+      rewrite: async (_style, text, options) => {
+        for (const sofar of ['Hello', 'Hello there', 'Hello there,']) options?.onPartial?.(() => sofar);
+        return { text: `Hello there, ${text}`, inputTokens: 1, outputTokens: 3 };
+      },
+      release: async () => undefined,
+    };
+    for (const livePreview of [true, false]) {
+      const { received, send, host } = wire(engine, { livePreview });
+      send({ kind: 'job/request', jobId: 'J', style: 'friendly', text: 'hi' });
+      for (let i = 0; i < 10; i++) await tick();
+      await host.idle();
+      for (let i = 0; i < 5; i++) await tick();
+      const partials = received.filter((event) => event.kind === 'job/partial');
+      expect(partials).toEqual(livePreview ? ['Hello', 'Hello there', 'Hello there,'].map((text) => ({ kind: 'job/partial', jobId: 'J', text })) : []);
+      expect(received.at(-1)).toEqual({ kind: 'job/done', jobId: 'J', text: 'Hello there, hi' });
+    }
   });
 
   test('closing the tab mid-rewrite aborts the generation in the worker', async () => {

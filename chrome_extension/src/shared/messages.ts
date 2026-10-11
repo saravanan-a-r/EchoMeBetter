@@ -131,6 +131,8 @@ export interface WokeFromRest {
 
 export type JobEvent =
   | { readonly kind: 'job/phase'; readonly jobId: string; readonly phase: JobPhase; readonly progress?: number }
+  /** The rewrite so far, while the model writes it (only with the live preview on). Not the result: job/done carries that. */
+  | { readonly kind: 'job/partial'; readonly jobId: string; readonly text: string }
   | { readonly kind: 'job/done'; readonly jobId: string; readonly text: string; readonly wokeFromRest?: WokeFromRest }
   | { readonly kind: 'job/failed'; readonly jobId: string; readonly error: ErrorPayload };
 
@@ -145,7 +147,7 @@ export function isJobRequest(value: unknown): value is JobRequest {
 export function isJobEvent(value: unknown): value is JobEvent {
   if (typeof value !== 'object' || value === null) return false;
   const kind = (value as { kind?: unknown }).kind;
-  return kind === 'job/phase' || kind === 'job/done' || kind === 'job/failed';
+  return kind === 'job/phase' || kind === 'job/partial' || kind === 'job/done' || kind === 'job/failed';
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +158,7 @@ export type OffscreenCommand =
   /** Sent once, right after the document is created: starts the worker. The reply proves the round trip. */
   | { readonly target: 'offscreen'; readonly kind: 'engine/start'; readonly compute: ComputeSettings }
   | { readonly target: 'offscreen'; readonly kind: 'engine/warm-up' }
-  | { readonly target: 'offscreen'; readonly kind: 'engine/rewrite'; readonly jobId: string; readonly style: StyleId; readonly text: string }
+  | { readonly target: 'offscreen'; readonly kind: 'engine/rewrite'; readonly jobId: string; readonly style: StyleId; readonly text: string; readonly stream: boolean }
   | { readonly target: 'offscreen'; readonly kind: 'engine/cancel'; readonly jobId: string }
   | { readonly target: 'offscreen'; readonly kind: 'model/download'; readonly adapters: readonly StyleId[] }
   | { readonly target: 'offscreen'; readonly kind: 'model/cancel-download' }
@@ -198,7 +200,8 @@ export interface WorkerConfig {
 export type WorkerRequest =
   | { readonly type: 'configure'; readonly config: WorkerConfig }
   | { readonly type: 'warm-up' }
-  | { readonly type: 'rewrite'; readonly jobId: string; readonly style: StyleId; readonly text: string }
+  /** `stream`: report the rewrite as it is written (job-partial), for the live preview. */
+  | { readonly type: 'rewrite'; readonly jobId: string; readonly style: StyleId; readonly text: string; readonly stream: boolean }
   | { readonly type: 'cancel'; readonly jobId: string }
   | { readonly type: 'download'; readonly adapters: readonly StyleId[] }
   | { readonly type: 'cancel-download' }
@@ -209,6 +212,7 @@ export type WorkerRequest =
 export type EngineEvent =
   | { readonly type: 'status'; readonly status: EngineStatus }
   | { readonly type: 'job-phase'; readonly jobId: string; readonly phase: JobPhase; readonly progress?: number }
+  | { readonly type: 'job-partial'; readonly jobId: string; readonly text: string }
   | { readonly type: 'job-done'; readonly jobId: string; readonly text: string }
   | { readonly type: 'job-failed'; readonly jobId: string; readonly error: ErrorPayload }
   | { readonly type: 'installed'; readonly installed: InstalledModelRecord | null }

@@ -7,11 +7,11 @@ import { mountOverlay, OVERLAY_TAG } from '../../../foreground/ui/mountOverlay';
 import { OverlayApp } from '../../../foreground/ui/OverlayApp';
 import { OverlayStore } from '../../../foreground/ui/overlayStore';
 import { menuPosition } from '../../../foreground/ui/StyleMenu';
-import { toastPosition } from '../../../foreground/ui/Toast';
+import { PREVIEW_MAX_TEXT_HEIGHT, previewStyle, previewWidthRange, toastPosition } from '../../../foreground/ui/OverlayCard';
 
 describe('overlay', () => {
   test('the loader explains each phase', () => {
-    const base = { style: 'concise' as const, origin: { x: 0, y: 0 } };
+    const base = { style: 'concise' as const, origin: { x: 0, y: 0 }, anchor: { top: 0, left: 0, bottom: 0, right: 0 } };
     expect(workingLabel({ ...base, phase: 'starting' })).toBe('Getting ready…');
     expect(workingLabel({ ...base, phase: 'loading-model', progress: 0.42 })).toBe('Waking up the writing model · 42%');
     expect(workingLabel({ ...base, phase: 'rewriting' })).toBe('Rewriting · Concise');
@@ -20,7 +20,7 @@ describe('overlay', () => {
   test('renders the loader and a toast whose action runs and closes it', () => {
     const store = new OverlayStore();
     render(<OverlayApp store={store} />);
-    act(() => store.startWorking({ style: 'friendly', phase: 'rewriting', origin: { x: 10, y: 10 } }));
+    act(() => store.startWorking({ style: 'friendly', phase: 'rewriting', origin: { x: 10, y: 10 }, anchor: { top: 0, left: 0, bottom: 20, right: 100 } }));
     expect(screen.getByRole('status', { name: 'Rewriting · Friendly' })).toBeInTheDocument();
 
     const undo = jest.fn();
@@ -31,6 +31,53 @@ describe('overlay', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
     expect(undo).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Rewritten · Friendly')).not.toBeInTheDocument();
+  });
+
+  test('one element at a time: the loader until the first words, then the card, which turns into the result in place', () => {
+    const store = new OverlayStore();
+    render(<OverlayApp store={store} />);
+    act(() => store.startWorking({ style: 'friendly', phase: 'rewriting', origin: { x: 10, y: 10 }, anchor: { top: 0, left: 0, bottom: 20, right: 100 } }));
+    expect(screen.getByRole('status', { name: 'Rewriting · Friendly' })).toBeInTheDocument();
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+
+    // The first words: the loader gives way to the card, which shows them (to the eye; screen readers hear its title).
+    act(() => store.updateWorking({ preview: 'Hey there' }));
+    expect(screen.queryByRole('status', { name: 'Rewriting · Friendly' })).not.toBeInTheDocument();
+    const [card] = screen.getAllByRole('status');
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    expect(card).toHaveTextContent('Rewriting · Friendly');
+    expect(screen.getByText('Hey there').closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(card).toHaveTextContent('Esc');
+
+    act(() => store.updateWorking({ preview: 'Hey there, could you' }));
+    expect(screen.getAllByRole('status')[0]).toBe(card);
+
+    // Done: the same card now says how it went, with Undo.
+    const undo = jest.fn();
+    act(() => store.stopWorking({ tone: 'success', title: 'Rewritten · Friendly', message: 'Took 1.2 s.', actions: [{ label: 'Undo', run: undo }], anchor: null, durationMs: 0 }));
+    expect(screen.getAllByRole('status')).toEqual([card]);
+    expect(card).toHaveTextContent('Rewritten · Friendly');
+    expect(card).toHaveTextContent('Took 1.2 s.');
+    expect(screen.queryByText(/Hey there/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(card).not.toBeInTheDocument();
+  });
+
+  test('a toast raised while the preview runs has the card until it closes; the preview then carries on', () => {
+    const store = new OverlayStore();
+    render(<OverlayApp store={store} />);
+    act(() => {
+      store.startWorking({ style: 'concise', phase: 'rewriting', origin: { x: 10, y: 10 }, anchor: { top: 0, left: 0, bottom: 20, right: 100 } });
+      store.updateWorking({ preview: 'Send it' });
+    });
+    act(() => {
+      store.showToast({ tone: 'info', title: 'One at a time', actions: [], anchor: null, durationMs: 0 });
+    });
+    expect(screen.getByText('One at a time')).toBeInTheDocument();
+    expect(screen.queryByText('Send it')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.getByText('Send it')).toBeInTheDocument();
   });
 
   test("a toast's note shows under its actions, and its button runs and closes the toast", () => {
@@ -102,6 +149,53 @@ describe('overlay', () => {
     expect(toastPosition({ top: 100, left: 50, bottom: 140, right: 400 }, viewport)).toEqual({ left: 50, top: 150 });
     expect(toastPosition({ top: 700, left: 50, bottom: 760, right: 400 }, viewport)).toEqual({ left: 50, bottom: 110 });
     expect(toastPosition({ top: 100, left: 950, bottom: 140, right: 990 }, viewport).left).toBe(630);
+  });
+
+  test('the preview is as wide as its text wants, from a toast up to 70% of the window, and never off screen', () => {
+    expect(previewWidthRange({ width: 1000 })).toEqual({ min: 360, max: 700 });
+    // A narrow window: the toast's own limit wins over 70%.
+    expect(previewWidthRange({ width: 400 })).toEqual({ min: 360, max: 360 });
+    expect(previewWidthRange({ width: 300 })).toEqual({ min: 280, max: 280 });
+
+    const style = previewStyle({ top: 100, left: 50, bottom: 140, right: 400 }, { width: 1000, height: 800 });
+    expect(style).toMatchObject({ left: 50, top: 150, width: 'max-content', minWidth: 360, maxWidth: 700 });
+    // Room to the right is 940px (to the 10px margin): a card up to that wide needs no shift.
+    expect(style.translate).toBe('min(0px, calc(940px - 100%))');
+    // Near the right edge the toast's own clamp puts it at 630; the card then shifts left by whatever it overflows.
+    expect(previewStyle({ top: 100, left: 950, bottom: 140, right: 990 }, { width: 1000, height: 800 }).translate).toBe('min(0px, calc(360px - 100%))');
+  });
+
+  test('the preview scrolls past its height, follows the newest text, and lets go once the reader scrolls up', () => {
+    const store = new OverlayStore();
+    render(<OverlayApp store={store} />);
+    act(() => store.startWorking({ style: 'concise', phase: 'rewriting', origin: { x: 0, y: 0 }, anchor: { top: 0, left: 0, bottom: 20, right: 100 } }));
+    act(() => store.updateWorking({ preview: 'First line' }));
+    const scroller = screen.getByText(/First line/).closest('[aria-hidden="true"]') as HTMLElement;
+    expect(scroller.style.maxHeight).toBe(`${PREVIEW_MAX_TEXT_HEIGHT}px`);
+    expect(scroller.className).toContain('overflow-y-auto');
+
+    // jsdom lays nothing out: stand in for a 400px-tall text in a 120px window.
+    let height = 400;
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, get: () => height },
+      clientHeight: { configurable: true, value: PREVIEW_MAX_TEXT_HEIGHT },
+    });
+    act(() => store.updateWorking({ preview: 'First line\nand more' }));
+    expect(scroller.scrollTop).toBe(400);
+
+    // Scrolled up to read: new text no longer pulls the view down.
+    scroller.scrollTop = 50;
+    fireEvent.scroll(scroller);
+    height = 440;
+    act(() => store.updateWorking({ preview: 'First line\nand more\nand more again' }));
+    expect(scroller.scrollTop).toBe(50);
+
+    // Back at the end: it follows again.
+    scroller.scrollTop = height - PREVIEW_MAX_TEXT_HEIGHT;
+    fireEvent.scroll(scroller);
+    height = 480;
+    act(() => store.updateWorking({ preview: 'First line\nand more\nand more again\nlast' }));
+    expect(scroller.scrollTop).toBe(480);
   });
 
   test('mounting adds one isolated host; unmounting removes it', () => {

@@ -2,10 +2,13 @@
  * One rewrite, from the page's point of view.
  *
  *   start   capture the selection → show the pointer loader → ask for the rewrite
- *   events  "loading model 40%" / "rewriting" update the loader
+ *   events  "loading model 40%" / "rewriting" update the loader; with the
+ *           live preview on, the rewrite so far shows beside the text
+ *           (the text itself is only changed once, when it is done)
  *   done    re-check the text is untouched → replace it → toast with Undo
  *           (and, when the model first had to wake up from an idle rest,
- *           how long that took and a way to keep it awake longer)
+ *           how long that took and a way to keep it awake longer); the
+ *           preview's card becomes that toast, in the same update
  *   Esc     cancel; the page is left exactly as it was
  *
  * It also owns the style menu that a press and hold on selected text opens:
@@ -65,6 +68,9 @@ interface ActiveJob {
   readonly requestedAt: number;
   readonly stopListening: () => void;
 }
+
+/** A toast as the controller writes it; how long it stays follows from its tone. */
+type ToastDraft = Omit<ToastState, 'id' | 'durationMs'>;
 
 interface OpenMenu {
   /** The selection the menu was opened for. */
@@ -244,6 +250,7 @@ export class ForegroundController {
     this.deps.overlay().startWorking({
       style,
       phase: 'starting',
+      anchor,
       origin: {
         x: Math.min(Math.max(rect.left + Math.min(rect.width, 240) / 2, 0), this.deps.win.innerWidth),
         y: Math.min(Math.max(rect.top + Math.min(rect.height, 48) / 2, 0), this.deps.win.innerHeight),
@@ -262,8 +269,7 @@ export class ForegroundController {
     } catch {
       // Port already gone: nothing is running for this job anymore.
     }
-    this.end();
-    this.toast({ tone: 'info', title: 'Rewrite cancelled', message: 'Your text was left unchanged.', actions: [], anchor: job.anchor });
+    this.end({ tone: 'info', title: 'Rewrite cancelled', message: 'Your text was left unchanged.', actions: [], anchor: job.anchor });
   }
 
   private onEvent(event: JobEvent): void {
@@ -272,11 +278,14 @@ export class ForegroundController {
     switch (event.kind) {
       case 'job/phase':
         if (event.phase === 'rewriting' && job.rewriteStartedAt === null) job.rewriteStartedAt = this.now();
-        this.deps.overlay().updateWorking({ phase: event.phase, progress: event.progress });
+        // A phase starts an attempt (a second one if the GPU failed the first): any text so far is from before it.
+        this.deps.overlay().updateWorking({ phase: event.phase, progress: event.progress, preview: undefined });
+        return;
+      case 'job/partial':
+        this.deps.overlay().updateWorking({ phase: 'rewriting', preview: event.text });
         return;
       case 'job/done':
-        this.end();
-        this.deliver(job, event.text, event.wokeFromRest);
+        this.end(this.deliver(job, event.text, event.wokeFromRest));
         return;
       case 'job/failed':
         this.fail(event.error);
@@ -298,23 +307,23 @@ export class ForegroundController {
     };
   }
 
-  private deliver(job: ActiveJob, text: string, rest?: WokeFromRest): void {
+  /** Put the rewrite in place; what to tell the user about it. */
+  private deliver(job: ActiveJob, text: string, rest?: WokeFromRest): ToastDraft {
     const took = formatDuration(this.now() - (job.rewriteStartedAt ?? job.requestedAt));
     const note = this.wakeNote(job, rest);
     if (text === job.core) {
-      this.toast({
+      return {
         tone: 'info',
         title: 'Looks good already',
         message: `No ${styleLabel(job.style).toLowerCase()} changes to suggest. Took ${took}.`,
         actions: [],
         note,
         anchor: job.anchor,
-      });
-      return;
+      };
     }
     try {
       const edit = applyRewrite(job.target, `${job.lead}${text}${job.trail}`);
-      this.toast({
+      return {
         tone: 'success',
         title: `Rewritten · ${styleLabel(job.style)}`,
         message: `Took ${took}. Not quite right? Undo restores your original.`,
@@ -338,7 +347,7 @@ export class ForegroundController {
         ],
         note,
         anchor: job.anchor,
-      });
+      };
     } catch (error) {
       const payload = toErrorPayload(error);
       const copy: ToastAction = {
@@ -347,23 +356,23 @@ export class ForegroundController {
           this.deps.writeClipboard(text).catch(() => undefined);
         },
       };
-      this.toastError(payload, job.anchor, payload.code === 'TEXT_CHANGED' ? [copy] : []);
+      return this.errorToast(payload, job.anchor, payload.code === 'TEXT_CHANGED' ? [copy] : []);
     }
   }
 
   private fail(error: ErrorPayload): void {
     const job = this.active;
     if (!job) return;
-    this.end();
-    if (error.code !== 'CANCELLED') this.toastError(error, job.anchor);
+    this.end(error.code === 'CANCELLED' ? undefined : this.errorToast(error, job.anchor));
   }
 
-  private end(): void {
+  /** The job is over: its card turns into `outcome` (or goes, with none). */
+  private end(outcome?: ToastDraft): void {
     const job = this.active;
     if (!job) return;
     this.active = null;
     job.stopListening();
-    this.deps.overlay().stopWorking();
+    this.deps.overlay().stopWorking(outcome && this.timed(outcome));
     setBusyCursor(this.deps.doc, false);
     try {
       job.port.disconnect();
@@ -378,19 +387,27 @@ export class ForegroundController {
     return { ok: false, error: payload };
   }
 
-  private toastError(error: ErrorPayload, anchor: AnchorRect | null, actions: ToastAction[] = []): void {
+  private toastError(error: ErrorPayload, anchor: AnchorRect | null): void {
+    this.toast(this.errorToast(error, anchor));
+  }
+
+  private errorToast(error: ErrorPayload, anchor: AnchorRect | null, actions: ToastAction[] = []): ToastDraft {
     const gentle = error.code === 'NO_SELECTION' || error.code === 'BUSY';
-    this.toast({
+    return {
       tone: gentle ? 'info' : 'error',
       title: error.code === 'NO_SELECTION' ? 'Nothing selected' : error.code === 'BUSY' ? 'One at a time' : "Couldn't rewrite that",
       message: describeError(error),
       actions,
       anchor,
-    });
+    };
   }
 
-  private toast(toast: Omit<ToastState, 'id' | 'durationMs'>): void {
-    // A note is more to read; hovering the toast keeps it up as well.
-    this.deps.overlay().showToast({ ...toast, durationMs: toast.note ? TOAST_MS.withNote : TOAST_MS[toast.tone] });
+  private toast(toast: ToastDraft): void {
+    this.deps.overlay().showToast(this.timed(toast));
+  }
+
+  /** A note is more to read; hovering the toast keeps it up as well. */
+  private timed(toast: ToastDraft): Omit<ToastState, 'id'> {
+    return { ...toast, durationMs: toast.note ? TOAST_MS.withNote : TOAST_MS[toast.tone] };
   }
 }

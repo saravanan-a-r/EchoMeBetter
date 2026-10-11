@@ -58,14 +58,19 @@ describe('message guards', () => {
 
 describe('settings', () => {
   test('only known values are accepted', () => {
-    const chosen = { keepModelLoadedMinutes: 5, shortcutsEnabled: false, holdMenuEnabled: false, processor: 'cpu', cpuUsage: 'maximum', gpuPower: 'low-power' };
+    const chosen = { keepModelLoadedMinutes: 5, shortcutsEnabled: false, holdMenuEnabled: false, livePreview: false, processor: 'cpu', cpuUsage: 'maximum', gpuPower: 'low-power' };
     expect(parseSettings(chosen)).toEqual(chosen);
-    expect(parseSettings({ keepModelLoadedMinutes: 7, shortcutsEnabled: 'yes', processor: 'tpu', cpuUsage: 'all', gpuPower: 'turbo' })).toEqual(DEFAULT_SETTINGS);
+    expect(parseSettings({ keepModelLoadedMinutes: 7, shortcutsEnabled: 'yes', livePreview: 'on', processor: 'tpu', cpuUsage: 'all', gpuPower: 'turbo' })).toEqual(DEFAULT_SETTINGS);
     expect(parseSettings(undefined)).toEqual(DEFAULT_SETTINGS);
   });
 
   test('the GPU is preferred, with balanced processor use and full GPU power', () => {
     expect(DEFAULT_SETTINGS).toMatchObject({ processor: 'gpu', cpuUsage: 'balanced', gpuPower: 'high-performance' });
+  });
+
+  test('the live preview is on unless turned off', () => {
+    expect(DEFAULT_SETTINGS.livePreview).toBe(true);
+    expect(parseSettings({ keepModelLoadedMinutes: 15 }).livePreview).toBe(true);
   });
 
   test('an idle model is kept for an hour before its memory is freed', () => {

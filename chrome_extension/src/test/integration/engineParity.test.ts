@@ -95,6 +95,13 @@ test('rewrite returns the decoded text of a finished generation', async () => {
   try {
     const result = await model.engine.rewrite({ manifest: model.manifest, adapterId, adapter, text: testCase.input });
     expect(result.text).toBe(testCase.outputText.trim());
+
+    // Read along as it is written (the live preview): same result, and the text so far ends at it.
+    const sofar: string[] = [];
+    const streamed = await model.engine.rewrite({ manifest: model.manifest, adapterId, adapter, text: testCase.input }, { onPartial: (read) => sofar.push(read()) });
+    expect(streamed).toEqual(result);
+    expect(sofar).toHaveLength(result.outputTokens);
+    expect(sofar.at(-1)).toBe(result.text);
   } finally {
     await adapter.release();
   }

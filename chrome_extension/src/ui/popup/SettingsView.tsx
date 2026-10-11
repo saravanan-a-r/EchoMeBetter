@@ -28,6 +28,9 @@ export interface SettingsViewProps extends StorageSettingsProps {
   readonly holdMenu: WebsiteAvailability;
   readonly onHoldMenuChange: (on: boolean) => void;
   readonly onAllowSiteAccess: () => void;
+  /** Null until the settings have been read. */
+  readonly livePreview: boolean | null;
+  readonly onLivePreviewChange: (on: boolean) => void;
   readonly keepLoaded: KeepLoadedMinutes;
   readonly onKeepLoadedChange: (minutes: KeepLoadedMinutes) => void;
   /** Null until the settings have been read. */
@@ -38,6 +41,8 @@ export interface SettingsViewProps extends StorageSettingsProps {
 }
 
 export const HOLD_MENU_DESCRIPTION = 'Select text, then press and hold on it for 2 seconds to pick a style. No right-click needed.';
+
+export const LIVE_PREVIEW_DESCRIPTION = "Watch the rewrite appear as it's written. Your text is replaced only once it's finished.";
 
 export const KEEP_AWAKE_NOTE =
   'Rewrites wait while EchoMeBetter wakes up. Pick a longer time to keep it awake between rewrites, so they start right away.';
@@ -143,6 +148,22 @@ export function SettingsView(props: SettingsViewProps) {
             )}
           </div>
           {waiting.holdMenu && !waiting.shortcuts ? accessCard : null}
+        </Section>
+
+        <Section id="rewriting-title" title="Rewriting">
+          <div className="_echo_$_flex _echo_$_items-start _echo_$_justify-between _echo_$_gap-3">
+            <div>
+              <p id="live-preview-label" className="_echo_$_text-sm _echo_$_font-medium">
+                Live preview
+              </p>
+              <p id="live-preview-description" className="_echo_$_mt-0.5 _echo_$_text-xs _echo_$_leading-5 _echo_$_text-fg-muted">
+                {LIVE_PREVIEW_DESCRIPTION}
+              </p>
+            </div>
+            {props.livePreview === null ? null : (
+              <Switch checked={props.livePreview} onChange={props.onLivePreviewChange} labelledBy="live-preview-label" describedBy="live-preview-description" />
+            )}
+          </div>
         </Section>
 
         <Section id="memory-title" title="Memory" highlight={keepAwake}>

@@ -4,7 +4,7 @@ import type { RewriteOptions } from '../../../engine/rewriteEngine';
 import { EchoError } from '../../../shared/errors';
 import type { EngineEvent } from '../../../shared/messages';
 import type { StyleId } from '../../../shared/styles';
-import { EngineBrokenError, EngineHost, type LoadedEngine } from '../../../worker/engineHost';
+import { EngineBrokenError, EngineHost, STREAM_INTERVAL_MS, type LoadedEngine } from '../../../worker/engineHost';
 import { readJsonFixture } from '../../helpers/fixtures';
 
 const manifest = parseModelManifest(readJsonFixture('tiny-echo/model.json'));
@@ -52,6 +52,42 @@ describe('EngineHost', () => {
     expect(events).toContainEqual({ type: 'job-phase', jobId: 'job-1', phase: 'loading-model', progress: 0.5 });
     expect(events).toContainEqual({ type: 'status', status: expect.objectContaining({ state: 'ready' }) });
     expect(events.at(-1)).toEqual({ type: 'job-done', jobId: 'job-1', text: 'HELLO' });
+  });
+
+  test('streaming reports the text so far at most every STREAM_INTERVAL_MS, decoding only what it reports; without it, nothing', async () => {
+    // One token every 20 ms, 12 tokens; the text after token n is "w1 … wn".
+    const TOKEN_MS = 20;
+    let clock = 0;
+    let reads = 0;
+    const engine = fakeEngine(async (_style, _text, options) => {
+      for (let n = 1; n <= 12; n++) {
+        clock += TOKEN_MS;
+        options?.onPartial?.(() => {
+          reads++;
+          return Array.from({ length: n }, (_, i) => `w${i + 1}`).join(' ');
+        });
+      }
+      return 'done';
+    });
+    for (const stream of [true, false]) {
+      const events: EngineEvent[] = [];
+      reads = 0;
+      const host = new EngineHost(async () => engine, (event) => events.push(event), () => clock);
+      host.enqueue('j', 'concise', 'x', { stream });
+      await host.idle();
+      const partials = events.filter((event) => event.type === 'job-partial').map((event) => (event as { text: string }).text);
+      if (!stream) {
+        expect(partials).toEqual([]);
+        expect(reads).toBe(0);
+        continue;
+      }
+      // The first token at once, then the first token at least STREAM_INTERVAL_MS after the last report.
+      const every = Math.ceil(STREAM_INTERVAL_MS / TOKEN_MS);
+      const expected = Array.from({ length: Math.ceil(12 / every) }, (_, k) => 1 + k * every).map((n) => Array.from({ length: n }, (_, i) => `w${i + 1}`).join(' '));
+      expect(partials).toEqual(expected);
+      expect(reads).toBe(partials.length);
+      expect(events.at(-1)).toEqual({ type: 'job-done', jobId: 'j', text: 'done' });
+    }
   });
 
   test('a failed load is reported, fails the job, and can be retried', async () => {

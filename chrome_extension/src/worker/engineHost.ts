@@ -7,6 +7,12 @@
  * A job can be cancelled while queued (it never starts) or while running
  * (the decoding loop stops at its next step).
  *
+ * A job can ask to stream: the rewrite so far is then reported as it is
+ * written (job-partial), at most every STREAM_INTERVAL_MS. Each report
+ * travels three message hops to the page and is redrawn there, so a report
+ * per token would only add work while the model runs; between reports the
+ * text is not even decoded.
+ *
  * An engine whose GPU failed mid-rewrite can't run again: it is dropped, and
  * the job runs once more on a freshly loaded one.
  */
@@ -33,6 +39,14 @@ export class EngineBrokenError extends Error {
   }
 }
 
+/** About ten updates a second: reads as continuous, at a fraction of the per-token rate. */
+export const STREAM_INTERVAL_MS = 80;
+
+export interface JobOptions {
+  /** Report the rewrite so far while it is written. */
+  readonly stream?: boolean;
+}
+
 export type EngineLoader = (onProgress: (fraction: number) => void) => Promise<LoadedEngine>;
 
 export class EngineHost {
@@ -46,6 +60,8 @@ export class EngineHost {
   constructor(
     private readonly load: EngineLoader,
     private readonly emit: (event: EngineEvent) => void,
+    /** Milliseconds on a monotonic clock. */
+    private readonly now: () => number = () => performance.now(),
   ) {}
 
   /** Load the model once; concurrent callers share the same attempt, and a failed attempt can be retried. */
@@ -90,10 +106,10 @@ export class EngineHost {
     });
   }
 
-  enqueue(jobId: string, style: StyleId, text: string): void {
+  enqueue(jobId: string, style: StyleId, text: string, options: JobOptions = {}): void {
     const controller = new AbortController();
     this.controllers.set(jobId, controller);
-    this.queue = this.queue.then(() => this.run(jobId, style, text, controller.signal));
+    this.queue = this.queue.then(() => this.run(jobId, style, text, controller.signal, options));
   }
 
   cancel(jobId: string): void {
@@ -120,14 +136,14 @@ export class EngineHost {
     this.emit({ type: 'status', status: { state: 'unloaded' } });
   }
 
-  private async run(jobId: string, style: StyleId, text: string, signal: AbortSignal): Promise<void> {
+  private async run(jobId: string, style: StyleId, text: string, signal: AbortSignal, options: JobOptions): Promise<void> {
     try {
       let result: RewriteResult;
       try {
-        result = await this.attempt(jobId, style, text, signal);
+        result = await this.attempt(jobId, style, text, signal, options);
       } catch (error) {
         if (!(error instanceof EngineBrokenError)) throw error;
-        result = await this.attempt(jobId, style, text, signal);
+        result = await this.attempt(jobId, style, text, signal, options);
       }
       this.emit({ type: 'job-done', jobId, text: result.text });
     } catch (error) {
@@ -137,7 +153,7 @@ export class EngineHost {
     }
   }
 
-  private async attempt(jobId: string, style: StyleId, text: string, signal: AbortSignal): Promise<RewriteResult> {
+  private async attempt(jobId: string, style: StyleId, text: string, signal: AbortSignal, options: JobOptions): Promise<RewriteResult> {
     if (signal.aborted) throw new EchoError('CANCELLED');
     let engine = this.engine;
     if (!engine) {
@@ -152,11 +168,27 @@ export class EngineHost {
     if (signal.aborted) throw new EchoError('CANCELLED');
     this.emit({ type: 'job-phase', jobId, phase: 'rewriting' });
     try {
-      return await engine.rewrite(style, text, { signal });
+      return await engine.rewrite(style, text, { signal, onPartial: options.stream ? this.streamTo(jobId) : undefined });
     } catch (error) {
       if (error instanceof EngineBrokenError) this.discard(engine);
       throw error;
     }
+  }
+
+  /** Report the rewrite so far for `jobId`: the first token at once, then at most every STREAM_INTERVAL_MS. */
+  private streamTo(jobId: string): (readText: () => string) => void {
+    let last = -Infinity;
+    let sent = '';
+    return (readText) => {
+      const at = this.now();
+      if (at - last < STREAM_INTERVAL_MS) return;
+      last = at;
+      const text = readText();
+      // A token can add no visible text (part of a character, a space trimmed off the end).
+      if (text === sent) return;
+      sent = text;
+      this.emit({ type: 'job-partial', jobId, text });
+    };
   }
 
   /** Forget a broken engine; the next job loads a new one. Releasing it is not waited on: it must not hold the job up. */

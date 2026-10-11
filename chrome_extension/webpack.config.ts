@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Configuration, RuleSetRule } from 'webpack';
 import { ExtensionAssetsPlugin } from './tooling/extensionAssets';
+import remToPx from './tooling/remToPx.cjs';
 
 const root = __dirname;
 const dist = join(root, 'dist');
@@ -34,7 +35,15 @@ const PAGES = {
 } as const;
 
 const scripts: RuleSetRule = { test: /\.tsx?$/, exclude: /node_modules/, use: 'babel-loader' };
-const inlineStylesheet: RuleSetRule = { test: /\.css$/, resourceQuery: /inline/, type: 'asset/source', use: ['postcss-loader'] };
+// A stylesheet imported `?inline` is the overlay's: it is adopted into a shadow root on someone else's page, where
+// `rem` would follow that page's root font size. It gets its sizes in pixels (see tooling/remToPx.cjs); the config
+// is spelled out here because postcss.config.cjs serves the extension's own pages, which keep `rem`.
+const inlineStylesheet: RuleSetRule = {
+  test: /\.css$/,
+  resourceQuery: /inline/,
+  type: 'asset/source',
+  use: [{ loader: 'postcss-loader', options: { postcssOptions: { config: false, plugins: ['tailwindcss', remToPx] } } }],
+};
 
 function shared(production: boolean): Configuration {
   return {

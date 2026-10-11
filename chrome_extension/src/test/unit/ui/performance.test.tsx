@@ -41,6 +41,8 @@ function renderSettings(performanceProps: PerformanceSettingsProps | undefined) 
       shortcuts="off"
       holdMenu="off"
       onHoldMenuChange={jest.fn()}
+      livePreview
+      onLivePreviewChange={jest.fn()}
       keepLoaded={15}
       installed={null}
       performance={performanceProps}

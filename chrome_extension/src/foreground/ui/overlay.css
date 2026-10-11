@@ -30,6 +30,12 @@
   box-sizing: border-box;
 }
 
+/* A scrolling area inside the card: a slim scrollbar that suits the dark card instead of the page's own. */
+.echo-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--echo-color-sheen) / 0.4) transparent;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.01ms !important;

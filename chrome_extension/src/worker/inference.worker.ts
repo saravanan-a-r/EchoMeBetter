@@ -70,7 +70,7 @@ scope.addEventListener('message', ({ data }) => {
       host.warmUp();
       break;
     case 'rewrite':
-      host.enqueue(data.jobId, data.style, data.text);
+      host.enqueue(data.jobId, data.style, data.text, { stream: data.stream });
       break;
     case 'cancel':
       host.cancel(data.jobId);

@@ -28,7 +28,8 @@ export interface GreedyOptions extends GenerationSettings {
   readonly eosId: number;
   readonly maxNewTokens: number;
   readonly signal?: AbortSignal;
-  readonly onToken?: (generatedCount: number) => void;
+  /** After each generated token (EOS excluded), with every token generated so far; `generated` is the decoder's own array, to read only. */
+  readonly onToken?: (generatedCount: number, generated: readonly number[]) => void;
 }
 
 export interface GreedyResult {
@@ -61,7 +62,7 @@ export async function greedyGenerate<Memory, Cache>(
       sequence.push(next);
       if (next === options.eosId) return { ids: generated, finished: true };
       generated.push(next);
-      options.onToken?.(generated.length);
+      options.onToken?.(generated.length, generated);
     }
     return { ids: generated, finished: false };
   } finally {

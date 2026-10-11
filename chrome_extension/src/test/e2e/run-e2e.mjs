@@ -18,6 +18,9 @@
  *      extension's private storage) → text replaced in the textarea → Undo
  *      restores it. Where the browser offers a GPU this first rewrite runs
  *      there, the default
+ *   3b. the live preview: the rewrite shows as it is written, the field
+ *      changes once, the settings switch turns it off; interleaved timed runs
+ *      with it on and off
  *   4. the popup's settings move the model to the processor (the engine
  *      restarts and reloads it), a style running on the fallback adapter
  *      and a keyboard shortcut rewrite there; a bigger share of the
@@ -204,6 +207,190 @@ try {
   await undo.click();
   check((await welcome.evaluate(() => document.querySelector('#playground').value)) === ORIGINAL, 'Undo restored the original text');
 
+  console.log('live preview:');
+  const LONG = 'hey team, quick update on the launch. design is mostly done but we still need the final copy from marketing, and qa found a couple of bugs in checkout that we should fix before friday. can someone own the release notes too? thx';
+  /**
+   * One rewrite of `text`, timed and watched inside the page: from the loader
+   * appearing to the field changing (both on the page's clock, so the test
+   * driver's own latency is not counted), with every preview text shown and
+   * every change the field saw.
+   */
+  const watchedRewrite = async (jobId, text) => {
+    await welcome.evaluate((original) => {
+      const box = document.querySelector('#playground');
+      box.value = original;
+      box.focus();
+      box.setSelectionRange(0, box.value.length);
+      const root = document.querySelector('echomebetter-overlay')?.shadowRoot;
+      const seen = { previews: [], inputs: 0, loaderAt: null, doneAt: null, together: false, sameCard: null };
+      let card = null;
+      globalThis.__echoWatch = seen;
+      const look = () => {
+        const shadow = document.querySelector('echomebetter-overlay')?.shadowRoot;
+        if (!shadow) return;
+        if (seen.loaderAt === null && shadow.querySelector('[role="status"][aria-label]')) seen.loaderAt = performance.now();
+        const preview = shadow.querySelector('[aria-hidden="true"] p');
+        const textNow = preview?.textContent ?? null;
+        if (textNow && textNow !== seen.previews.at(-1)) seen.previews.push(textNow);
+        // The pointer loader carries an aria-label; the card does not.
+        if (preview && shadow.querySelector('[role="status"][aria-label]')) seen.together = true;
+        if (preview) card ??= preview.closest('[role="status"]');
+        const result = [...shadow.querySelectorAll('[role="status"]')].find((node) => /Rewritten|Looks good/.test(node.textContent));
+        if (result && card) seen.sameCard = result === card;
+      };
+      globalThis.__echoObserver?.disconnect();
+      const observer = new MutationObserver(look);
+      if (root) observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });
+      else observer.observe(document.documentElement, { subtree: true, childList: true });
+      globalThis.__echoObserver = observer;
+      seen.inputs = [];
+      box.addEventListener('input', (event) => {
+        seen.inputs.push({ at: event.timeStamp, value: box.value });
+        seen.doneAt ??= performance.now();
+      });
+    }, text);
+    await startJob(jobId, 'professional');
+    await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, text, { timeout: 120_000, polling: 'raf' });
+    await welcome.waitForTimeout(150);
+    return welcome.evaluate(() => {
+      globalThis.__echoObserver?.disconnect();
+      return { ...globalThis.__echoWatch, value: document.querySelector('#playground').value };
+    });
+  };
+  const setLivePreview = (on) =>
+    worker.evaluate(async (value) => {
+      const { settings } = await chrome.storage.local.get('settings');
+      await chrome.storage.local.set({ settings: { ...settings, livePreview: value } });
+    }, on);
+
+  // On by default: the rewrite shows as it is written, and the field changes once, to the finished text.
+  const streamed = await watchedRewrite('e2e-live-1', LONG);
+  console.log(`  ${streamed.previews.length} preview updates, the first ${JSON.stringify(streamed.previews[0])}`);
+  check(streamed.previews.length >= 2, `the rewrite showed as it was written (${streamed.previews.length} updates)`);
+  check(
+    streamed.previews.every((text, index) => index === 0 || text.length >= streamed.previews[index - 1].length),
+    'each preview carries on from the one before',
+  );
+  /** The field was written once, in one go (one edit can fire an input event per line), and only with the finished text. */
+  const writtenOnce = ({ inputs, value }) => inputs.length > 0 && inputs.every((input) => input.value === value) && inputs.at(-1).at - inputs[0].at < 50;
+  check(writtenOnce(streamed), `the field changed once, to the finished text (${streamed.inputs.length} input events, all within one edit)`);
+  check(streamed.value !== LONG && streamed.value.trim().length > 0, 'the field holds the finished rewrite');
+  check(streamed.previews.every((text) => text.trim().length > 0 && !text.includes('\uFFFD')), 'no empty or broken preview was shown');
+  check(!streamed.together, 'the loader gave way to the card at the first words: never both on the page');
+  check(streamed.sameCard === true, 'the card that showed the rewrite became the result, in place');
+  const resultCard = welcome.locator('echomebetter-overlay').getByRole('status').filter({ hasText: 'Rewritten · Professional' });
+  check(/Took \d/.test(await resultCard.textContent()) && (await resultCard.getByRole('button', { name: 'Undo' }).count()) === 1, 'it says how long the rewrite took, with Undo');
+
+  // The switch in settings turns it off and on.
+  await popup.getByRole('button', { name: 'Settings' }).click();
+  const liveSwitch = popup.getByRole('switch', { name: 'Live preview' });
+  await liveSwitch.waitFor({ timeout: 10_000 });
+  check((await liveSwitch.getAttribute('aria-checked')) === 'true', 'settings show the live preview on by default');
+  await liveSwitch.click();
+  await popup.waitForTimeout(200);
+  check((await worker.evaluate(() => chrome.storage.local.get('settings'))).settings.livePreview === false, 'the switch turned the live preview off');
+  const withoutPreview = await watchedRewrite('e2e-live-2', LONG);
+  check(withoutPreview.previews.length === 0 && writtenOnce(withoutPreview) && withoutPreview.inputs.length === streamed.inputs.length, 'with it off, the rewrite arrives at once, as before');
+  await liveSwitch.click();
+  await popup.waitForTimeout(200);
+  check((await worker.evaluate(() => chrome.storage.local.get('settings'))).settings.livePreview === true, 'and back on');
+  await popup.getByRole('button', { name: 'Back' }).click();
+
+  // A paragraph: the card widens to fit it (up to 70% of the window), then scrolls, and the reader can scroll back.
+  const PARAGRAPH = Array.from({ length: 4 }, () => 'hey team, quick update on the launch. design is mostly done but we still need the final copy from marketing, and qa found a couple of bugs in checkout that we should fix before friday.').join(' ');
+  await welcome.evaluate((original) => {
+    const box = document.querySelector('#playground');
+    box.value = original;
+    box.focus();
+    box.setSelectionRange(0, box.value.length);
+  }, PARAGRAPH);
+  const viewportWidth = await welcome.evaluate(() => window.innerWidth);
+  const sampleCard = () =>
+    welcome.evaluate(() => {
+      const shadow = document.querySelector('echomebetter-overlay')?.shadowRoot;
+      const text = shadow?.querySelector('[aria-hidden="true"] p');
+      if (!text) return null;
+      const card = text.closest('[role="status"]');
+      const scroller = text.parentElement;
+      const box = card.getBoundingClientRect();
+      return {
+        width: box.width,
+        left: box.left,
+        right: box.right,
+        scrollable: scroller.scrollHeight > scroller.clientHeight + 1,
+        height: scroller.clientHeight,
+        atEnd: scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 4,
+        top: scroller.scrollTop,
+        pageScroll: window.scrollY,
+      };
+    });
+  await startJob('e2e-wide', 'professional');
+  const samples = [];
+  let reader = null;
+  const wideDeadline = Date.now() + 120_000;
+  while (Date.now() < wideDeadline) {
+    const now = await sampleCard();
+    if (now) {
+      samples.push({ ...now, beforeReading: reader === null });
+      // Once it scrolls: wheel up over the card, as a reader would, and see it stay put while text keeps coming.
+      if (now.scrollable && reader === null) {
+        const card = welcome.locator('echomebetter-overlay').locator('[aria-hidden="true"] > p').first();
+        await card.hover();
+        const before = await sampleCard();
+        await welcome.mouse.wheel(0, -400);
+        await welcome.waitForTimeout(120);
+        const after = await sampleCard();
+        await welcome.waitForTimeout(600);
+        const later = await sampleCard();
+        reader = { before, after, later };
+      }
+    } else if (samples.length > 0) {
+      break;
+    }
+    await welcome.waitForTimeout(100);
+  }
+  await welcome
+    .waitForFunction((original) => document.querySelector('#playground').value !== original, PARAGRAPH, { timeout: 60_000 })
+    .catch(async (error) => {
+      const shown = await welcome.evaluate(() => document.querySelector('echomebetter-overlay')?.shadowRoot?.textContent ?? '(no overlay)');
+      throw new Error(`the paragraph was not rewritten; the page showed: ${shown.slice(0, 300)} (${error.message.split('\n')[0]})`);
+    });
+  const widths = samples.map((sample) => sample.width);
+  console.log(`  card widths while writing: ${Math.round(Math.min(...widths))} → ${Math.round(Math.max(...widths))} px of ${viewportWidth}`);
+  check(Math.min(...widths) >= 340 && Math.max(...widths) > Math.min(...widths) + 50, 'the card widened as the paragraph grew');
+  check(Math.max(...widths) <= viewportWidth * 0.7 + 1, 'and stopped at 70% of the window');
+  check(samples.every((sample) => sample.left >= 0 && sample.right <= viewportWidth), 'always fully inside the window');
+  check(samples.some((sample) => sample.scrollable), 'a long rewrite scrolls inside the card');
+  check(Math.max(...samples.map((sample) => sample.height)) <= 120, 'the text area stays within its height limit');
+  check(samples.filter((sample) => sample.scrollable && sample.beforeReading).every((sample) => sample.atEnd), 'the newest text stays in view while it arrives');
+  check(reader !== null && reader.after.top < reader.before.top && !reader.after.atEnd, 'scrolling up over the card moved the text');
+  check(reader.later.top <= reader.after.top + 1 && !reader.later.atEnd, 'new text did not pull the reader back down');
+  check(reader.after.pageScroll === reader.before.pageScroll, 'the page behind did not scroll');
+
+  // Does showing it slow the rewrite down? Interleaved runs, on the page's clock.
+  const RUNS = Number(process.env.E2E_TIMING_RUNS ?? 6);
+  const times = { on: [], off: [] };
+  for (let run = 0; run < RUNS; run++) {
+    for (const on of run % 2 ? [true, false] : [false, true]) {
+      await setLivePreview(on);
+      const result = await watchedRewrite(`e2e-time-${run}-${on}`, LONG);
+      check(result.loaderAt !== null && result.doneAt !== null, 'the run was timed');
+      times[on ? 'on' : 'off'].push(result.doneAt - result.loaderAt);
+    }
+  }
+  await setLivePreview(true);
+  const median = (values) => [...values].sort((x, y) => x - y)[Math.floor(values.length / 2)];
+  const fmt = (values) => values.map((value) => Math.round(value)).join(', ');
+  console.log(`  preview off: ${fmt(times.off)} ms (median ${Math.round(median(times.off))})`);
+  console.log(`  preview on:  ${fmt(times.on)} ms (median ${Math.round(median(times.on))})`);
+  // Paired by run (each pair ran back to back), so a machine slowing down over the runs cancels out.
+  const cost = median(times.on.map((on, run) => on - times.off[run]));
+  const share = cost / median(times.off);
+  console.log(`  difference, paired: ${cost >= 0 ? '+' : ''}${Math.round(cost)} ms (${(share * 100).toFixed(1)}%)`);
+  // Reported, and failed only when gross: on a shared machine one run varies by a few hundred milliseconds.
+  // The bound that matters (a few updates a second, not one per token) is held by the engine host's unit test.
+  check(share <= 0.15, 'the live preview does not slow the rewrite down noticeably');
+
   /** Engine status once it is ready on `processor` again after a settings change restarted it. */
   const readyOn = async (processor) => {
     const deadline = Date.now() + 240_000;
@@ -312,8 +499,22 @@ try {
     return [box.selectionStart, box.selectionEnd, box.value.length];
   });
 
+  /** The menu's own size, and its first icon box and row: what a page's root font size must not change. */
+  const menuGeometry = () =>
+    welcome.evaluate(() => {
+      const shadow = document.querySelector('echomebetter-overlay').shadowRoot;
+      const box = (node) => {
+        const { width, height } = node.getBoundingClientRect();
+        return [Math.round(width * 10) / 10, Math.round(height * 10) / 10];
+      };
+      const menu = shadow.querySelector('[role="menu"]');
+      const row = menu.querySelector('[role="menuitem"]');
+      return { menu: box(menu), row: box(row), icon: box(row.firstElementChild) };
+    });
+
   const held = Date.now();
   await holdOnSelection();
+  const normalGeometry = await menuGeometry();
   const heldFor = Date.now() - held;
   check(heldFor >= 1900, `holding still on selected text opened the style menu (after ${(heldFor / 1000).toFixed(1)}s)`);
   check((await styleMenu.getByRole('menuitem').count()) === 5, 'the menu offers every style');
@@ -329,6 +530,17 @@ try {
   await welcome.mouse.click(10, 10);
   await styleMenu.waitFor({ state: 'detached', timeout: 5_000 });
   check(true, 'a click elsewhere closed the menu');
+
+  // A site that sets its root font size small (html { font-size: 62.5% } is common): the overlay must not shrink with it.
+  await welcome.evaluate(() => (document.documentElement.style.fontSize = '10px'));
+  await holdOnSelection();
+  const smallRootGeometry = await menuGeometry();
+  await welcome.mouse.up();
+  await welcome.keyboard.press('Escape');
+  await styleMenu.waitFor({ state: 'detached', timeout: 5_000 });
+  await welcome.evaluate(() => document.documentElement.style.removeProperty('font-size'));
+  console.log(`  menu at a 16px root: ${JSON.stringify(normalGeometry)}\n  menu at a 10px root: ${JSON.stringify(smallRootGeometry)}`);
+  check(JSON.stringify(smallRootGeometry) === JSON.stringify(normalGeometry), "the menu looks the same on a page whose root font size is 10px");
 
   await holdOnSelection();
   await welcome.mouse.up();

@@ -12,7 +12,7 @@ import { presentStatus } from '../../../ui/components/StatusCard';
 import { ACCESS_TITLE } from '../../../ui/components/ShortcutAccessCard';
 import type { CatalogState, ModelAvailability } from '../../../ui/hooks/useModel';
 import { websiteAvailability, type WebsiteAvailability } from '../../../ui/hooks/useShortcuts';
-import { HOLD_MENU_DESCRIPTION, KEEP_AWAKE_NOTE, SettingsView, SHORTCUT_NOTE } from '../../../ui/popup/SettingsView';
+import { HOLD_MENU_DESCRIPTION, KEEP_AWAKE_NOTE, LIVE_PREVIEW_DESCRIPTION, SettingsView, SHORTCUT_NOTE } from '../../../ui/popup/SettingsView';
 import { HOLD_HINT, PopupView, REMOVED_NOTICE } from '../../../ui/popup/PopupApp';
 import { WELCOME_HOLD_HINT, WelcomeView } from '../../../ui/welcome/WelcomeApp';
 
@@ -188,22 +188,32 @@ describe('keyboard shortcuts in the popup', () => {
 
 function renderSettings(
   shortcuts: WebsiteAvailability,
-  options: { platform?: 'mac' | 'other'; installed?: InstalledModelRecord | null; removeReply?: UiReply; focus?: 'keep-awake'; holdMenu?: WebsiteAvailability } = {},
+  options: { platform?: 'mac' | 'other'; installed?: InstalledModelRecord | null; removeReply?: UiReply; focus?: 'keep-awake'; holdMenu?: WebsiteAvailability; livePreview?: boolean | null } = {},
 ) {
   const handlers = {
     onShortcutsChange: jest.fn(),
     onHoldMenuChange: jest.fn(),
+    onLivePreviewChange: jest.fn(),
     onAllowSiteAccess: jest.fn(),
     onKeepLoadedChange: jest.fn(),
     onBack: jest.fn(),
     onRemoveModel: jest.fn(async (): Promise<UiReply> => options.removeReply ?? { ok: true }),
     onRemoveAdapter: jest.fn(async (_adapter: StyleId): Promise<UiReply> => options.removeReply ?? { ok: true }),
   };
-  render(<SettingsView platform={options.platform ?? 'other'} shortcuts={shortcuts} holdMenu={options.holdMenu ?? 'on'} keepLoaded={15} installed={options.installed ?? null} focus={options.focus} {...handlers} />);
+  render(<SettingsView platform={options.platform ?? 'other'} shortcuts={shortcuts} holdMenu={options.holdMenu ?? 'on'} livePreview={options.livePreview === undefined ? true : options.livePreview} keepLoaded={15} installed={options.installed ?? null} focus={options.focus} {...handlers} />);
   return handlers;
 }
 
 describe('settings page', () => {
+  test('the live preview has its own switch, on by default', () => {
+    const { onLivePreviewChange } = renderSettings('on');
+    const toggle = screen.getByRole('switch', { name: 'Live preview' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(toggle).toHaveAccessibleDescription(LIVE_PREVIEW_DESCRIPTION);
+    fireEvent.click(toggle);
+    expect(onLivePreviewChange).toHaveBeenCalledWith(false);
+  });
+
   test('shortcuts on: the switch is on and every shortcut is listed', () => {
     const { onShortcutsChange } = renderSettings('on');
     const toggle = screen.getByRole('switch', { name: 'Keyboard shortcuts' });
@@ -249,7 +259,7 @@ describe('settings page', () => {
   });
 
   test('nothing is switchable before the state is known', () => {
-    renderSettings('loading', { holdMenu: 'loading' });
+    renderSettings('loading', { holdMenu: 'loading', livePreview: null });
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
   });
 

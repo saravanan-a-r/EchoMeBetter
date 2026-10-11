@@ -1,6 +1,7 @@
 /**
  * State of the in-page overlay: at most one "working" indicator, one toast
- * and one style menu.
+ * and one style menu. The working rewrite's live preview and the toast share
+ * one card on the page (see OverlayCard).
  * A tiny external store so the controller (plain TypeScript) drives React
  * through `useSyncExternalStore` without React owning the job logic.
  */
@@ -25,6 +26,10 @@ export interface WorkingState {
   readonly progress?: number;
   /** Where the indicator appears until the pointer moves. */
   readonly origin: Point;
+  /** The text being rewritten: the live preview sits beside it. */
+  readonly anchor: AnchorRect;
+  /** The rewrite so far, while the model writes it (live preview on). */
+  readonly preview?: string;
 }
 
 export interface ToastAction {
@@ -91,13 +96,19 @@ export class OverlayStore {
     this.set({ working, toast: null, menu: null });
   }
 
-  updateWorking(patch: Partial<Pick<WorkingState, 'phase' | 'progress'>>): void {
+  updateWorking(patch: Partial<Pick<WorkingState, 'phase' | 'progress' | 'preview'>>): void {
     if (!this.state.working) return;
     this.set({ ...this.state, working: { ...this.state.working, ...patch } });
   }
 
-  stopWorking(): void {
-    if (this.state.working) this.set({ ...this.state, working: null });
+  /**
+   * The job is over. Its outcome, if any, is shown in the same update: the
+   * card that previewed the rewrite becomes the toast with the result,
+   * rather than closing and a new one opening.
+   */
+  stopWorking(outcome?: Omit<ToastState, 'id'>): void {
+    if (!this.state.working && !outcome) return;
+    this.set({ ...this.state, working: null, toast: outcome ? { ...outcome, id: this.nextToastId++ } : this.state.toast });
   }
 
   showToast(toast: Omit<ToastState, 'id'>): number {
