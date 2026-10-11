@@ -23,6 +23,12 @@ import type { InferenceSession } from 'onnxruntime-web';
 export interface RewriteOptions {
   readonly signal?: AbortSignal;
   readonly onProgress?: (generatedTokens: number) => void;
+  /**
+   * After each generated token, a way to read the rewrite so far. Reading
+   * decodes, so a caller showing it reads only as often as it shows it.
+   * The text so far is not the result: rewrite() resolves with that.
+   */
+  readonly onPartial?: (readText: () => string) => void;
 }
 
 export interface RewriteResult {
@@ -79,7 +85,10 @@ export class RewriteEngine {
       eosId: tokens.eosId,
       maxNewTokens: limits.maxNewTokens,
       signal: options.signal,
-      onToken: options.onProgress,
+      onToken: (count, generated) => {
+        options.onProgress?.(count);
+        options.onPartial?.(() => this.partialText(manifest, generated));
+      },
     });
   }
 
@@ -87,6 +96,16 @@ export class RewriteEngine {
   decode(manifest: ModelManifest, ids: readonly number[]): string {
     const text = this.tokenizer.decode(ids.filter((id) => id !== manifest.tokens.padId));
     return undoInputTransforms(text, manifest.inputTransforms);
+  }
+
+  /**
+   * The rewrite so far, for showing while it is written. A character spelled
+   * in several byte tokens (an emoji, many accented letters) is incomplete
+   * until its last byte arrives and decodes as U+FFFD meanwhile: those are
+   * left off the end until it is whole.
+   */
+  private partialText(manifest: ModelManifest, ids: readonly number[]): string {
+    return this.decode(manifest, ids).replace(/\uFFFD+$/u, '').trim();
   }
 
   /** Free the sessions' memory; the engine cannot be used afterwards. */

@@ -67,7 +67,7 @@ export function startBridge(worker: WorkerLike, runtime: RuntimeLike, config: Om
         worker.postMessage({ type: 'warm-up' });
         break;
       case 'engine/rewrite':
-        worker.postMessage({ type: 'rewrite', jobId: message.jobId, style: message.style, text: message.text });
+        worker.postMessage({ type: 'rewrite', jobId: message.jobId, style: message.style, text: message.text, stream: message.stream });
         break;
       case 'engine/cancel':
         worker.postMessage({ type: 'cancel', jobId: message.jobId });
