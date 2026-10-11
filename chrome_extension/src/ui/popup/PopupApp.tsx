@@ -188,6 +188,8 @@ export function PopupApp() {
         holdMenu={holdMenu}
         onHoldMenuChange={setHoldMenu}
         onAllowSiteAccess={requestSiteAccess}
+        livePreview={settingsLoaded ? settings.livePreview : null}
+        onLivePreviewChange={(on) => setSettings({ ...settings, livePreview: on })}
         keepLoaded={settings.keepModelLoadedMinutes}
         onKeepLoadedChange={(minutes) => setSettings({ ...settings, keepModelLoadedMinutes: minutes })}
         performance={

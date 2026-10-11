@@ -25,6 +25,8 @@ export interface RouterDeps {
   readonly onActivity: () => void;
   /** Asked as a job starts: whether it wakes the model from an idle rest (said on its job/done). */
   readonly wakingFromRest: () => Promise<WokeFromRest | null>;
+  /** Asked as a job starts: whether the user wants the rewrite shown while it is written. */
+  readonly livePreview: () => Promise<boolean>;
 }
 
 export class JobRouter {
@@ -77,12 +79,14 @@ export class JobRouter {
     try {
       // Asked as the engine host starts, not after: loading the model ends the rest. Nor before: the job must not wait for it.
       const resting = this.deps.wakingFromRest().catch(() => null);
+      const preview = this.deps.livePreview().catch(() => false);
       await this.deps.ensureEngineHost();
       const rest = await resting;
+      const stream = await preview;
       if (rest && this.jobs.get(jobId) === port) this.wokeFromRest.set(jobId, rest);
       // The page may have gone away while the engine host was starting.
       if (this.jobs.get(jobId) !== port) return;
-      await this.deps.sendToEngine({ target: 'offscreen', kind: 'engine/rewrite', jobId, style, text });
+      await this.deps.sendToEngine({ target: 'offscreen', kind: 'engine/rewrite', jobId, style, text, stream });
     } catch (error) {
       this.finish(jobId, { kind: 'job/failed', jobId, error: toErrorPayload(error, 'MODEL_LOAD_FAILED') }, port);
     }
@@ -93,6 +97,15 @@ export class JobRouter {
       case 'job-phase': {
         const port = this.jobs.get(event.jobId);
         port?.postMessage({ kind: 'job/phase', jobId: event.jobId, phase: event.phase, progress: event.progress });
+        return;
+      }
+      case 'job-partial': {
+        const port = this.jobs.get(event.jobId);
+        try {
+          port?.postMessage({ kind: 'job/partial', jobId: event.jobId, text: event.text });
+        } catch {
+          // The page went away; its disconnect cancels the job.
+        }
         return;
       }
       case 'job-done': {

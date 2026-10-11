@@ -208,6 +208,7 @@ const router = new JobRouter({
   sendToEngine: (command) => offscreen.send(command),
   onActivity: () => void recordActivity(),
   wakingFromRest: async () => wakingFromRest(await loadSettings()),
+  livePreview: async () => (await loadSettings()).livePreview,
 });
 
 chrome.runtime.onInstalled.addListener((details) => {

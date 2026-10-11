@@ -71,6 +71,33 @@ describe('ForegroundController', () => {
     expect(store.getSnapshot().toast).toMatchObject({ title: 'Original text restored' });
   });
 
+  test('the rewrite so far is only previewed: the field changes once, to the final text; a new attempt starts the preview over', () => {
+    const { textarea, store, controller, emit } = setup();
+    const onInput = jest.fn();
+    textarea.addEventListener('input', onInput);
+    controller.start('job-1', 'professional');
+    emit({ kind: 'job/phase', jobId: 'job-1', phase: 'rewriting' });
+    emit({ kind: 'job/partial', jobId: 'job-1', text: 'Please send' });
+    expect(store.getSnapshot().working).toMatchObject({ phase: 'rewriting', preview: 'Please send' });
+    expect(textarea.value).toBe('Hi,  pls send the deck tmrw  thx');
+
+    // The GPU failed the first attempt: the model loads again and the rewrite restarts.
+    emit({ kind: 'job/phase', jobId: 'job-1', phase: 'loading-model', progress: 0 });
+    expect(store.getSnapshot().working?.preview).toBeUndefined();
+    emit({ kind: 'job/phase', jobId: 'job-1', phase: 'rewriting' });
+    emit({ kind: 'job/partial', jobId: 'job-1', text: 'Please' });
+    emit({ kind: 'job/partial', jobId: 'job-2', text: 'someone else' });
+    expect(store.getSnapshot().working?.preview).toBe('Please');
+
+    emit({ kind: 'job/done', jobId: 'job-1', text: 'Please send the deck tomorrow.' });
+    expect(textarea.value).toBe('Hi,  Please send the deck tomorrow.  thx');
+    expect(onInput).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot().working).toBeNull();
+    // Late text for a finished job is dropped.
+    emit({ kind: 'job/partial', jobId: 'job-1', text: 'Please send the' });
+    expect(store.getSnapshot().working).toBeNull();
+  });
+
   test('the toast says how long the rewrite took, not counting model loading', () => {
     const { clock, store, controller, emit } = setup();
     controller.start('job-1', 'concise');

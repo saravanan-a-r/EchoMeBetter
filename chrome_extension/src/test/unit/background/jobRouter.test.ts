@@ -15,10 +15,14 @@ function fakePort() {
   return { port, sent, send: (message: unknown) => onMessage(message), disconnect: () => onDisconnect() };
 }
 
-function router(ensureEngineHost: () => Promise<void> = async () => undefined, wakingFromRest: () => Promise<WokeFromRest | null> = async () => null) {
+function router(
+  ensureEngineHost: () => Promise<void> = async () => undefined,
+  wakingFromRest: () => Promise<WokeFromRest | null> = async () => null,
+  livePreview: () => Promise<boolean> = async () => false,
+) {
   const commands: OffscreenCommand[] = [];
   const onActivity = jest.fn();
-  const instance = new JobRouter({ ensureEngineHost, sendToEngine: async (command) => void commands.push(command), onActivity, wakingFromRest });
+  const instance = new JobRouter({ ensureEngineHost, sendToEngine: async (command) => void commands.push(command), onActivity, wakingFromRest, livePreview });
   return { instance, commands, onActivity };
 }
 
@@ -35,8 +39,8 @@ describe('JobRouter', () => {
     b.send({ kind: 'job/request', jobId: 'B', style: 'friendly', text: 'two' });
     await flush();
     expect(commands).toEqual([
-      { target: 'offscreen', kind: 'engine/rewrite', jobId: 'A', style: 'concise', text: 'one' },
-      { target: 'offscreen', kind: 'engine/rewrite', jobId: 'B', style: 'friendly', text: 'two' },
+      { target: 'offscreen', kind: 'engine/rewrite', jobId: 'A', style: 'concise', text: 'one', stream: false },
+      { target: 'offscreen', kind: 'engine/rewrite', jobId: 'B', style: 'friendly', text: 'two', stream: false },
     ]);
 
     instance.handleEngineEvent({ type: 'job-phase', jobId: 'B', phase: 'rewriting' });

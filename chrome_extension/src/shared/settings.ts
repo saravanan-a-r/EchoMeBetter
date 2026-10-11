@@ -25,9 +25,11 @@ export interface Settings extends ComputeSettings {
   readonly shortcutsEnabled: boolean;
   /** Pressing and holding on selected text opens the style menu; needs the same site access. */
   readonly holdMenuEnabled: boolean;
+  /** Show the rewrite beside the text while the model writes it; the text itself still changes only once it is finished. */
+  readonly livePreview: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { keepModelLoadedMinutes: 60, shortcutsEnabled: true, holdMenuEnabled: true, ...DEFAULT_COMPUTE };
+export const DEFAULT_SETTINGS: Settings = { keepModelLoadedMinutes: 60, shortcutsEnabled: true, holdMenuEnabled: true, livePreview: true, ...DEFAULT_COMPUTE };
 
 export const SETTINGS_STORAGE_KEY = 'settings';
 
@@ -43,6 +45,7 @@ export function parseSettings(raw: unknown): Settings {
     keepModelLoadedMinutes: oneOf(KEEP_LOADED_CHOICES, stored.keepModelLoadedMinutes, DEFAULT_SETTINGS.keepModelLoadedMinutes),
     shortcutsEnabled: typeof stored.shortcutsEnabled === 'boolean' ? stored.shortcutsEnabled : DEFAULT_SETTINGS.shortcutsEnabled,
     holdMenuEnabled: typeof stored.holdMenuEnabled === 'boolean' ? stored.holdMenuEnabled : DEFAULT_SETTINGS.holdMenuEnabled,
+    livePreview: typeof stored.livePreview === 'boolean' ? stored.livePreview : DEFAULT_SETTINGS.livePreview,
     processor: oneOf(PROCESSORS, stored.processor, DEFAULT_SETTINGS.processor),
     cpuUsage: oneOf(CPU_USAGES, stored.cpuUsage, DEFAULT_SETTINGS.cpuUsage),
     gpuPower: oneOf(GPU_POWERS, stored.gpuPower, DEFAULT_SETTINGS.gpuPower),
