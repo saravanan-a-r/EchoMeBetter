@@ -4,20 +4,24 @@
  *   start   capture the selection → show the pointer loader → ask for the rewrite
  *   events  "loading model 40%" / "rewriting" update the loader; with the
  *           live preview on, the rewrite so far shows beside the text
- *           (the text itself is only changed once, when it is done)
- *   done    re-check the text is untouched → replace it → toast with Undo
- *           (and, when the model first had to wake up from an idle rest,
- *           how long that took and a way to keep it awake longer); the
- *           preview's card becomes that toast, in the same update
- *   Esc     cancel; the page is left exactly as it was
+ *   done    with the live preview on, the card that showed it being written
+ *           keeps it, whole, with Replace (Enter) and Discard (Esc), how
+ *           long it took and, when the model first had to wake up from an
+ *           idle rest, how long that took and a way to keep it awake longer.
+ *           Replace re-checks the text is untouched, puts the rewrite in
+ *           place and the card becomes a short toast with Undo.
+ *           Without the live preview there is nothing to read first: the
+ *           text is replaced at once and the toast says the rest
+ *   Esc     cancel (or, once written, discard); the page is left exactly as it was
  *
  * It also owns the style menu that a press and hold on selected text opens:
  * a pick re-selects the text the menu was opened for and asks for that
  * style the way a shortcut does; Esc or a click elsewhere closes it.
  *
- * Only one job runs per frame. Everything the controller touches outside
- * itself (port, overlay, clipboard) is injected, so the whole journey is
- * testable in a DOM without Chrome.
+ * Only one job runs per frame; starting another, or opening the menu, sets
+ * aside a rewrite still waiting for a decision. Everything the controller
+ * touches outside itself (port, overlay, clipboard) is injected, so the whole
+ * journey is testable in a DOM without Chrome.
  */
 import { describeError, EchoError, toErrorPayload, type ErrorPayload } from '../shared/errors';
 import { formatDuration } from '../shared/format';
@@ -65,12 +69,21 @@ interface ActiveJob {
   readonly port: JobPortLike;
   /** When the model started rewriting (after any loading); null until then. */
   rewriteStartedAt: number | null;
+  /** The user is watching the rewrite being written (live preview on, first words in). */
+  previewing: boolean;
   readonly requestedAt: number;
   readonly stopListening: () => void;
 }
 
 /** A toast as the controller writes it; how long it stays follows from its tone. */
 type ToastDraft = Omit<ToastState, 'id' | 'durationMs'>;
+
+/** A finished rewrite on screen, waiting for Replace or Discard. */
+interface PendingReview {
+  readonly job: ActiveJob;
+  readonly text: string;
+  readonly stopListening: () => void;
+}
 
 interface OpenMenu {
   /** The selection the menu was opened for. */
@@ -89,6 +102,7 @@ function toAnchor(rect: Pick<DOMRect, 'top' | 'left' | 'bottom' | 'right'>): Anc
 export class ForegroundController {
   private active: ActiveJob | null = null;
   private menu: OpenMenu | null = null;
+  private review: PendingReview | null = null;
 
   constructor(private readonly deps: ForegroundDeps) {}
 
@@ -112,6 +126,7 @@ export class ForegroundController {
   /** The style menu, beside `point`, for the text held there. */
   openMenu(point: Point): StartJobReply {
     this.closeMenu();
+    this.dropReview();
     if (this.active) return this.refuse(new EchoError('BUSY'), this.active.anchor);
     let target = takeHeldSelection(this.deps.win, point);
     if (!target) {
@@ -197,6 +212,7 @@ export class ForegroundController {
 
   start(jobId: string, style: StyleId): StartJobReply {
     this.closeMenu();
+    this.dropReview();
     if (this.active) return this.refuse(new EchoError('BUSY'), this.active.anchor);
 
     let target: EditTarget;
@@ -236,6 +252,7 @@ export class ForegroundController {
       anchor,
       port,
       rewriteStartedAt: null,
+      previewing: false,
       requestedAt: this.now(),
       stopListening: () => this.deps.win.removeEventListener('keydown', onKey, true),
     };
@@ -279,13 +296,15 @@ export class ForegroundController {
       case 'job/phase':
         if (event.phase === 'rewriting' && job.rewriteStartedAt === null) job.rewriteStartedAt = this.now();
         // A phase starts an attempt (a second one if the GPU failed the first): any text so far is from before it.
+        job.previewing = false;
         this.deps.overlay().updateWorking({ phase: event.phase, progress: event.progress, preview: undefined });
         return;
       case 'job/partial':
+        job.previewing = true;
         this.deps.overlay().updateWorking({ phase: 'rewriting', preview: event.text });
         return;
       case 'job/done':
-        this.end(this.deliver(job, event.text, event.wokeFromRest));
+        this.finish(job, event.text, event.wokeFromRest);
         return;
       case 'job/failed':
         this.fail(event.error);
@@ -307,26 +326,92 @@ export class ForegroundController {
     };
   }
 
-  /** Put the rewrite in place; what to tell the user about it. */
-  private deliver(job: ActiveJob, text: string, rest?: WokeFromRest): ToastDraft {
+  /** The rewrite is written: the user reviews it if they watched it being written; otherwise it goes in place now. */
+  private finish(job: ActiveJob, text: string, rest?: WokeFromRest): void {
     const took = formatDuration(this.now() - (job.rewriteStartedAt ?? job.requestedAt));
     const note = this.wakeNote(job, rest);
     if (text === job.core) {
-      return {
+      this.end({
         tone: 'info',
         title: 'Looks good already',
         message: `No ${styleLabel(job.style).toLowerCase()} changes to suggest. Took ${took}.`,
         actions: [],
         note,
         anchor: job.anchor,
-      };
+      });
+    } else if (job.previewing) {
+      this.offerReview(job, text, `Took ${took}`, note);
+    } else {
+      this.end(
+        this.replace(job, text, {
+          title: `Rewritten · ${styleLabel(job.style)}`,
+          message: `Took ${took}. Not quite right? Undo restores your original.`,
+          note,
+        }),
+      );
     }
+  }
+
+  /**
+   * Keep the finished rewrite in its card until the user decides. Enter and
+   * Esc are theirs while they are still in the edited field (or on the card),
+   * and Enter only while the text there is the text that was rewritten:
+   * anywhere else the keys stay the page's.
+   */
+  private offerReview(job: ActiveJob, text: string, detail: string, note: ToastNote | undefined): void {
+    this.release();
+    const field = job.target.kind === 'text-control' ? job.target.element : job.target.host;
+    const ours = (event: KeyboardEvent) =>
+      event.composedPath().some((node) => node === field || (node instanceof Element && node.localName === OVERLAY_TAG));
+    const onKey = (event: KeyboardEvent) => {
+      if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !ours(event)) return;
+      if (event.key === 'Escape') this.dropReview();
+      else if (event.key === 'Enter' && isUnchanged(job.target)) this.acceptReview(review);
+      else return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const { win } = this.deps;
+    const review: PendingReview = { job, text, stopListening: () => win.removeEventListener('keydown', onKey, true) };
+    win.addEventListener('keydown', onKey, true);
+    this.review = review;
+    this.deps.overlay().startReview({
+      style: job.style,
+      anchor: job.anchor,
+      text,
+      detail,
+      note,
+      replace: () => this.acceptReview(review),
+      discard: () => {
+        if (this.review === review) this.dropReview();
+      },
+    });
+  }
+
+  private acceptReview(review: PendingReview): void {
+    if (this.review !== review) return;
+    this.review = null;
+    review.stopListening();
+    const outcome = this.replace(review.job, review.text, { title: `Replaced · ${styleLabel(review.job.style)}` });
+    this.deps.overlay().endReview(this.timed(outcome));
+  }
+
+  /** Discard the rewrite waiting for a decision, if any; the text stays as it is. */
+  private dropReview(): void {
+    const review = this.review;
+    if (!review) return;
+    this.review = null;
+    review.stopListening();
+    this.deps.overlay().endReview();
+  }
+
+  /** Put the rewrite in place; the toast saying so, with Undo (or why it couldn't, with the rewrite to copy). */
+  private replace(job: ActiveJob, text: string, report: Pick<ToastDraft, 'title' | 'message' | 'note'>): ToastDraft {
     try {
       const edit = applyRewrite(job.target, `${job.lead}${text}${job.trail}`);
       return {
         tone: 'success',
-        title: `Rewritten · ${styleLabel(job.style)}`,
-        message: `Took ${took}. Not quite right? Undo restores your original.`,
+        ...report,
         actions: [
           {
             label: 'Undo',
@@ -345,7 +430,6 @@ export class ForegroundController {
             },
           },
         ],
-        note,
         anchor: job.anchor,
       };
     } catch (error) {
@@ -368,17 +452,22 @@ export class ForegroundController {
 
   /** The job is over: its card turns into `outcome` (or goes, with none). */
   private end(outcome?: ToastDraft): void {
+    if (this.release()) this.deps.overlay().stopWorking(outcome && this.timed(outcome));
+  }
+
+  /** Let go of the running job (its keys, the busy pointer, its port); the overlay is the caller's to update. */
+  private release(): ActiveJob | null {
     const job = this.active;
-    if (!job) return;
+    if (!job) return null;
     this.active = null;
     job.stopListening();
-    this.deps.overlay().stopWorking(outcome && this.timed(outcome));
     setBusyCursor(this.deps.doc, false);
     try {
       job.port.disconnect();
     } catch {
       // Already disconnected.
     }
+    return job;
   }
 
   private refuse(error: unknown, anchor: AnchorRect | null): StartJobReply {

@@ -2,8 +2,9 @@
  * @jest-environment jsdom
  *
  * The page-side journey end to end: start → loader → events → text replaced →
- * toast with Undo, plus every way it can go differently (busy, nothing
- * selected, Esc, the extension going away, text edited meanwhile).
+ * toast with Undo (with the live preview: the finished rewrite waits for
+ * Replace or Discard first), plus every way it can go differently (busy,
+ * nothing selected, Esc, the extension going away, text edited meanwhile).
  */
 import { beforeAll, beforeEach, describe, expect, jest, test } from '@jest/globals';
 import { ForegroundController, TOAST_MS, type JobPortLike } from '../../../foreground/controller';
@@ -11,7 +12,7 @@ import { leaveHeldSelection } from '../../../foreground/heldSelection';
 import { captureTarget } from '../../../foreground/target/capture';
 import { isBusyCursorOn } from '../../../foreground/ui/busyCursor';
 import { OverlayStore } from '../../../foreground/ui/overlayStore';
-import type { JobEvent, JobRequest } from '../../../shared/messages';
+import type { JobEvent, JobRequest, WokeFromRest } from '../../../shared/messages';
 import { installContentEditableSupport } from '../../helpers/dom';
 
 beforeAll(installContentEditableSupport);
@@ -71,8 +72,8 @@ describe('ForegroundController', () => {
     expect(store.getSnapshot().toast).toMatchObject({ title: 'Original text restored' });
   });
 
-  test('the rewrite so far is only previewed: the field changes once, to the final text; a new attempt starts the preview over', () => {
-    const { textarea, store, controller, emit } = setup();
+  test('the rewrite so far is only previewed; once written it waits for Replace, which changes the field once, to the final text', () => {
+    const { clock, textarea, store, controller, emit, port } = setup();
     const onInput = jest.fn();
     textarea.addEventListener('input', onInput);
     controller.start('job-1', 'professional');
@@ -89,13 +90,112 @@ describe('ForegroundController', () => {
     emit({ kind: 'job/partial', jobId: 'job-2', text: 'someone else' });
     expect(store.getSnapshot().working?.preview).toBe('Please');
 
+    clock.time = 1200;
     emit({ kind: 'job/done', jobId: 'job-1', text: 'Please send the deck tomorrow.' });
-    expect(textarea.value).toBe('Hi,  Please send the deck tomorrow.  thx');
-    expect(onInput).toHaveBeenCalledTimes(1);
+    // Written: the job is over, the field untouched, the rewrite on screen to decide on.
     expect(store.getSnapshot().working).toBeNull();
+    expect(store.getSnapshot().toast).toBeNull();
+    expect(store.getSnapshot().review).toMatchObject({ style: 'professional', text: 'Please send the deck tomorrow.', detail: 'Took 1.2 s' });
+    expect(controller.busy).toBe(false);
+    expect(isBusyCursorOn(document)).toBe(false);
+    expect(port.disconnect).toHaveBeenCalled();
+    expect(onInput).not.toHaveBeenCalled();
     // Late text for a finished job is dropped.
     emit({ kind: 'job/partial', jobId: 'job-1', text: 'Please send the' });
     expect(store.getSnapshot().working).toBeNull();
+
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    textarea.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(true);
+    expect(textarea.value).toBe('Hi,  Please send the deck tomorrow.  thx');
+    expect(onInput).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot().review).toBeNull();
+    const toast = store.getSnapshot().toast!;
+    expect(toast).toMatchObject({ tone: 'success', title: 'Replaced · Professional', durationMs: TOAST_MS.success });
+    expect(toast.message).toBeUndefined();
+    toast.actions.find((action) => action.label === 'Undo')!.run();
+    expect(textarea.value).toBe('Hi,  pls send the deck tmrw  thx');
+  });
+
+  describe('a written rewrite waiting for a decision', () => {
+    const written = (rest?: WokeFromRest) => {
+      const parts = setup();
+      parts.controller.start('job-1', 'friendly');
+      parts.emit({ kind: 'job/phase', jobId: 'job-1', phase: 'rewriting' });
+      parts.emit({ kind: 'job/partial', jobId: 'job-1', text: 'Could you' });
+      parts.emit({ kind: 'job/done', jobId: 'job-1', text: 'Could you send the deck tomorrow?', wokeFromRest: rest });
+      return parts;
+    };
+    const press = (target: EventTarget, key: string) => {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, composed: true });
+      target.dispatchEvent(event);
+      return event;
+    };
+
+    test('Esc or Discard leaves the text as it was, quietly', () => {
+      const { textarea, store } = written();
+      expect(press(textarea, 'Escape').defaultPrevented).toBe(true);
+      expect(store.getSnapshot()).toMatchObject({ review: null, toast: null });
+      expect(textarea.value).toBe('Hi,  pls send the deck tmrw  thx');
+      // Its keys are the page's again.
+      expect(press(textarea, 'Enter').defaultPrevented).toBe(false);
+
+      const again = written();
+      again.store.getSnapshot().review!.discard();
+      expect(again.store.getSnapshot()).toMatchObject({ review: null, toast: null });
+      expect(again.textarea.value).toBe('Hi,  pls send the deck tmrw  thx');
+    });
+
+    test('Enter and Esc stay the page’s outside the edited field, and Enter once the text there has changed', () => {
+      const { textarea, store } = written();
+      document.body.insertAdjacentHTML('beforeend', '<input id="elsewhere">');
+      const elsewhere = document.querySelector<HTMLInputElement>('#elsewhere')!;
+      expect(press(elsewhere, 'Enter').defaultPrevented).toBe(false);
+      expect(press(elsewhere, 'Escape').defaultPrevented).toBe(false);
+      expect(press(textarea, 'Enter').defaultPrevented).toBe(true);
+      expect(store.getSnapshot().toast).toMatchObject({ title: 'Replaced · Friendly' });
+
+      const typedOver = written();
+      typedOver.textarea.value = 'Hi, typed something else';
+      expect(press(typedOver.textarea, 'Enter').defaultPrevented).toBe(false);
+      expect(typedOver.store.getSnapshot().review).not.toBeNull();
+    });
+
+    test('Replace after the text changed leaves it alone and offers the rewrite to copy', () => {
+      const { textarea, store, writeClipboard } = written();
+      textarea.value = 'Something else entirely';
+      store.getSnapshot().review!.replace();
+      expect(textarea.value).toBe('Something else entirely');
+      const toast = store.getSnapshot().toast!;
+      expect(toast.message).toMatch(/changed while it was being rewritten/);
+      toast.actions.find((action) => action.label === 'Copy rewrite')!.run();
+      expect(writeClipboard).toHaveBeenCalledWith('Could you send the deck tomorrow?');
+    });
+
+    test('the wake-up note comes with the rewrite, and its button leaves the decision open', () => {
+      const { store, openSettings } = written({ idleMinutes: 15 });
+      const review = store.getSnapshot().review!;
+      expect(review.note?.text).toMatch(/^Waking up took .+ EchoMeBetter rests after 15 minutes without use/);
+      review.note!.action.run();
+      expect(openSettings).toHaveBeenCalledWith('keep-awake');
+      expect(store.getSnapshot().review).toBe(review);
+      review.replace();
+      expect(store.getSnapshot().toast?.note).toBeUndefined();
+    });
+
+    test('a new rewrite or the style menu sets it aside, and its keys go with it', () => {
+      const { store, controller, sent } = written();
+      expect(controller.start('job-2', 'concise')).toEqual({ ok: true });
+      expect(store.getSnapshot()).toMatchObject({ review: null, working: { style: 'concise' } });
+      expect(sent.at(-1)).toMatchObject({ kind: 'job/request', jobId: 'job-2' });
+
+      const other = written();
+      other.controller.openMenu({ x: 1, y: 1 });
+      expect(other.store.getSnapshot().review).toBeNull();
+      other.controller.closeMenu();
+      expect(press(other.textarea, 'Enter').defaultPrevented).toBe(false);
+      expect(other.textarea.value).toBe('Hi,  pls send the deck tmrw  thx');
+    });
   });
 
   test('the toast says how long the rewrite took, not counting model loading', () => {
