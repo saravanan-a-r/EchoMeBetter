@@ -15,12 +15,13 @@
  *   3. one full rewrite on the welcome page's practice box: foreground
  *      controller → service worker → offscreen document → inference worker
  *      (onnxruntime-web, base model plus the style's adapter, read from the
- *      extension's private storage) → text replaced in the textarea → Undo
- *      restores it. Where the browser offers a GPU this first rewrite runs
+ *      extension's private storage) → the finished rewrite shown with
+ *      Replace → Enter puts it in the textarea → Undo restores it. Where the browser offers a GPU this first rewrite runs
  *      there, the default
- *   3b. the live preview: the rewrite shows as it is written, the field
- *      changes once, the settings switch turns it off; interleaved timed runs
- *      with it on and off
+ *   3b. the live preview: the rewrite shows as it is written, stays in the
+ *      same card once finished (where the reader left it) until Replace, the
+ *      field changes once; the settings switch turns it off (the text is then
+ *      replaced at once); interleaved timed runs with it on and off
  *   4. the popup's settings move the model to the processor (the engine
  *      restarts and reloads it), a style running on the fallback adapter
  *      and a keyboard shortcut rewrite there; a bigger share of the
@@ -138,6 +139,13 @@ try {
       ([id, job, chosen]) => chrome.tabs.sendMessage(id, { kind: 'echo/start-job', jobId: job, style: chosen }, { frameId: 0 }),
       [tabId, jobId, style],
     );
+  /** The card holding a finished rewrite of `style`, waiting for Replace or Discard. */
+  const readyCard = (style) => welcome.locator('echomebetter-overlay').getByRole('status').filter({ hasText: `Rewrite ready · ${style}` });
+  /** Wait for the finished rewrite, then accept it the way a user would: Enter, still in the field. */
+  const replaceWithEnter = async (style, timeout = 120_000) => {
+    await readyCard(style).getByRole('button', { name: 'Replace' }).waitFor({ timeout });
+    await welcome.keyboard.press('Enter');
+  };
 
   console.log('before the download:');
   await startJob('e2e-0', 'professional');
@@ -189,10 +197,12 @@ try {
   check(true, `pointer loader visible: "${await loader.getAttribute('aria-label')}"`);
   check(await welcome.evaluate(() => document.documentElement.hasAttribute('data-echomebetter-busy')), 'busy pointer applied to the page');
 
-  await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, {
-    timeout: 240_000,
-    polling: 250,
-  });
+  await readyCard('Professional').getByRole('button', { name: 'Replace' }).waitFor({ timeout: 240_000 });
+  check((await welcome.evaluate(() => document.querySelector('#playground').value)) === ORIGINAL, 'the finished rewrite waits in its card; the text is not replaced yet');
+  check(/Took \d/.test(await readyCard('Professional').textContent()), 'the card says how long the rewrite took');
+  await welcome.keyboard.press('Enter');
+  await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 10_000 });
+  check(true, 'Enter in the field replaced the text with the rewrite');
   const rewritten = await welcome.evaluate(() => document.querySelector('#playground').value);
   console.log(`  rewrite (${((Date.now() - started) / 1000).toFixed(1)}s incl. model load): ${JSON.stringify(rewritten)}`);
   check(rewritten.trim().length > 0, 'textarea holds the rewrite');
@@ -211,9 +221,11 @@ try {
   const LONG = 'hey team, quick update on the launch. design is mostly done but we still need the final copy from marketing, and qa found a couple of bugs in checkout that we should fix before friday. can someone own the release notes too? thx';
   /**
    * One rewrite of `text`, timed and watched inside the page: from the loader
-   * appearing to the field changing (both on the page's clock, so the test
-   * driver's own latency is not counted), with every preview text shown and
-   * every change the field saw.
+   * appearing to the rewrite being ready (the card offering Replace, or with
+   * the live preview off the field changing; both on the page's clock, so the
+   * test driver's own latency is not counted), with every preview text shown,
+   * the finished card, and every change the field saw. A finished rewrite
+   * waiting in its card is then accepted with Enter.
    */
   const watchedRewrite = async (jobId, text) => {
     await welcome.evaluate((original) => {
@@ -222,21 +234,25 @@ try {
       box.focus();
       box.setSelectionRange(0, box.value.length);
       const root = document.querySelector('echomebetter-overlay')?.shadowRoot;
-      const seen = { previews: [], inputs: 0, loaderAt: null, doneAt: null, together: false, sameCard: null };
+      const seen = { previews: [], inputs: 0, loaderAt: null, readyAt: null, together: false, sameCard: null, review: null };
       let card = null;
       globalThis.__echoWatch = seen;
       const look = () => {
         const shadow = document.querySelector('echomebetter-overlay')?.shadowRoot;
         if (!shadow) return;
         if (seen.loaderAt === null && shadow.querySelector('[role="status"][aria-label]')) seen.loaderAt = performance.now();
-        const preview = shadow.querySelector('[aria-hidden="true"] p');
+        const preview = shadow.querySelector('.echo-scroll[aria-hidden="true"] p');
         const textNow = preview?.textContent ?? null;
         if (textNow && textNow !== seen.previews.at(-1)) seen.previews.push(textNow);
         // The pointer loader carries an aria-label; the card does not.
         if (preview && shadow.querySelector('[role="status"][aria-label]')) seen.together = true;
         if (preview) card ??= preview.closest('[role="status"]');
-        const result = [...shadow.querySelectorAll('[role="status"]')].find((node) => /Rewritten|Looks good/.test(node.textContent));
-        if (result && card) seen.sameCard = result === card;
+        const ready = [...shadow.querySelectorAll('[role="status"]')].find((node) => /Rewrite ready/.test(node.textContent));
+        if (ready && !seen.review) {
+          seen.readyAt ??= performance.now();
+          seen.sameCard = ready === card;
+          seen.review = { text: ready.querySelector('.echo-scroll p').textContent, card: ready.textContent, field: box.value };
+        }
       };
       globalThis.__echoObserver?.disconnect();
       const observer = new MutationObserver(look);
@@ -246,11 +262,13 @@ try {
       seen.inputs = [];
       box.addEventListener('input', (event) => {
         seen.inputs.push({ at: event.timeStamp, value: box.value });
-        seen.doneAt ??= performance.now();
+        seen.readyAt ??= performance.now();
       });
     }, text);
     await startJob(jobId, 'professional');
-    await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, text, { timeout: 120_000, polling: 'raf' });
+    await welcome.waitForFunction(() => globalThis.__echoWatch.readyAt !== null, null, { timeout: 120_000, polling: 'raf' });
+    if (await welcome.evaluate(() => globalThis.__echoWatch.review !== null)) await welcome.keyboard.press('Enter');
+    await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, text, { timeout: 10_000, polling: 'raf' });
     await welcome.waitForTimeout(150);
     return welcome.evaluate(() => {
       globalThis.__echoObserver?.disconnect();
@@ -277,9 +295,12 @@ try {
   check(streamed.value !== LONG && streamed.value.trim().length > 0, 'the field holds the finished rewrite');
   check(streamed.previews.every((text) => text.trim().length > 0 && !text.includes('\uFFFD')), 'no empty or broken preview was shown');
   check(!streamed.together, 'the loader gave way to the card at the first words: never both on the page');
-  check(streamed.sameCard === true, 'the card that showed the rewrite became the result, in place');
-  const resultCard = welcome.locator('echomebetter-overlay').getByRole('status').filter({ hasText: 'Rewritten · Professional' });
-  check(/Took \d/.test(await resultCard.textContent()) && (await resultCard.getByRole('button', { name: 'Undo' }).count()) === 1, 'it says how long the rewrite took, with Undo');
+  check(streamed.sameCard === true, 'the card that showed the rewrite kept it, whole, once it was finished');
+  check(streamed.review.text.startsWith(streamed.previews.at(-1)) && streamed.review.text === streamed.value, 'the finished text carries on from the last words shown, and is what went into the field');
+  check(streamed.review.field === LONG, 'nothing was replaced until Replace');
+  check(/Took \d/.test(streamed.review.card), 'the finished card says how long the rewrite took');
+  const resultCard = welcome.locator('echomebetter-overlay').getByRole('status').filter({ hasText: 'Replaced · Professional' });
+  check((await resultCard.getByRole('button', { name: 'Undo' }).count()) === 1, 'after Replace the card offers Undo');
 
   // The switch in settings turns it off and on.
   await popup.getByRole('button', { name: 'Settings' }).click();
@@ -290,7 +311,10 @@ try {
   await popup.waitForTimeout(200);
   check((await worker.evaluate(() => chrome.storage.local.get('settings'))).settings.livePreview === false, 'the switch turned the live preview off');
   const withoutPreview = await watchedRewrite('e2e-live-2', LONG);
-  check(withoutPreview.previews.length === 0 && writtenOnce(withoutPreview) && withoutPreview.inputs.length === streamed.inputs.length, 'with it off, the rewrite arrives at once, as before');
+  check(
+    withoutPreview.previews.length === 0 && withoutPreview.review === null && writtenOnce(withoutPreview) && withoutPreview.inputs.length === streamed.inputs.length,
+    'with it off, the rewrite goes in at once, as before',
+  );
   await liveSwitch.click();
   await popup.waitForTimeout(200);
   check((await worker.evaluate(() => chrome.storage.local.get('settings'))).settings.livePreview === true, 'and back on');
@@ -308,7 +332,7 @@ try {
   const sampleCard = () =>
     welcome.evaluate(() => {
       const shadow = document.querySelector('echomebetter-overlay')?.shadowRoot;
-      const text = shadow?.querySelector('[aria-hidden="true"] p');
+      const text = shadow?.querySelector('.echo-scroll[aria-hidden="true"] p');
       if (!text) return null;
       const card = text.closest('[role="status"]');
       const scroller = text.parentElement;
@@ -349,12 +373,20 @@ try {
     }
     await welcome.waitForTimeout(100);
   }
-  await welcome
-    .waitForFunction((original) => document.querySelector('#playground').value !== original, PARAGRAPH, { timeout: 60_000 })
+  await readyCard('Professional')
+    .getByRole('button', { name: 'Replace' })
+    .waitFor({ timeout: 60_000 })
     .catch(async (error) => {
       const shown = await welcome.evaluate(() => document.querySelector('echomebetter-overlay')?.shadowRoot?.textContent ?? '(no overlay)');
       throw new Error(`the paragraph was not rewritten; the page showed: ${shown.slice(0, 300)} (${error.message.split('\n')[0]})`);
     });
+  // Finished while the reader was reading further up: the text stays where they were.
+  const finished = await welcome.evaluate(() => {
+    const scroller = document.querySelector('echomebetter-overlay').shadowRoot.querySelector('.echo-scroll');
+    return { top: scroller.scrollTop, atEnd: scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 4 };
+  });
+  await welcome.keyboard.press('Enter');
+  await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, PARAGRAPH, { timeout: 10_000 });
   const widths = samples.map((sample) => sample.width);
   console.log(`  card widths while writing: ${Math.round(Math.min(...widths))} → ${Math.round(Math.max(...widths))} px of ${viewportWidth}`);
   check(Math.min(...widths) >= 340 && Math.max(...widths) > Math.min(...widths) + 50, 'the card widened as the paragraph grew');
@@ -366,6 +398,7 @@ try {
   check(reader !== null && reader.after.top < reader.before.top && !reader.after.atEnd, 'scrolling up over the card moved the text');
   check(reader.later.top <= reader.after.top + 1 && !reader.later.atEnd, 'new text did not pull the reader back down');
   check(reader.after.pageScroll === reader.before.pageScroll, 'the page behind did not scroll');
+  check(Math.abs(finished.top - reader.later.top) <= 1 && !finished.atEnd, 'when it finished, the text stayed where the reader was');
 
   // Does showing it slow the rewrite down? Interleaved runs, on the page's clock.
   const RUNS = Number(process.env.E2E_TIMING_RUNS ?? 6);
@@ -374,8 +407,8 @@ try {
     for (const on of run % 2 ? [true, false] : [false, true]) {
       await setLivePreview(on);
       const result = await watchedRewrite(`e2e-time-${run}-${on}`, LONG);
-      check(result.loaderAt !== null && result.doneAt !== null, 'the run was timed');
-      times[on ? 'on' : 'off'].push(result.doneAt - result.loaderAt);
+      check(result.loaderAt !== null && result.readyAt !== null, 'the run was timed');
+      times[on ? 'on' : 'off'].push(result.readyAt - result.loaderAt);
     }
   }
   await setLivePreview(true);
@@ -424,6 +457,7 @@ try {
     }, ORIGINAL);
     const cpuStarted = Date.now();
     await startJob('e2e-cpu', 'professional');
+    await replaceWithEnter('Professional', 240_000);
     await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 240_000 });
     const onProcessor = await welcome.evaluate(() => document.querySelector('#playground').value);
     console.log(`  warm rewrite on the processor took ${((Date.now() - cpuStarted) / 1000).toFixed(1)}s: ${JSON.stringify(onProcessor)}`);
@@ -459,6 +493,7 @@ try {
   });
   const second = Date.now();
   await startJob('e2e-2', 'grammar');
+  await replaceWithEnter('Grammar');
   await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 120_000 });
   const fallback = await welcome.evaluate(() => document.querySelector('#playground').value);
   console.log(`  warm rewrite with the fallback adapter took ${((Date.now() - second) / 1000).toFixed(1)}s: ${JSON.stringify(fallback)}`);
@@ -472,11 +507,10 @@ try {
   }, ORIGINAL);
   const mac = await welcome.evaluate(() => /mac/i.test(navigator.userAgentData?.platform || navigator.platform));
   await welcome.keyboard.press(`${mac ? 'Control' : 'Alt'}+Shift+KeyF`);
-  await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 120_000 });
+  await replaceWithEnter('Friendly');
+  check(true, 'the shortcut named its style in the card');
+  await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 10_000 });
   check(true, `${mac ? '⌃⇧F' : 'Alt+Shift+F'} rewrote the selected text`);
-  const keyboardToast = welcome.locator('echomebetter-overlay').getByText('Rewritten · Friendly');
-  await keyboardToast.waitFor({ timeout: 10_000 });
-  check(true, 'the shortcut named its style in the toast');
 
   console.log('press and hold:');
   const overlay = welcome.locator('echomebetter-overlay');
@@ -545,8 +579,9 @@ try {
   await holdOnSelection();
   await welcome.mouse.up();
   await styleMenu.getByRole('menuitem', { name: /Concise/ }).click();
-  await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 120_000 });
-  await overlay.getByText('Rewritten · Concise').waitFor({ timeout: 10_000 });
+  await replaceWithEnter('Concise');
+  await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 10_000 });
+  await overlay.getByText('Replaced · Concise').waitFor({ timeout: 10_000 });
   check(true, `picking Concise in the menu rewrote the text: ${JSON.stringify(await welcome.evaluate(() => document.querySelector('#playground').value))}`);
   await overlay.getByRole('button', { name: 'Undo' }).click();
 
@@ -571,7 +606,7 @@ try {
     await popup.getByRole('button', { name: 'Back' }).click();
   }
 
-  // The result toast sits next to the selected text, not at the bottom of a taller text box.
+  // The finished rewrite sits next to the selected text, not at the bottom of a taller text box.
   await welcome.evaluate(() => {
     const box = document.querySelector('#playground');
     box.style.height = '420px';
@@ -581,14 +616,20 @@ try {
     box.setSelectionRange(0, box.value.indexOf('\n\n'));
   });
   await startJob('e2e-place', 'grammar');
-  const placedToast = welcome.locator('echomebetter-overlay').getByRole('status').filter({ hasText: /Rewritten|Looks good/ });
-  await placedToast.waitFor({ timeout: 120_000 });
+  const placedCard = welcome.locator('echomebetter-overlay').getByRole('status').filter({ hasText: /Rewrite ready|Looks good/ });
+  await placedCard.waitFor({ timeout: 120_000 });
   const gap = await welcome.evaluate(() => {
     const box = document.querySelector('#playground').getBoundingClientRect();
-    const toast = [...document.querySelector('echomebetter-overlay').shadowRoot.querySelectorAll('[role="status"]')].find((node) => /Rewritten|Looks good/.test(node.textContent));
-    return { fromTop: toast.getBoundingClientRect().top - box.top, boxHeight: box.height };
+    const card = [...document.querySelector('echomebetter-overlay').shadowRoot.querySelectorAll('[role="status"]')].find((node) => /Rewrite ready|Looks good/.test(node.textContent));
+    return { fromTop: card.getBoundingClientRect().top - box.top, boxHeight: box.height };
   });
-  check(gap.fromTop < gap.boxHeight / 2, `toast sits beside the two selected lines (${Math.round(gap.fromTop)}px into a ${Math.round(gap.boxHeight)}px text box)`);
+  check(gap.fromTop < gap.boxHeight / 2, `the card sits beside the two selected lines (${Math.round(gap.fromTop)}px into a ${Math.round(gap.boxHeight)}px text box)`);
+  if (/Rewrite ready/.test(await placedCard.textContent())) {
+    const before = await welcome.evaluate(() => document.querySelector('#playground').value);
+    await welcome.keyboard.press('Escape');
+    await placedCard.waitFor({ state: 'detached', timeout: 5_000 });
+    check((await welcome.evaluate(() => document.querySelector('#playground').value)) === before, 'Esc discarded the finished rewrite and left the text as it was');
+  }
 
   console.log('waking from an idle rest:');
   // What the idle check finds after an hour without use: the alarm, due now, frees the model. A check
@@ -693,6 +734,8 @@ async function strictCspPageScenario(context) {
             postMessage(message) {
               if (message.kind !== 'job/request') return;
               setTimeout(() => listeners.forEach((l) => l({ kind: 'job/phase', jobId: message.jobId, phase: 'rewriting' })), 50);
+              // The second job is watched as it is written (live preview on); the first is not.
+              if (message.jobId === 'csp-2') setTimeout(() => listeners.forEach((l) => l({ kind: 'job/partial', jobId: message.jobId, text: 'Please fix' })), 200);
               setTimeout(() => listeners.forEach((l) => l({ kind: 'job/done', jobId: message.jobId, text: 'Please fix this sentence for me. Thanks!' })), 400);
             },
             disconnect() {},
@@ -732,6 +775,28 @@ async function strictCspPageScenario(context) {
   check(
     (await page.evaluate(() => document.getElementById('editor').textContent)) === 'please   fix this sentense for me thanks',
     'native undo (Ctrl+Z) restores the original in the editor',
+  );
+
+  // Watched as it was written: the finished rewrite waits; Enter in the editor replaces the text, and adds no line.
+  await page.evaluate(() => {
+    const editor = document.getElementById('editor');
+    editor.focus();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  });
+  await page.evaluate(() => new Promise((resolve) => globalThis.__echoDeliver({ kind: 'echo/start-job', jobId: 'csp-2', style: 'grammar' }, {}, resolve)));
+  await page.locator('echomebetter-overlay').getByRole('button', { name: 'Replace' }).waitFor({ timeout: 5000 });
+  check((await page.evaluate(() => document.getElementById('editor').textContent)) === 'please   fix this sentense for me thanks', 'the editor keeps its text while the rewrite waits');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.getElementById('editor').textContent.startsWith('Please fix'), null, { timeout: 5000 });
+  check(
+    await page.evaluate(() => {
+      const editor = document.getElementById('editor');
+      return editor.textContent === 'Please fix this sentence for me. Thanks!' && editor.querySelectorAll('br, div, p').length === 0;
+    }),
+    'Enter replaced the text in the contenteditable editor without adding a line break',
   );
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   await page.close();
