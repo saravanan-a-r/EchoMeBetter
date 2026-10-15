@@ -1,7 +1,8 @@
 /**
- * State of the in-page overlay: at most one "working" indicator, one toast
- * and one style menu. The working rewrite's live preview and the toast share
- * one card on the page (see OverlayCard).
+ * State of the in-page overlay: at most one "working" indicator, one
+ * finished rewrite waiting for the user's decision, one toast and one style
+ * menu. The working rewrite's live preview, the finished rewrite and the
+ * toast share one card on the page (see OverlayCard).
  * A tiny external store so the controller (plain TypeScript) drives React
  * through `useSyncExternalStore` without React owning the job logic.
  */
@@ -45,6 +46,21 @@ export interface ToastNote {
   readonly action: ToastAction;
 }
 
+/**
+ * A finished rewrite the user watched being written, shown in full until they
+ * decide: Replace puts it in place of their text, Discard leaves the text alone.
+ */
+export interface ReviewState {
+  readonly style: StyleId;
+  readonly anchor: AnchorRect;
+  readonly text: string;
+  /** How long the rewrite took, e.g. "Took 1.2 s". */
+  readonly detail: string;
+  readonly note?: ToastNote;
+  readonly replace: () => void;
+  readonly discard: () => void;
+}
+
 export interface ToastState {
   readonly id: number;
   readonly tone: ToastTone;
@@ -70,12 +86,13 @@ export interface StyleMenuState {
 
 export interface OverlayState {
   readonly working: WorkingState | null;
+  readonly review: ReviewState | null;
   readonly toast: ToastState | null;
   readonly menu: StyleMenuState | null;
 }
 
 export class OverlayStore {
-  private state: OverlayState = { working: null, toast: null, menu: null };
+  private state: OverlayState = { working: null, review: null, toast: null, menu: null };
   private readonly listeners = new Set<() => void>();
   private nextToastId = 1;
 
@@ -92,8 +109,8 @@ export class OverlayStore {
   }
 
   startWorking(working: WorkingState): void {
-    // A new job replaces any toast from the previous one, and the menu it was picked from.
-    this.set({ working, toast: null, menu: null });
+    // A new job replaces whatever the previous one left (its rewrite to review, its toast), and the menu it was picked from.
+    this.set({ working, review: null, toast: null, menu: null });
   }
 
   updateWorking(patch: Partial<Pick<WorkingState, 'phase' | 'progress' | 'preview'>>): void {
@@ -109,6 +126,17 @@ export class OverlayStore {
   stopWorking(outcome?: Omit<ToastState, 'id'>): void {
     if (!this.state.working && !outcome) return;
     this.set({ ...this.state, working: null, toast: outcome ? { ...outcome, id: this.nextToastId++ } : this.state.toast });
+  }
+
+  /** The job is over and its rewrite waits for the user, in the card that showed it being written. */
+  startReview(review: ReviewState): void {
+    this.set({ ...this.state, working: null, review });
+  }
+
+  /** The user decided. What came of it, if anything to say, takes the same card in the same update. */
+  endReview(outcome?: Omit<ToastState, 'id'>): void {
+    if (!this.state.review && !outcome) return;
+    this.set({ ...this.state, review: null, toast: outcome ? { ...outcome, id: this.nextToastId++ } : this.state.toast });
   }
 
   showToast(toast: Omit<ToastState, 'id'>): number {

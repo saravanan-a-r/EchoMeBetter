@@ -33,7 +33,7 @@ describe('overlay', () => {
     expect(screen.queryByText('Rewritten · Friendly')).not.toBeInTheDocument();
   });
 
-  test('one element at a time: the loader until the first words, then the card, which turns into the result in place', () => {
+  test('one element at a time: the loader until the first words, then the card, which keeps the finished rewrite and then says what came of it, in place', () => {
     const store = new OverlayStore();
     render(<OverlayApp store={store} />);
     act(() => store.startWorking({ style: 'friendly', phase: 'rewriting', origin: { x: 10, y: 10 }, anchor: { top: 0, left: 0, bottom: 20, right: 100 } }));
@@ -52,12 +52,31 @@ describe('overlay', () => {
     act(() => store.updateWorking({ preview: 'Hey there, could you' }));
     expect(screen.getAllByRole('status')[0]).toBe(card);
 
-    // Done: the same card now says how it went, with Undo.
-    const undo = jest.fn();
-    act(() => store.stopWorking({ tone: 'success', title: 'Rewritten · Friendly', message: 'Took 1.2 s.', actions: [{ label: 'Undo', run: undo }], anchor: null, durationMs: 0 }));
+    // Written: the same card keeps the text (now for screen readers too, without the caret), in the same scroller.
+    const scroller = screen.getByText(/Hey there, could you/).closest('div')!;
+    const caret = '[class*="animate-echo-wave"]';
+    expect(card!.querySelector(caret)).not.toBeNull();
+    const replace = jest.fn();
+    const discard = jest.fn();
+    act(() =>
+      store.startReview({ style: 'friendly', anchor: { top: 0, left: 0, bottom: 20, right: 100 }, text: 'Hey there, could you send it?', detail: 'Took 1.2 s', replace, discard }),
+    );
     expect(screen.getAllByRole('status')).toEqual([card]);
-    expect(card).toHaveTextContent('Rewritten · Friendly');
-    expect(card).toHaveTextContent('Took 1.2 s.');
+    expect(card).toHaveTextContent('Rewrite ready · Friendly');
+    expect(card).toHaveTextContent('Took 1.2 s');
+    expect(screen.getByText('Hey there, could you send it?').closest('div')).toBe(scroller);
+    expect(scroller).not.toHaveAttribute('aria-hidden');
+    expect(card!.querySelector(caret)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(discard).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
+    expect(replace).toHaveBeenCalledTimes(1);
+
+    // Replaced: the same card says so, with Undo.
+    const undo = jest.fn();
+    act(() => store.endReview({ tone: 'success', title: 'Replaced · Friendly', actions: [{ label: 'Undo', run: undo }], anchor: null, durationMs: 0 }));
+    expect(screen.getAllByRole('status')).toEqual([card]);
+    expect(card).toHaveTextContent('Replaced · Friendly');
     expect(screen.queryByText(/Hey there/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
     expect(undo).toHaveBeenCalledTimes(1);
