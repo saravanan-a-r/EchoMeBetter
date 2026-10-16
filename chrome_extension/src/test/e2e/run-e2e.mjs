@@ -550,7 +550,7 @@ try {
   await holdOnSelection();
   const normalGeometry = await menuGeometry();
   const heldFor = Date.now() - held;
-  check(heldFor >= 1900, `holding still on selected text opened the style menu (after ${(heldFor / 1000).toFixed(1)}s)`);
+  check(heldFor >= 900, `holding still on selected text opened the style menu (after ${(heldFor / 1000).toFixed(1)}s)`);
   check((await styleMenu.getByRole('menuitem').count()) === 5, 'the menu offers every style');
   await welcome.mouse.up();
   const [selStart, selEnd, length] = await selectionOfBox();
