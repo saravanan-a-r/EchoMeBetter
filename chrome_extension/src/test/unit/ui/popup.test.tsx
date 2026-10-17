@@ -13,7 +13,7 @@ import { ACCESS_TITLE } from '../../../ui/components/ShortcutAccessCard';
 import type { CatalogState, ModelAvailability } from '../../../ui/hooks/useModel';
 import { websiteAvailability, type WebsiteAvailability } from '../../../ui/hooks/useShortcuts';
 import { HOLD_MENU_DESCRIPTION, KEEP_AWAKE_NOTE, LIVE_PREVIEW_DESCRIPTION, SettingsView, SHORTCUT_NOTE } from '../../../ui/popup/SettingsView';
-import { HOLD_HINT, PopupView, REMOVED_NOTICE } from '../../../ui/popup/PopupApp';
+import { PopupView, REMOVED_NOTICE } from '../../../ui/popup/PopupApp';
 import { WELCOME_HOLD_HINT, WelcomeView } from '../../../ui/welcome/WelcomeApp';
 
 const summary: ModelSummary = { id: 'echomebetter-int8', displayName: 'EchoMeBetter', precision: 'int8', sizeBytes: 790_000_000 };
@@ -85,7 +85,7 @@ describe('popup with the model downloaded', () => {
 
   test('ready names the model and what it runs on', () => {
     renderPopup(ready);
-    expect(screen.getByText('EchoMeBetter · int8 · 790 MB · on-device GPU')).toBeInTheDocument();
+    expect(screen.getByText('EchoMeBetter · 790 MB · on-device GPU')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load now' })).not.toBeInTheDocument();
   });
 
@@ -96,23 +96,28 @@ describe('popup with the model downloaded', () => {
     expect(onLoadModel).toHaveBeenCalled();
   });
 
-  test('every style is listed; those still in training say they run on Professional for now', () => {
+  test('every style is listed without a preview badge', () => {
     renderPopup(ready);
-    expect(within(row('Professional')).queryByText('Preview')).not.toBeInTheDocument();
-    for (const label of ['Grammar', 'Friendly', 'Concise', 'Elaborate']) {
-      expect(within(row(label)).getByText('Preview')).toHaveAttribute(
-        'title',
-        `${label}'s own style is still in training. Until it's ready, ${label} rewrites with the Professional style.`,
-      );
+    for (const label of ['Professional', 'Grammar', 'Friendly', 'Concise', 'Elaborate']) {
+      expect(within(row(label)).queryByText('Preview')).not.toBeInTheDocument();
     }
   });
 
-  test('a style whose own adapter is out but not downloaded offers it', () => {
+  test('every style is in one Styles list: installed ones with a check, the others with their size and a download icon', () => {
     const both = catalogWith(['professional', 'grammar']);
     const { onDownload } = renderPopup(ready, installed(['professional'], { state: 'idle' }, both), { catalog: served(both) });
-    expect(within(row('Grammar')).queryByText('Preview')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Download the Grammar style (73 MB)' }));
+    expect(screen.queryByRole('button', { name: /More styles/ })).not.toBeInTheDocument();
+    expect(within(row('Professional')).getByRole('img', { name: 'Professional style installed' })).toBeInTheDocument();
+    expect(within(row('Grammar')).getByText('73 MB')).toBeInTheDocument();
+    const add = screen.getByRole('button', { name: 'Download the Grammar style (73 MB)' });
+    expect(within(row('Grammar')).getByRole('tooltip')).toHaveTextContent('Download GrammarOne-time download · 73 MB. Stored on this device.');
+    expect(add).not.toHaveTextContent('Add');
+    fireEvent.click(add);
     expect(onDownload).toHaveBeenCalledWith(['grammar']);
+    // Styles that run on Professional's download are ready with it.
+    for (const label of ['Friendly', 'Concise', 'Elaborate']) {
+      expect(within(row(label)).getByRole('img', { name: `${label} style installed` })).toBeInTheDocument();
+    }
   });
 
   test('adapters published after the base was installed are offered from the server', () => {
@@ -120,10 +125,24 @@ describe('popup with the model downloaded', () => {
     expect(screen.getByRole('button', { name: 'Download the Grammar style (73 MB)' })).toBeInTheDocument();
   });
 
-  test('without the adapter a style runs on, the style says what it needs', () => {
-    renderPopup(ready, installed([]));
-    expect(screen.getByRole('button', { name: 'Download the Professional style (73 MB)' })).toHaveTextContent('Get · 73 MB');
-    for (const label of ['Grammar', 'Friendly', 'Concise', 'Elaborate']) expect(within(row(label)).getByText('Needs Professional')).toBeInTheDocument();
+  test('with no style on the device the list says to download one, and the rest say what they wait for', () => {
+    const { onDownload } = renderPopup(ready, installed([]));
+    expect(screen.getByText('Download a style to start rewriting.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Download the Professional style (73 MB)' }));
+    expect(onDownload).toHaveBeenCalledWith(['professional']);
+    for (const label of ['Grammar', 'Friendly', 'Concise', 'Elaborate']) {
+      expect(within(row(label)).getByText('Runs on Professional')).toBeInTheDocument();
+      expect(within(row(label)).queryByRole('button')).not.toBeInTheDocument();
+    }
+  });
+
+  test('a downloaded style shows a check whose tooltip says what that means; no row offers a download', () => {
+    renderPopup(ready, installed());
+    for (const label of ['Professional', 'Grammar', 'Friendly', 'Concise', 'Elaborate']) {
+      expect(within(row(label)).getByRole('img', { name: `${label} style installed` })).toBeInTheDocument();
+      expect(within(row(label)).getByRole('tooltip')).toHaveTextContent('InstalledReady to use. Stored on this device, so it works offline.');
+    }
+    expect(screen.queryByRole('button', { name: /^Download the/ })).not.toBeInTheDocument();
   });
 
   test('a style download shows its progress in place of the status, and no other can start meanwhile', () => {
@@ -140,7 +159,8 @@ describe('popup with the model downloaded', () => {
     );
     expect(screen.getByText('Professional style')).toBeInTheDocument();
     expect(screen.queryByText('Ready')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Download the Professional style (73 MB)' })).toBeDisabled();
+    expect(within(row('Professional')).getByRole('img', { name: 'Downloading the Professional style' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Download the/ })).not.toBeInTheDocument();
   });
 });
 
@@ -151,37 +171,32 @@ describe('keyboard shortcuts in the popup', () => {
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
-  test('working shortcuts are listed next to their styles, for this platform', () => {
-    renderPopup(ready, installed(), { shortcuts: 'on' });
-    expect(screen.getByLabelText('Control Shift P')).toHaveTextContent('⌃⇧P');
-    expect(screen.queryByText(ACCESS_TITLE)).not.toBeInTheDocument();
-  });
-
-  test('turned off, no keys are shown and nothing is asked', () => {
-    renderPopup(ready, installed(), { shortcuts: 'off' });
-    expect(screen.queryByLabelText(/Shift/)).not.toBeInTheDocument();
-    expect(screen.getByText('Polished and workplace-ready')).toBeInTheDocument();
-    expect(screen.queryByText(ACCESS_TITLE)).not.toBeInTheDocument();
+  test('the style list shows where each style stands, never its keys, whether shortcuts work or not', () => {
+    for (const shortcuts of ['on', 'off'] as const) {
+      renderPopup(ready, installed(), { shortcuts });
+      expect(screen.queryByLabelText(/Shift/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Ctrl\+Shift/)).not.toBeInTheDocument();
+      expect(screen.queryByText(ACCESS_TITLE)).not.toBeInTheDocument();
+      cleanup();
+    }
   });
 
   test('without site access the popup asks once for what waits on it, and can be told not now', () => {
     const { onAllowSiteAccess, onTurnOffWebsiteFeatures } = renderPopup(ready, installed(), { shortcuts: 'needs-access', holdMenu: 'needs-access' });
     expect(screen.getAllByText(ACCESS_TITLE)).toHaveLength(1);
-    expect(screen.getByText(/For shortcuts like ⌃⇧P and the menu that opens when you press and hold on selected text to work on websites/)).toBeInTheDocument();
+    expect(screen.getByText(/One-time permission to turn on shortcuts and press and hold\. Chrome will ask you to confirm\. EchoMeBetter only works on text you select, and it never leaves your device\./)).toBeInTheDocument();
     expect(screen.queryByLabelText(/Shift/)).not.toBeInTheDocument();
-    expect(screen.queryByText(HOLD_HINT)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Allow on websites' }));
     expect(onAllowSiteAccess).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
     expect(onTurnOffWebsiteFeatures).toHaveBeenCalledTimes(1);
   });
 
-  test('the press and hold menu alone asks for site access too, and once allowed is taught next to the right-click', () => {
+  test('the press and hold menu alone asks for site access too, and once allowed the card is gone', () => {
     renderPopup(ready, installed(), { holdMenu: 'needs-access' });
-    expect(screen.getByText(/For the menu that opens when you press and hold on selected text to work on websites/)).toBeInTheDocument();
+    expect(screen.getByText(/One-time permission to turn on press and hold\. Chrome will ask you to confirm/)).toBeInTheDocument();
     cleanup();
     renderPopup(ready, installed(), { holdMenu: 'on' });
-    expect(screen.getByText(HOLD_HINT)).toBeInTheDocument();
     expect(screen.queryByText(ACCESS_TITLE)).not.toBeInTheDocument();
   });
 });
@@ -309,14 +324,28 @@ describe('storage settings', () => {
   });
 
   test('removing a style asks first and names every style that stops working', async () => {
-    const { onRemoveAdapter } = renderSettings('off', { installed: record(['professional']) });
+    const both = catalogWith(['professional', 'grammar']);
+    const { onRemoveAdapter, onRemoveModel } = renderSettings('off', { installed: record(['professional', 'grammar'], both) });
     fireEvent.click(screen.getByRole('button', { name: 'Remove professional style' }));
     expect(screen.getByText('Remove the Professional style?')).toBeInTheDocument();
     expect(
-      screen.getByText("This frees about 73 MB. Professional, Grammar, Friendly, Concise and Elaborate can't be used until you download it again."),
+      screen.getByText("This frees about 73 MB. Professional, Friendly, Concise and Elaborate can't be used until you download it again."),
     ).toBeInTheDocument();
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Remove' })));
     expect(onRemoveAdapter).toHaveBeenCalledWith('professional');
+    expect(onRemoveModel).not.toHaveBeenCalled();
+  });
+
+  test('the last style cannot be removed alone: the writing model goes with it, and the question says so', async () => {
+    const { onRemoveAdapter, onRemoveModel } = renderSettings('off', { installed: record(['professional']) });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove professional style' }));
+    expect(screen.getByText('Remove the Professional style and the writing model?')).toBeInTheDocument();
+    expect(
+      screen.getByText(/The Professional style is your only style, and the writing model needs at least one to work, so both are removed\. This frees about 863 MB/),
+    ).toBeInTheDocument();
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Remove' })));
+    expect(onRemoveModel).toHaveBeenCalledTimes(1);
+    expect(onRemoveAdapter).not.toHaveBeenCalled();
   });
 
   test('removing the writing model takes every style with it, and can be kept', () => {
@@ -341,25 +370,36 @@ describe('storage settings', () => {
 });
 
 describe('popup without the model', () => {
-  test('lists what can be downloaded, everything chosen, and shows where it comes from', () => {
+  test('one download to start: the writing model with the Professional style, and nothing else to choose', () => {
     const { onDownload } = renderPopup({ state: 'unloaded' }, missing());
-    expect(screen.getByText('Writing model needed')).toBeInTheDocument();
-    expect(screen.getByText(MODEL_SOURCE_URL)).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: /Writing model/ })).toBeDisabled();
-    expect(screen.getByRole('checkbox', { name: /Writing model/ })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: /Professional style/ })).toBeChecked();
-    expect(screen.getByText('Also used by Grammar, Friendly, Concise and Elaborate for now')).toBeInTheDocument();
+    const card = screen.getByRole('region', { name: 'Writing model download' });
+    expect(within(card).getByText('Set up EchoMeBetter')).toBeInTheDocument();
+    expect(within(card).getByText(/Download the writing model and the Professional style once/)).toBeInTheDocument();
+    expect(screen.queryByText(MODEL_SOURCE_URL)).not.toBeInTheDocument();
+    const included = screen.getByRole('list', { name: 'Included in this download' });
+    expect(within(included).getByText('Writing model')).toBeInTheDocument();
+    expect(within(included).getByText('Professional style')).toBeInTheDocument();
+    expect(screen.getByText('Also powers Grammar, Friendly, Concise and Elaborate')).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    // The styles come after the setup: no list, and no download icons, until the model is here.
+    expect(screen.queryByText('Styles')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load now' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Download · 863 MB' }));
     expect(onDownload).toHaveBeenCalledWith(['professional']);
   });
 
-  test('the writing model can be downloaded on its own', () => {
-    const { onDownload } = renderPopup({ state: 'unloaded' }, missing());
-    fireEvent.click(screen.getByRole('checkbox', { name: /Professional style/ }));
-    expect(screen.getByText(/Without a style there is nothing to rewrite with yet/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Download · 790 MB' }));
-    expect(onDownload).toHaveBeenCalledWith([]);
+  test('styles with an adapter of their own are named as ones to add later, not downloaded now', () => {
+    const more = catalogWith(['professional', 'concise', 'grammar']);
+    const { onDownload } = renderPopup({ state: 'unloaded' }, missing(), { catalog: served(more) });
+    expect(screen.getByText('Additional styles (Grammar and Concise) are optional and can be downloaded on demand after setup.')).toBeInTheDocument();
+    expect(screen.getByText('Also powers Friendly and Elaborate')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Download · 863 MB' }));
+    expect(onDownload).toHaveBeenCalledWith(['professional']);
+  });
+
+  test('while the starter download runs, the styles stay out of the way', () => {
+    renderPopup({ state: 'unloaded' }, missing({ state: 'downloading', target: FIRST, phase: 'fetching', receivedBytes: 1, totalBytes: 10, bytesPerSecond: 0 }));
+    expect(screen.queryByText('Styles')).not.toBeInTheDocument();
   });
 
   test('while the server is being asked, nothing can be chosen yet', () => {
@@ -459,6 +499,29 @@ describe('welcome page', () => {
     expect(screen.getByText(/Download a style, then select text below/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Download the Professional style (73 MB)' }));
     expect(props.onDownload).toHaveBeenCalledWith(['professional']);
+  });
+
+  test('the styles to download sit in the setup area, as in the popup, and only once the model is there', () => {
+    const both = catalogWith(['professional', 'grammar']);
+    render(<WelcomeView {...props} catalog={served(both)} model={installed(['professional'], { state: 'idle' }, both)} />);
+    const tryIt = screen.getByRole('region', { name: 'Try it here' });
+    const list = within(tryIt).getByRole('region', { name: 'Styles' });
+    expect(within(list).getByRole('img', { name: 'Professional style installed' })).toBeInTheDocument();
+    expect(within(list).getByText('73 MB')).toBeInTheDocument();
+    fireEvent.click(within(list).getByRole('button', { name: 'Download the Grammar style (73 MB)' }));
+    expect(props.onDownload).toHaveBeenCalledWith(['grammar']);
+    cleanup();
+    render(<WelcomeView {...props} model={missing()} />);
+    expect(screen.queryByRole('region', { name: 'Styles' })).not.toBeInTheDocument();
+  });
+
+  test('the Five writing styles section only describes the styles: no download, whatever is installed', () => {
+    const both = catalogWith(['professional', 'grammar']);
+    render(<WelcomeView {...props} catalog={served(both)} model={installed(['professional'], { state: 'idle' }, both)} />);
+    const about = screen.getByRole('region', { name: 'Five writing styles' });
+    expect(within(about).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(about).queryByText(/MB/)).not.toBeInTheDocument();
+    expect(within(about).getByText('Fix grammar and spelling only')).toBeInTheDocument();
   });
 
   test('teaches the shortcuts while they are on, and asks for site access when needed', () => {

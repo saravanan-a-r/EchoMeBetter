@@ -4,7 +4,7 @@
  * what the permission is for.
  */
 import { formatList } from '../../shared/format';
-import { shortcutLabel, type KeyPlatform } from '../../shared/shortcuts';
+import type { KeyPlatform } from '../../shared/shortcuts';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from './buttons';
 
 export const ACCESS_TITLE = 'Rewrite faster on websites';
@@ -15,12 +15,9 @@ export interface WaitingFeatures {
   readonly holdMenu: boolean;
 }
 
-export function accessExplanation(platform: KeyPlatform, waiting: WaitingFeatures): string {
-  const uses = [
-    ...(waiting.shortcuts ? [`shortcuts like ${shortcutLabel('professional', platform)}`] : []),
-    ...(waiting.holdMenu ? ['the menu that opens when you press and hold on selected text'] : []),
-  ];
-  return `For ${formatList(uses)} to work on websites, EchoMeBetter needs your OK to run on them. Chrome will ask you to confirm. Your text still never leaves this device.`;
+export function accessExplanation(_platform: KeyPlatform, waiting: WaitingFeatures): string {
+  const features = [...(waiting.shortcuts ? ['shortcuts'] : []), ...(waiting.holdMenu ? ['press and hold'] : [])];
+  return `One-time permission to turn on ${formatList(features)}. Chrome will ask you to confirm. EchoMeBetter only works on text you select, and it never leaves your device.`;
 }
 
 export function ShortcutAccessCard({

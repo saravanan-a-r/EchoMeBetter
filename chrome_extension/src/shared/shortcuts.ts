@@ -2,7 +2,10 @@
  * Keyboard shortcuts: one per style, the same letter on every platform.
  *
  *   Windows, Linux, ChromeOS   Alt+Shift+<letter>
- *   macOS                      Control+Shift+<letter>  (⌃⇧)
+ *   macOS                      Ctrl+Shift+<letter>  (the Control key)
+ *
+ * Written in words on every platform (never ⌃ or ⇧): the symbols are
+ * compact, but few people read them at a glance.
  *
  * Both chords stay clear of the browser's own shortcuts (Ctrl/⌘ and
  * Ctrl/⌘+Shift) and are rarely used by web apps. They are also only taken
@@ -45,15 +48,15 @@ export function platformFromOs(os: string): KeyPlatform {
 /** The keys to show, one per <kbd>. */
 export function shortcutKeys(style: StyleId, platform: KeyPlatform): readonly string[] {
   const letter = SHORTCUT_LETTERS[style];
-  return platform === 'mac' ? ['⌃', '⇧', letter] : ['Alt', 'Shift', letter];
+  return platform === 'mac' ? ['Ctrl', 'Shift', letter] : ['Alt', 'Shift', letter];
 }
 
-/** As one string, the way each platform writes shortcuts in its menus. */
+/** As one string: "Alt+Shift+P", "Ctrl+Shift+P". */
 export function shortcutLabel(style: StyleId, platform: KeyPlatform): string {
-  return platform === 'mac' ? shortcutKeys(style, platform).join('') : shortcutKeys(style, platform).join('+');
+  return shortcutKeys(style, platform).join('+');
 }
 
-/** For screen readers, which do not read ⌃ and ⇧ well. */
+/** For screen readers, which read words, with no plus signs, best. */
 export function spokenShortcut(style: StyleId, platform: KeyPlatform): string {
   return `${platform === 'mac' ? 'Control' : 'Alt'} Shift ${SHORTCUT_LETTERS[style]}`;
 }

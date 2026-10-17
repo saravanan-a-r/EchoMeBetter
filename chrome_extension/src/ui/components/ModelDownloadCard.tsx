@@ -10,7 +10,6 @@ import type { DownloadState, DownloadTarget } from '../../shared/modelInstall';
 import { styleLabel } from '../../shared/styles';
 import { EchoLoader } from '../brand/EchoLoader';
 import { DANGER_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './buttons';
-import { ModelSourceUrl } from './ModelSourceUrl';
 
 export interface ModelDownloadCardProps {
   readonly download: Exclude<DownloadState, { state: 'idle' }>;
@@ -138,8 +137,6 @@ export function ModelDownloadCard({ download, onRetry, onCancel }: ModelDownload
           </div>
         </div>
       ) : null}
-
-      <ModelSourceUrl />
     </section>
   );
 }

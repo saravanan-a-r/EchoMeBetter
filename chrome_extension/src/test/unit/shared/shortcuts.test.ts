@@ -42,7 +42,7 @@ describe('shortcuts', () => {
   });
 
   test('written the way each platform writes shortcuts', () => {
-    expect(shortcutLabel('professional', 'mac')).toBe('⌃⇧P');
+    expect(shortcutLabel('professional', 'mac')).toBe('Ctrl+Shift+P');
     expect(shortcutLabel('professional', 'other')).toBe('Alt+Shift+P');
     expect(shortcutKeys('concise', 'other')).toEqual(['Alt', 'Shift', 'C']);
     expect(spokenShortcut('concise', 'mac')).toBe('Control Shift C');

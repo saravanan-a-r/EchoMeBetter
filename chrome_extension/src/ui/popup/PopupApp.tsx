@@ -2,10 +2,11 @@ import { useState } from 'react';
 import type { KeyPlatform } from '../../shared/shortcuts';
 import type { EngineStatus } from '../../shared/status';
 import type { StyleId } from '../../shared/styles';
-import { Logo, Wordmark } from '../brand/Logo';
+import { Wordmark } from '../brand/Logo';
+import { PulseLogo } from '../brand/PulseLogo';
 import { ModelCard } from '../components/ModelCard';
 import { ShortcutAccessCard } from '../components/ShortcutAccessCard';
-import { StyleList } from '../components/StyleList';
+import { PopupStyles } from '../components/PopupStyles';
 import { MACHINE, retryGpu, useGpu, useGpuProblem } from '../hooks/useCompute';
 import { requestWarmUp, useEngineStatus } from '../hooks/useEngineStatus';
 import {
@@ -24,11 +25,13 @@ import { useSettings } from '../hooks/useSettings';
 import { needsSiteAccess, PLATFORM, releaseSiteAccess, requestSiteAccess, websiteAvailability, useSiteAccess, type WebsiteAvailability } from '../hooks/useShortcuts';
 import { SettingsView } from './SettingsView';
 
-const STEPS = ['Right-click', 'EchoMeBetter'];
+/** Opaque down to just below the text, then fading to nothing at the header's bottom edge. */
+const HEADER_FADE = {
+  maskImage: 'linear-gradient(to bottom, #000 0%, #000 50%, transparent 100%)',
+  WebkitMaskImage: 'linear-gradient(to bottom, #000 0%, #000 50%, transparent 100%)',
+} as const;
 
 export const REMOVED_NOTICE = 'Model removed. Download it again whenever you want to rewrite text.';
-
-export const HOLD_HINT = 'Or press and hold on the selected text for 2 seconds.';
 
 export interface PopupViewProps {
   readonly status: EngineStatus;
@@ -55,10 +58,17 @@ export function PopupView(props: PopupViewProps) {
   const setup = modelSetup(model.installed, catalog);
   return (
     <main className="_echo_$_w-[360px] _echo_$_bg-canvas _echo_$_text-fg">
-      <header className="_echo_$_relative _echo_$_overflow-hidden _echo_$_bg-echo-gradient _echo_$_px-4 _echo_$_pb-5 _echo_$_pt-3.5 _echo_$_text-on-accent">
-        <div className="_echo_$_flex _echo_$_items-center _echo_$_gap-2.5">
+      <header className="_echo_$_relative _echo_$_overflow-hidden _echo_$_px-4 _echo_$_pb-8 _echo_$_pt-3.5 _echo_$_text-on-accent">
+        {/*
+          The brand gradient, darkened so the white text and the settings icon read clearly, and faded out
+          at the bottom into the page's own background: no hard edge, in the light and the dark popup alike.
+        */}
+        <div aria-hidden="true" className="_echo_$_absolute _echo_$_inset-0 _echo_$_bg-echo-gradient" style={HEADER_FADE}>
+          <div className="_echo_$_absolute _echo_$_inset-0 _echo_$_bg-black/[0.45]" />
+        </div>
+        <div className="_echo_$_relative _echo_$_flex _echo_$_items-center _echo_$_gap-2.5">
           <span className="_echo_$_rounded-xl _echo_$_bg-on-accent/15 _echo_$_p-0.5 _echo_$_ring-1 _echo_$_ring-on-accent/30">
-            <Logo size={30} />
+            <PulseLogo size={30} tone="light" />
           </span>
           <div>
             <Wordmark className="_echo_$_text-base [&>span]:_echo_$_text-better-200" />
@@ -80,7 +90,7 @@ export function PopupView(props: PopupViewProps) {
       </header>
 
       <div className="_echo_$_space-y-3.5 _echo_$_px-4 _echo_$_pb-3 _echo_$_pt-0">
-        <div className="_echo_$_mt-[-12px] _echo_$_relative">
+        <div className="_echo_$_mt-[-24px] _echo_$_relative">
           <ModelCard
             status={status}
             model={model}
@@ -93,33 +103,15 @@ export function PopupView(props: PopupViewProps) {
           />
         </div>
 
-        <p className="_echo_$_flex _echo_$_flex-wrap _echo_$_items-center _echo_$_gap-1.5 _echo_$_text-[13px] _echo_$_text-fg-soft">
-          Select text
-          {STEPS.map((step) => (
-            <span key={step} className="_echo_$_flex _echo_$_items-center _echo_$_gap-1.5">
-              <span aria-hidden="true" className="_echo_$_text-quiet">›</span>
-              <kbd className="_echo_$_rounded-md _echo_$_border _echo_$_border-line-strong _echo_$_bg-surface _echo_$_px-1.5 _echo_$_py-0.5 _echo_$_font-sans _echo_$_text-xs _echo_$_font-semibold _echo_$_text-fg-secondary">
-                {step}
-              </kbd>
-            </span>
-          ))}
-          <span aria-hidden="true" className="_echo_$_text-quiet">›</span>
-          pick a style
-          {holdMenu === 'on' ? <span className="_echo_$_basis-full _echo_$_text-xs _echo_$_text-fg-muted">{HOLD_HINT}</span> : null}
-        </p>
-
-        <section aria-labelledby="styles-title">
-          <h2 id="styles-title" className="_echo_$_mb-2 _echo_$_text-[11px] _echo_$_font-semibold _echo_$_uppercase _echo_$_tracking-wider _echo_$_text-fg-muted">
-            Styles
-          </h2>
-          <StyleList
-            dense
-            shortcuts={shortcuts === 'on' ? platform : undefined}
+        {/* Until the writing model is here the setup card above is the one thing to do; the styles come after it. */}
+        {model.installed && setup.catalog ? (
+          <PopupStyles
             readiness={setup.readiness}
             onDownload={(adapter) => props.onDownload([adapter])}
             busy={model.download.state === 'downloading'}
+            downloading={model.download.state === 'downloading' ? model.download.target.adapters : []}
           />
-        </section>
+        ) : null}
 
         {needsSiteAccess(shortcuts, holdMenu) ? (
           <ShortcutAccessCard
@@ -132,8 +124,9 @@ export function PopupView(props: PopupViewProps) {
 
         <footer className="_echo_$_flex _echo_$_items-center _echo_$_justify-between _echo_$_text-xs _echo_$_text-fg-muted">
           <span className="_echo_$_flex _echo_$_items-center _echo_$_gap-1.5">
-            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-              <path d="M6 1 2 2.6v3c0 2.4 1.7 4.4 4 5.2 2.3-.8 4-2.8 4-5.2v-3L6 1Z" fill="none" stroke="currentColor" strokeWidth="1.2" />
+            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="_echo_$_shrink-0 _echo_$_text-better-500">
+              <path d="M8 1.5 2.5 3.8v3.6c0 3.3 2.3 6.1 5.5 7.1 3.2-1 5.5-3.8 5.5-7.1V3.8L8 1.5Z" />
+              <path d="m5.6 8 1.7 1.7 3.2-3.3" />
             </svg>
             On-device. Your text never leaves the browser.
           </span>

@@ -1,7 +1,9 @@
 /**
  * What is downloaded, and removing it to free disk space. A style can be
- * removed on its own; removing the writing model removes every style with
- * it. Each removal asks first, in place, and says plainly what it means.
+ * removed on its own, as long as another stays; the writing model needs at
+ * least one style, so removing the last style removes the model too, and
+ * removing the model removes every style. Each removal asks first, in place,
+ * and says plainly what it means.
  */
 import { useState } from 'react';
 import { formatBytes, formatList } from '../../shared/format';
@@ -38,16 +40,28 @@ function items(installed: InstalledModelRecord, props: StorageSettingsProps): It
       consequence: `This frees about ${formatBytes(total)} of disk space. EchoMeBetter can't rewrite text until you download it again. Your settings are kept.`,
       remove: props.onRemoveModel,
     },
-    ...adapters.map(
-      (adapter): Item => ({
+    ...adapters.map((adapter): Item => {
+      const name = styleLabel(adapter.style);
+      // The model is of no use without a style, so the last style cannot go alone.
+      if (adapters.length === 1) {
+        return {
+          key: adapter.style,
+          label: `${name} style`,
+          sizeBytes: adapter.sizeBytes,
+          question: `Remove the ${name} style and the writing model?`,
+          consequence: `The ${name} style is your only style, and the writing model needs at least one to work, so both are removed. This frees about ${formatBytes(total)} of disk space. Download them again to rewrite text. Your settings are kept.`,
+          remove: props.onRemoveModel,
+        };
+      }
+      return {
         key: adapter.style,
-        label: `${styleLabel(adapter.style)} style`,
+        label: `${name} style`,
         sizeBytes: adapter.sizeBytes,
-        question: `Remove the ${styleLabel(adapter.style)} style?`,
+        question: `Remove the ${name} style?`,
         consequence: `This frees about ${formatBytes(adapter.sizeBytes)}. ${formatList(stylesUsing(catalog, adapter.style).map(styleLabel))} can't be used until you download it again.`,
         remove: () => props.onRemoveAdapter(adapter.style),
-      }),
-    ),
+      };
+    }),
   ];
 }
 
