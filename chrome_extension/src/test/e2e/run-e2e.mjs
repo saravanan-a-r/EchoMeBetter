@@ -104,9 +104,10 @@ try {
   const downloadButton = popup.getByRole('button', { name: /^Download · / });
   await downloadButton.waitFor({ timeout: 10_000 });
   check(true, `popup offers the download on a fresh profile ("${await downloadButton.textContent()}")`);
-  const professionalChoice = popup.getByRole('checkbox', { name: /Professional style/ });
-  check(await professionalChoice.isChecked(), 'the Professional style is chosen along with the writing model');
-  check(await popup.getByText(modelUrl).isVisible(), `popup shows the source URL (${modelUrl})`);
+  const included = popup.getByRole('list', { name: 'Included in this download' });
+  check((await included.getByText('Professional style').count()) === 1, 'the one setup download brings the Professional style with the writing model');
+  check((await popup.getByRole('checkbox').count()) === 0, 'there is nothing to choose before the first download');
+  check((await popup.getByText('Styles', { exact: true }).count()) === 0, 'the style list waits until the model is downloaded');
   check((await badge()) === '!', 'toolbar icon is flagged until the model is downloaded');
 
   const welcome = await context.newPage();
@@ -149,37 +150,29 @@ try {
 
   console.log('before the download:');
   await startJob('e2e-0', 'professional');
-  const refusal = welcome.locator('echomebetter-overlay').getByRole('alert');
-  await refusal.waitFor({ timeout: 30_000 });
-  check(/Download the writing model first/.test(await refusal.textContent()), 'a rewrite explains that the model must be downloaded first');
+  const needsModel = welcome.locator('echomebetter-overlay').getByRole('group', { name: 'Download the writing model' });
+  await needsModel.waitFor({ timeout: 30_000 });
+  check(/needs its writing model first/.test(await needsModel.textContent()), 'a rewrite explains that the model must be downloaded first');
+  check((await needsModel.getByRole('button', { name: /^Download · / }).count()) === 1, 'and offers the download right there, with its size');
   check((await welcome.evaluate(() => document.querySelector('#playground').value)) === ORIGINAL, 'the text was left untouched');
 
   console.log('download:');
-  await professionalChoice.uncheck();
   let downloadStarted = Date.now();
   await downloadButton.click();
   const modelStatus = popup.getByRole('region', { name: 'Writing model status' });
   await modelStatus.waitFor({ timeout: 600_000 });
-  console.log(`  writing model: download and verification took ${((Date.now() - downloadStarted) / 1000).toFixed(1)}s`);
+  console.log(`  writing model and Professional style: download and verification took ${((Date.now() - downloadStarted) / 1000).toFixed(1)}s`);
   await modelStatus.getByText('Ready', { exact: true }).waitFor({ timeout: 240_000 });
   check((await popup.getByRole('button', { name: 'Load now' }).count()) === 0, 'the downloaded model loaded by itself, with no "Load now" to click');
-  check((await storedModelFiles(popup)).length === 4, 'the writing model alone is stored (record and three files)');
-  check((await badge()) === '!', 'toolbar icon stays flagged while no style is downloaded');
+  check(
+    (await popup.getByRole('region', { name: 'Styles' }).getByRole('img', { name: 'Professional style installed' }).count()) === 1,
+    'the popup lists Professional as installed',
+  );
 
-  await startJob('e2e-style', 'professional');
-  await welcome.locator('echomebetter-overlay').getByText(/Download the Professional style first/).waitFor({ timeout: 30_000 });
-  check(true, 'a rewrite explains that the style must be downloaded first');
-
-  downloadStarted = Date.now();
-  await popup.getByRole('button', { name: /^Download the Professional style/ }).click();
-  await popup.getByRole('button', { name: /^Download the Professional style/ }).waitFor({ state: 'detached', timeout: 600_000 });
-  console.log(`  Professional style: download and verification took ${((Date.now() - downloadStarted) / 1000).toFixed(1)}s`);
   const stored = await storedModelFiles(popup);
-  check(stored.includes('installed.json') && stored.length === 6, `model and style stored in the extension's private storage (${stored.length} entries)`);
-  // The refused job above reached the worker, which loaded the base before refusing it: the status may read Ready.
-  await popup.getByRole('region', { name: 'Writing model status' }).waitFor({ timeout: 30_000 });
-  check((await badge()) === '', 'toolbar flag cleared');
-  check((await popup.getByText('Preview').count()) === 4, 'the styles still in training are marked as running on Professional for now');
+  check(stored.includes('installed.json') && stored.length === 6, `the writing model and Professional are stored in the extension's private storage (${stored.length} entries)`);
+  check((await badge()) === '', 'toolbar flag cleared once the starter download is in');
+  check((await popup.getByText('Preview', { exact: true }).count()) === 0, 'no style carries a preview badge');
 
   console.log('rewrite:');
   await welcome.evaluate(() => {
@@ -216,6 +209,58 @@ try {
   const undo = welcome.locator('echomebetter-overlay').getByRole('button', { name: 'Undo' });
   await undo.click();
   check((await welcome.evaluate(() => document.querySelector('#playground').value)) === ORIGINAL, 'Undo restored the original text');
+
+  console.log('more styles:');
+  const selectAll = () =>
+    welcome.evaluate(() => {
+      const box = document.querySelector('#playground');
+      box.focus();
+      box.setSelectionRange(0, box.value.length);
+    });
+  /** Wait for the finished rewrite of `style`, read it from its card, then Discard it (Esc): the field stays as it was. */
+  const rewriteAndDiscard = async (style) => {
+    await readyCard(style).getByRole('button', { name: 'Replace' }).waitFor({ timeout: 240_000 });
+    const text = await readyCard(style).textContent();
+    await readyCard(style).getByRole('button', { name: 'Discard' }).click();
+    check((await welcome.evaluate(() => document.querySelector('#playground').value)) === ORIGINAL, `Discard left the text as it was (${style})`);
+    return text;
+  };
+  const toAdd = await popup.getByRole('region', { name: 'Styles' }).getByRole('button', { name: /^Download the / }).count();
+  console.log(`  styles to add: ${toAdd}`);
+  if (toAdd === 0) {
+    console.log('  nothing beyond what is installed: skipping the added-style checks');
+  } else {
+    const addConcise = popup.getByRole('button', { name: /^Download the Concise style/ });
+    check(/\d+ MB/.test(await popup.getByRole('region', { name: 'Styles' }).locator('li', { hasText: 'Concise' }).textContent()), 'a style that is not installed shows its size in its row, beside a download icon');
+    downloadStarted = Date.now();
+    await addConcise.click();
+    await popup.getByRole('region', { name: 'Styles' }).getByRole('img', { name: 'Concise style installed' }).waitFor({ timeout: 600_000 });
+    console.log(`  Concise style, from the popup: download and verification took ${((Date.now() - downloadStarted) / 1000).toFixed(1)}s`);
+    check(true, 'once added, Concise shows as installed');
+
+    await selectAll();
+    check((await startJob('e2e-concise', 'concise'))?.ok === true, 'a rewrite in the added style starts');
+    const concise = await rewriteAndDiscard('Concise');
+    check(/Rewrite ready · Concise/.test(concise ?? ''), 'Concise rewrote the text');
+
+    await selectAll();
+    await startJob('e2e-grammar', 'grammar');
+    const needsGrammar = welcome.locator('echomebetter-overlay').getByRole('group', { name: 'Download the Grammar style' });
+    await needsGrammar.waitFor({ timeout: 30_000 });
+    check(true, 'a style not on this device, chosen on a page, offers its download right there');
+    downloadStarted = Date.now();
+    await needsGrammar.getByRole('button', { name: /^Download · / }).click();
+    const rewriteGrammar = welcome.locator('echomebetter-overlay').getByRole('button', { name: 'Rewrite now · Grammar' });
+    await rewriteGrammar.waitFor({ timeout: 600_000 });
+    console.log(`  Grammar style, from the page: download and verification took ${((Date.now() - downloadStarted) / 1000).toFixed(1)}s`);
+    await rewriteGrammar.click();
+    const grammar = await rewriteAndDiscard('Grammar');
+    check(/Rewrite ready · Grammar/.test(grammar ?? ''), 'Rewrite now carried on in Grammar');
+    check(
+      (await popup.getByRole('region', { name: 'Styles' }).getByRole('img', { name: 'Grammar style installed' }).count()) === 1,
+      'the popup lists Grammar as installed too',
+    );
+  }
 
   console.log('live preview:');
   const LONG = 'hey team, quick update on the launch. design is mostly done but we still need the final copy from marketing, and qa found a couple of bugs in checkout that we should fix before friday. can someone own the release notes too? thx';
@@ -299,7 +344,7 @@ try {
   check(streamed.review.text.startsWith(streamed.previews.at(-1)) && streamed.review.text === streamed.value, 'the finished text carries on from the last words shown, and is what went into the field');
   check(streamed.review.field === LONG, 'nothing was replaced until Replace');
   check(/Took \d/.test(streamed.review.card), 'the finished card says how long the rewrite took');
-  const resultCard = welcome.locator('echomebetter-overlay').getByRole('status').filter({ hasText: 'Replaced · Professional' });
+  const resultCard = welcome.locator('echomebetter-overlay').getByRole('status').filter({ hasText: 'Text replaced' });
   check((await resultCard.getByRole('button', { name: 'Undo' }).count()) === 1, 'after Replace the card offers Undo');
 
   // The switch in settings turns it off and on.
@@ -496,7 +541,7 @@ try {
   await replaceWithEnter('Grammar');
   await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 120_000 });
   const fallback = await welcome.evaluate(() => document.querySelector('#playground').value);
-  console.log(`  warm rewrite with the fallback adapter took ${((Date.now() - second) / 1000).toFixed(1)}s: ${JSON.stringify(fallback)}`);
+  console.log(`  warm rewrite with the Grammar adapter took ${((Date.now() - second) / 1000).toFixed(1)}s: ${JSON.stringify(fallback)}`);
 
   // The same rewrite from the keyboard: the welcome page listens for shortcuts itself.
   await welcome.evaluate((original) => {
@@ -506,11 +551,11 @@ try {
     box.setSelectionRange(0, box.value.length);
   }, ORIGINAL);
   const mac = await welcome.evaluate(() => /mac/i.test(navigator.userAgentData?.platform || navigator.platform));
-  await welcome.keyboard.press(`${mac ? 'Control' : 'Alt'}+Shift+KeyF`);
-  await replaceWithEnter('Friendly');
+  await welcome.keyboard.press(`${mac ? 'Control' : 'Alt'}+Shift+KeyG`);
+  await replaceWithEnter('Grammar');
   check(true, 'the shortcut named its style in the card');
   await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 10_000 });
-  check(true, `${mac ? '⌃⇧F' : 'Alt+Shift+F'} rewrote the selected text`);
+  check(true, `${mac ? 'Ctrl+Shift+G' : 'Alt+Shift+G'} rewrote the selected text`);
 
   console.log('press and hold:');
   const overlay = welcome.locator('echomebetter-overlay');
@@ -523,6 +568,7 @@ try {
       box.focus();
       box.setSelectionRange(0, box.value.length);
     }, ORIGINAL);
+    await welcome.locator('#playground').scrollIntoViewIfNeeded();
     const box = await welcome.locator('#playground').boundingBox();
     await welcome.mouse.move(box.x + 40, box.y + 26);
     await welcome.mouse.down();
@@ -581,7 +627,7 @@ try {
   await styleMenu.getByRole('menuitem', { name: /Concise/ }).click();
   await replaceWithEnter('Concise');
   await welcome.waitForFunction((original) => document.querySelector('#playground').value !== original, ORIGINAL, { timeout: 10_000 });
-  await overlay.getByText('Replaced · Concise').waitFor({ timeout: 10_000 });
+  await overlay.getByText('Text replaced').waitFor({ timeout: 10_000 });
   check(true, `picking Concise in the menu rewrote the text: ${JSON.stringify(await welcome.evaluate(() => document.querySelector('#playground').value))}`);
   await overlay.getByRole('button', { name: 'Undo' }).click();
 
@@ -591,6 +637,7 @@ try {
     box.focus();
     box.setSelectionRange(0, box.value.length);
   });
+  await welcome.locator('#playground').scrollIntoViewIfNeeded();
   const plain = await welcome.locator('#playground').boundingBox();
   await welcome.mouse.click(plain.x + 40, plain.y + 26);
   await welcome.waitForTimeout(2_500);
@@ -684,10 +731,22 @@ try {
   await popup.getByRole('button', { name: 'Remove professional style' }).click();
   await popup.getByRole('button', { name: 'Remove', exact: true }).click();
   await popup.getByRole('button', { name: 'Remove professional style' }).waitFor({ state: 'detached', timeout: 30_000 });
-  check((await storedModelFiles(popup)).length === 4, 'removing the style deleted only its files');
-  check((await badge()) === '!', 'toolbar icon is flagged again without a style');
-  await popup.getByRole('button', { name: 'Remove writing model' }).click();
-  await popup.getByRole('button', { name: 'Remove', exact: true }).click();
+  // Concise and Grammar were added above (two files each), so they stay: record, three base files and four adapter files.
+  check((await storedModelFiles(popup)).length === (toAdd > 0 ? 8 : 4), 'removing the style deleted only its files');
+  check((await badge()) === (toAdd > 0 ? '' : '!'), 'toolbar icon is flagged only when no style is left');
+  if (toAdd > 0) {
+    // Concise goes alone; Grammar is the last style, so the writing model goes with it.
+    await popup.getByRole('button', { name: 'Remove concise style' }).click();
+    await popup.getByRole('button', { name: 'Remove', exact: true }).click();
+    await popup.getByRole('button', { name: 'Remove concise style' }).waitFor({ state: 'detached', timeout: 30_000 });
+    check((await storedModelFiles(popup)).length === 6, 'removing a style while another stays kept the writing model');
+    await popup.getByRole('button', { name: 'Remove grammar style' }).click();
+    check((await popup.getByText('Remove the Grammar style and the writing model?').count()) === 1, 'removing the last style asks to remove the writing model with it');
+    await popup.getByRole('button', { name: 'Remove', exact: true }).click();
+  } else {
+    await popup.getByRole('button', { name: 'Remove writing model' }).click();
+    await popup.getByRole('button', { name: 'Remove', exact: true }).click();
+  }
   await popup.getByText('Nothing downloaded yet.').waitFor({ timeout: 30_000 });
   check((await storedModelFiles(popup)).length === 0, 'every model file was deleted');
   await popup.getByRole('button', { name: 'Back' }).click();
