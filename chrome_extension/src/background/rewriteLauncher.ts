@@ -108,7 +108,7 @@ export async function launchStyle(style: StyleId, frameId: number, tab: chrome.t
   const problem = await deps.checkStyle(style);
   if (problem) {
     try {
-      await deps.tabs.sendMessage(tabId, { kind: 'echo/notice', error: problem }, { frameId });
+      await deps.tabs.sendMessage(tabId, { kind: 'echo/notice', error: problem, style }, { frameId });
     } catch {
       await flagUnreachable(deps, tabId);
     }

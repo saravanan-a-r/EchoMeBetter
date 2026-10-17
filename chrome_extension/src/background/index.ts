@@ -5,10 +5,11 @@
  */
 import { computeToRun, GPU_PROBLEM_STORAGE_KEY, parseGpuProblem, readGpuProblem, sameCompute, writeGpuProblem, type ComputeSettings } from '../shared/compute';
 import { toErrorPayload } from '../shared/errors';
-import { isOffscreenEventMessage, isOpenSettingsRequest, isShortcutRequest, isStyleMenuRequest, isUiRequest, JOB_PORT_NAME, type EngineEvent, type OffscreenCommand, type StyleMenuRequest, type UiReply, type UiRequest } from '../shared/messages';
-import { modelFrom, readDownloadState, readInstalledModel, styleProblem, writeDownloadState, writeInstalledModel } from '../shared/modelInstall';
+import { isAccessRequest, isOffscreenEventMessage, isOpenSettingsRequest, isReplacedNotice, isShortcutRequest, isStyleMenuRequest, isUiRequest, JOB_PORT_NAME, SETUP_PORT_NAME, type AccessOfferReply, type AccessResult, type EngineEvent, type OffscreenCommand, type StyleMenuRequest, type UiReply, type UiRequest } from '../shared/messages';
+import { adapterForStyle, modelFrom, newerStyleProblem, readDownloadState, readInstalledModel, styleProblem, writeDownloadState, writeInstalledModel } from '../shared/modelInstall';
+import { fetchCatalog } from '../shared/fetchCatalog';
 import { MODEL_SOURCE_URL } from '../shared/modelSource';
-import { leavePopupIntent } from '../shared/popupIntent';
+import { leavePopupIntent, type SettingsFocus } from '../shared/popupIntent';
 import { loadSettings, parseSettings, SETTINGS_STORAGE_KEY, wantsWebsites, type Settings } from '../shared/settings';
 import { platformFromOs, shortcutLabel } from '../shared/shortcuts';
 import type { StyleId } from '../shared/styles';
@@ -17,11 +18,14 @@ import { registerContextMenus } from './contextMenus';
 import { EngineRestarter, readEngineCompute, recordEngineCompute } from './engineRestart';
 import { endRest, IDLE_ALARM, lastActivity, recordActivity, recordRest, shouldUnload, wakingFromRest } from './idleUnloader';
 import { showInstallState } from './installBadge';
+import { SetupBroker, type SetupPortLike } from './setupBroker';
 import { JobRouter } from './jobRouter';
 import { OffscreenManager } from './offscreenManager';
+import { remoteCatalogCache } from './remoteCatalog';
 import { launchRewrite, launchStyle, launchStyleMenu, type LauncherDeps } from './rewriteLauncher';
 import { openSettings, POPUP_PAGE } from './settingsOpener';
 import { activeOnWebsites, syncShortcutScript } from './shortcutAccess';
+import { offerAfterReplace, requestSiteAccess } from './siteAccessOffer';
 
 const WELCOME_PAGE = 'ui/welcome/welcome.html';
 
@@ -47,8 +51,14 @@ function prepareEngine(): void {
     .catch((error: unknown) => writeStatus({ state: 'error', message: error instanceof Error ? error.message : String(error) }));
 }
 
+const remoteCatalog = remoteCatalogCache({ fetchCatalog: () => fetchCatalog() });
+
 async function checkStyle(style: StyleId) {
-  return styleProblem(style, modelFrom(await readInstalledModel(), MODEL_SOURCE_URL));
+  const installed = modelFrom(await readInstalledModel(), MODEL_SOURCE_URL);
+  const problem = styleProblem(style, installed);
+  // A style standing in on another's adapter may have its own on the server by now: offer that instead.
+  if (problem || !installed || adapterForStyle(installed.catalog, style) === style) return problem;
+  return newerStyleProblem(style, installed, await remoteCatalog());
 }
 
 async function refreshInstallBadge(): Promise<void> {
@@ -66,16 +76,21 @@ async function cancelDownload(): Promise<void> {
   else await writeDownloadState({ state: 'idle' });
 }
 
+/** Download `adapters` (and the base first, if it is not installed); a failure to even start is recorded like any other. */
+function startModelDownload(adapters: readonly StyleId[]): void {
+  sendModelCommand({ target: 'offscreen', kind: 'model/download', adapters }).catch(async (error: unknown) => {
+    const base = modelFrom(await readInstalledModel(), MODEL_SOURCE_URL) === null;
+    await writeDownloadState({ state: 'failed', target: { base, adapters }, error: toErrorPayload(error, 'DOWNLOAD_FAILED') });
+  });
+}
+
 function handleUiRequest(request: UiRequest): UiReply {
   switch (request.kind) {
     case 'ui/warm-up':
       prepareEngine();
       return { ok: true };
     case 'ui/download-model':
-      sendModelCommand({ target: 'offscreen', kind: 'model/download', adapters: request.adapters }).catch(async (error: unknown) => {
-        const base = modelFrom(await readInstalledModel(), MODEL_SOURCE_URL) === null;
-        await writeDownloadState({ state: 'failed', target: { base, adapters: request.adapters }, error: toErrorPayload(error, 'DOWNLOAD_FAILED') });
-      });
+      startModelDownload(request.adapters);
       return { ok: true };
     case 'ui/cancel-download':
       void cancelDownload().catch(() => writeDownloadState({ state: 'idle' }));
@@ -152,6 +167,14 @@ async function mirrorEngineEvent(event: EngineEvent): Promise<void> {
       return;
   }
 }
+
+const setup = new SetupBroker({
+  fetchCatalog: () => fetchCatalog(),
+  readInstalled: readInstalledModel,
+  readDownload: readDownloadState,
+  sourceUrl: MODEL_SOURCE_URL,
+  startDownload: startModelDownload,
+});
 
 const launcher: LauncherDeps = {
   scripting: chrome.scripting,
@@ -244,11 +267,22 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === JOB_PORT_NAME) router.handlePort(port);
+  else if (port.name === SETUP_PORT_NAME) setup.handlePort(port as unknown as SetupPortLike);
 });
+
+function openSettingsFor(focus: SettingsFocus, windowId: number | undefined): Promise<void> {
+  return openSettings(focus, windowId, {
+    leaveIntent: (intent) => leavePopupIntent(intent),
+    openPopup: typeof chrome.action.openPopup === 'function' ? (options) => chrome.action.openPopup(options) : undefined,
+    createWindow: (options) => chrome.windows.create(options),
+    popupUrl: chrome.runtime.getURL(POPUP_PAGE),
+  });
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (isOffscreenEventMessage(message)) {
     router.handleEngineEvent(message.event);
+    setup.onEvent(message.event);
     void mirrorEngineEvent(message.event);
     return undefined;
   }
@@ -261,13 +295,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return undefined;
   }
   if (isOpenSettingsRequest(message)) {
-    void openSettings(message.focus, sender.tab?.windowId, {
-      leaveIntent: (focus) => leavePopupIntent(focus),
-      openPopup: typeof chrome.action.openPopup === 'function' ? (options) => chrome.action.openPopup(options) : undefined,
-      createWindow: (options) => chrome.windows.create(options),
-      popupUrl: chrome.runtime.getURL(POPUP_PAGE),
-    }).catch((error: unknown) => console.error('EchoMeBetter: could not open the settings', error));
+    openSettingsFor(message.focus, sender.tab?.windowId).catch((error: unknown) => console.error('EchoMeBetter: could not open the settings', error));
     return undefined;
+  }
+  if (isReplacedNotice(message)) {
+    const ownPage = sender.tab?.url?.startsWith(launcher.extensionOrigin) ?? false;
+    offerAfterReplace(ownPage, {
+      storage: chrome.storage.local,
+      hasAccess: () => activeOnWebsites(true, chrome.permissions),
+      settings: loadSettings,
+      platform: async () => platformFromOs((await chrome.runtime.getPlatformInfo()).os),
+    })
+      .catch((): AccessOfferReply => ({ offer: false }))
+      .then(sendResponse);
+    return true;
+  }
+  if (isAccessRequest(message)) {
+    requestSiteAccess({
+      request: (permissions) => chrome.permissions.request(permissions),
+      openSettings: (focus) => openSettingsFor(focus, sender.tab?.windowId),
+    })
+      .catch((): AccessResult => 'denied')
+      .then((result) => sendResponse({ result }));
+    return true;
   }
   if (isUiRequest(message)) sendResponse(handleUiRequest(message));
   return undefined;

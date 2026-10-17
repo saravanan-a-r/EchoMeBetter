@@ -40,7 +40,7 @@ export interface SettingsViewProps extends StorageSettingsProps {
   readonly onBack: () => void;
 }
 
-export const HOLD_MENU_DESCRIPTION = 'Select text, then press and hold on it for 2 seconds to pick a style. No right-click needed.';
+export const HOLD_MENU_DESCRIPTION = 'Select text, then press and hold on it for 1 second to pick a style. No right-click needed.';
 
 export const LIVE_PREVIEW_DESCRIPTION = "Watch the rewrite appear as it's written. Your text is replaced only once it's finished.";
 
@@ -70,7 +70,18 @@ export function SettingsView(props: SettingsViewProps) {
     </div>
   );
   const keepAwake = props.focus === 'keep-awake';
+  const siteAccess = props.focus === 'site-access';
+  const performanceFocus = props.focus === 'performance';
+  const performanceReady = Boolean(props.performance && props.performance.gpu.state !== 'checking');
   const keepLoadedSelect = useRef<HTMLSelectElement>(null);
+  // Opened from the page's "model installed" card: show where the processor is chosen.
+  useEffect(() => {
+    if (performanceFocus && performanceReady) document.getElementById('performance-title')?.scrollIntoView({ block: 'start' });
+  }, [performanceFocus, performanceReady]);
+  // Opened from the page's "allow hold and shortcuts" card: bring the Allow button into view.
+  useEffect(() => {
+    if (siteAccess) document.getElementById('shortcut-access-title')?.scrollIntoView({ block: 'center' });
+  }, [siteAccess, waiting.shortcuts, waiting.holdMenu]);
   useEffect(() => {
     if (!keepAwake) return;
     const select = keepLoadedSelect.current;
@@ -95,7 +106,7 @@ export function SettingsView(props: SettingsViewProps) {
 
       <div className="_echo_$_space-y-5 _echo_$_px-4 _echo_$_py-4">
         {props.performance && props.performance.gpu.state !== 'checking' ? (
-          <Section id="performance-title" title="Performance">
+          <Section id="performance-title" title="Performance" highlight={performanceFocus}>
             <PerformanceSettings {...props.performance} />
           </Section>
         ) : null}

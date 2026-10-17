@@ -6,7 +6,8 @@
  * A tiny external store so the controller (plain TypeScript) drives React
  * through `useSyncExternalStore` without React owning the job logic.
  */
-import type { Point } from '../../shared/messages';
+import type { ErrorPayload } from '../../shared/errors';
+import type { AccessOffer, AccessResult, Point } from '../../shared/messages';
 import type { StyleId } from '../../shared/styles';
 
 export type { Point };
@@ -61,6 +62,38 @@ export interface ReviewState {
   readonly discard: () => void;
 }
 
+/** "Text replaced" with an invitation to allow hold and shortcuts: what it is for, and what Allow does. */
+export interface SiteAccessOffer extends AccessOffer {
+  /** Show Chrome's permission prompt (it resolves once the user has answered). */
+  readonly allow: () => Promise<AccessResult>;
+}
+
+/** Where the in-place download stands, as the card shows it. */
+export type SetupView =
+  | { readonly phase: 'checking' }
+  | { readonly phase: 'offer'; readonly totalBytes: number; /** The styles that come with it, when the service worker says. */ readonly styles?: readonly StyleId[] }
+  | { readonly phase: 'downloading'; readonly verifying: boolean; readonly receivedBytes: number; readonly totalBytes: number; readonly bytesPerSecond: number }
+  | { readonly phase: 'done' }
+  | { readonly phase: 'failed'; readonly error: ErrorPayload };
+
+/** A rewrite needs the writing model, or a style, that is not on this device yet: the card that downloads it in place. */
+export interface SetupState {
+  /** What is missing; a style is named for the card's wording. */
+  readonly subject: { readonly kind: 'model' } | { readonly kind: 'style'; readonly name: string };
+  /** The style the user asked for when this stopped them; once it is installed the card offers to carry on with it. */
+  readonly style: StyleId | null;
+  readonly anchor: AnchorRect | null;
+  readonly view: SetupView;
+  /** Start the download (also the retry of one that failed). */
+  readonly download: () => void;
+  /** Rewrite the selected text in `style`, now that it can: closes the card and starts the rewrite. */
+  readonly rewrite: () => void;
+  /** Open the toolbar popup on the Performance settings. */
+  readonly openSettings: () => void;
+  /** Close the card; a download that is running carries on. */
+  readonly close: () => void;
+}
+
 export interface ToastState {
   readonly id: number;
   readonly tone: ToastTone;
@@ -68,6 +101,10 @@ export interface ToastState {
   readonly message?: string;
   readonly actions: readonly ToastAction[];
   readonly note?: ToastNote;
+  /** One slim line (the title, the action if any, and a close button) instead of the full card. */
+  readonly compact?: boolean;
+  /** With `compact`: the toast grows into the offer card, keeping its title and Undo as its first line. */
+  readonly offer?: SiteAccessOffer;
   readonly anchor: AnchorRect | null;
   /** Milliseconds before it hides itself; 0 keeps it until dismissed. */
   readonly durationMs: number;
@@ -89,10 +126,12 @@ export interface OverlayState {
   readonly review: ReviewState | null;
   readonly toast: ToastState | null;
   readonly menu: StyleMenuState | null;
+  /** The download card; it waits behind a toast or a rewrite's own card. */
+  readonly setup: SetupState | null;
 }
 
 export class OverlayStore {
-  private state: OverlayState = { working: null, review: null, toast: null, menu: null };
+  private state: OverlayState = { working: null, review: null, toast: null, menu: null, setup: null };
   private readonly listeners = new Set<() => void>();
   private nextToastId = 1;
 
@@ -110,7 +149,7 @@ export class OverlayStore {
 
   startWorking(working: WorkingState): void {
     // A new job replaces whatever the previous one left (its rewrite to review, its toast), and the menu it was picked from.
-    this.set({ working, review: null, toast: null, menu: null });
+    this.set({ working, review: null, toast: null, menu: null, setup: null });
   }
 
   updateWorking(patch: Partial<Pick<WorkingState, 'phase' | 'progress' | 'preview'>>): void {
@@ -153,6 +192,18 @@ export class OverlayStore {
   /** Opening the menu clears a toast still showing: the menu is what the user is working with now. */
   openMenu(menu: StyleMenuState): void {
     this.set({ ...this.state, toast: null, menu });
+  }
+
+  showSetup(setup: SetupState): void {
+    this.set({ ...this.state, setup });
+  }
+
+  updateSetup(view: SetupView): void {
+    if (this.state.setup) this.set({ ...this.state, setup: { ...this.state.setup, view } });
+  }
+
+  closeSetup(): void {
+    if (this.state.setup) this.set({ ...this.state, setup: null });
   }
 
   setMenuActive(active: number): void {

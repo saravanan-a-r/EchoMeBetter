@@ -111,7 +111,7 @@ describe('ForegroundController', () => {
     expect(onInput).toHaveBeenCalledTimes(1);
     expect(store.getSnapshot().review).toBeNull();
     const toast = store.getSnapshot().toast!;
-    expect(toast).toMatchObject({ tone: 'success', title: 'Replaced · Professional', durationMs: TOAST_MS.success });
+    expect(toast).toMatchObject({ tone: 'success', title: 'Text replaced', durationMs: TOAST_MS.success });
     expect(toast.message).toBeUndefined();
     toast.actions.find((action) => action.label === 'Undo')!.run();
     expect(textarea.value).toBe('Hi,  pls send the deck tmrw  thx');
@@ -153,7 +153,7 @@ describe('ForegroundController', () => {
       expect(press(elsewhere, 'Enter').defaultPrevented).toBe(false);
       expect(press(elsewhere, 'Escape').defaultPrevented).toBe(false);
       expect(press(textarea, 'Enter').defaultPrevented).toBe(true);
-      expect(store.getSnapshot().toast).toMatchObject({ title: 'Replaced · Friendly' });
+      expect(store.getSnapshot().toast).toMatchObject({ title: 'Text replaced' });
 
       const typedOver = written();
       typedOver.textarea.value = 'Hi, typed something else';

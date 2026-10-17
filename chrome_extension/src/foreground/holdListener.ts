@@ -17,7 +17,7 @@ import { hasEditableSelection } from './shortcutListener';
 import { captureTarget, targetRect, type EditTarget } from './target/capture';
 import type { Point } from './ui/overlayStore';
 
-export const HOLD_MS = 2000;
+export const HOLD_MS = 1000;
 /** How far the pointer may drift during a hold, in CSS pixels. */
 export const HOLD_SLOP = 6;
 

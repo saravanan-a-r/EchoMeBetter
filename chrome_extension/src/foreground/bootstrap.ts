@@ -3,8 +3,8 @@
  * injects this script on every menu click, and only the first injection in
  * a frame installs anything.
  */
-import { isForegroundMessage, JOB_PORT_NAME, type OpenSettingsRequest, type StyleMenuRequest } from '../shared/messages';
-import { ForegroundController, type JobPortLike } from './controller';
+import { isForegroundMessage, JOB_PORT_NAME, SETUP_PORT_NAME, type AccessOfferReply, type AccessRequest, type AccessResult, type OpenSettingsRequest, type ReplacedNotice, type StyleMenuRequest } from '../shared/messages';
+import { ForegroundController, type JobPortLike, type SetupPortLike } from './controller';
 import { mountOverlay, type Overlay } from './ui/mountOverlay';
 
 const INSTALLED = Symbol.for('echomebetter.foreground');
@@ -27,6 +27,7 @@ export function installForeground(win: Window = window): ForegroundController {
     doc: win.document,
     win,
     connect: () => chrome.runtime.connect({ name: JOB_PORT_NAME }) as unknown as JobPortLike,
+    connectSetup: () => chrome.runtime.connect({ name: SETUP_PORT_NAME }) as unknown as SetupPortLike,
     overlay: () => {
       // Re-mount if the page removed our host element (some apps own all of <html>).
       if (!overlay || !overlay.host.isConnected) overlay = mountOverlay(win.document);
@@ -40,6 +41,16 @@ export function installForeground(win: Window = window): ForegroundController {
     requestRewrite: (style) => {
       const request: StyleMenuRequest = { kind: 'menu/rewrite', style };
       chrome.runtime.sendMessage(request).catch(() => undefined);
+    },
+    siteAccess: {
+      afterReplace: async () => {
+        const notice: ReplacedNotice = { kind: 'access/replaced' };
+        return ((await chrome.runtime.sendMessage(notice)) as AccessOfferReply | undefined) ?? { offer: false };
+      },
+      request: async () => {
+        const request: AccessRequest = { kind: 'access/request' };
+        return (((await chrome.runtime.sendMessage(request)) as { result?: AccessResult } | undefined)?.result ?? 'denied');
+      },
     },
   });
 

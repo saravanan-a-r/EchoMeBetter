@@ -67,7 +67,7 @@ describe('launchRewrite', () => {
       const { value, calls } = deps({ problem });
       await launchRewrite({ menuItemId: styleMenuId('friendly'), frameId: 2 }, tab, value);
       expect(calls).toEqual(['inject:2', 'echo/notice:2']);
-      expect(value.tabs.sendMessage).toHaveBeenCalledWith(7, { kind: 'echo/notice', error: problem }, { frameId: 2 });
+      expect(value.tabs.sendMessage).toHaveBeenCalledWith(7, { kind: 'echo/notice', error: problem, style: 'friendly' }, { frameId: 2 });
     },
   );
 

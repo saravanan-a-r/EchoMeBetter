@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { styleLabel } from '../../shared/styles';
 import { Logo } from '../../ui/brand/Logo';
+import { AccessOfferCard } from './AccessOfferCard';
 import type { AnchorRect, ReviewState, ToastNote, ToastState, WorkingState } from './overlayStore';
 
 export const CARD_WIDTH = 360;
@@ -80,17 +81,21 @@ const SECONDARY_BUTTON =
  */
 export function OverlayCard({ card, onDismiss }: { card: CardContent; onDismiss: () => void }) {
   const [hovered, setHovered] = useState(false);
+  // Chrome's permission prompt is up: the offer waits for the answer however long the user takes.
+  const [asking, setAsking] = useState(false);
   const dismiss = useRef(onDismiss);
   dismiss.current = onDismiss;
   const toast = card.kind === 'toast' ? card.toast : null;
 
   useEffect(() => {
-    if (!toast || toast.durationMs === 0 || hovered) return undefined;
+    if (!toast || toast.durationMs === 0 || hovered || asking) return undefined;
     const timer = setTimeout(() => dismiss.current(), toast.durationMs);
     return () => clearTimeout(timer);
-  }, [toast?.id, toast?.durationMs, hovered]);
+  }, [toast?.id, toast?.durationMs, hovered, asking]);
 
   const viewport = { width: window.innerWidth, height: window.innerHeight };
+  if (toast?.offer && toast.compact) return <AccessOfferCard toast={toast} offer={toast.offer} viewport={viewport} header={<ToastRow toast={toast} onDismiss={onDismiss} />} onDismiss={onDismiss} onHover={setHovered} onAsking={setAsking} />;
+  if (toast && toast.compact && !toast.message && !toast.note && toast.actions.length <= 1) return <SlimToast toast={toast} viewport={viewport} onDismiss={onDismiss} onHover={setHovered} />;
   const rewrite = card.kind === 'writing' ? { ...card.working, text: card.working.preview } : card.kind === 'review' ? card.review : null;
 
   return (
@@ -135,6 +140,58 @@ export function OverlayCard({ card, onDismiss }: { card: CardContent; onDismiss:
           </kbd>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/** The one line of a slim toast: logo, title, the action if any, close. The offer card keeps it as its first line. */
+export function ToastRow({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }) {
+  const action = toast.actions[0];
+  return (
+    <div className="_echo_$_flex _echo_$_min-w-0 _echo_$_items-center _echo_$_gap-3 _echo_$_py-2 _echo_$_pl-3 _echo_$_pr-2">
+      <span className="_echo_$_flex _echo_$_h-7 _echo_$_shrink-0 _echo_$_items-center">
+        <Logo size={20} />
+      </span>
+      <span className="_echo_$_flex _echo_$_h-7 _echo_$_min-w-0 _echo_$_flex-1 _echo_$_items-center _echo_$_font-sans _echo_$_text-[14px] _echo_$_font-semibold _echo_$_leading-5">{toast.title}</span>
+      {action ? (
+        <button
+          type="button"
+          onClick={() => {
+            action.run();
+            onDismiss();
+          }}
+          className="_echo_$_flex _echo_$_h-7 _echo_$_cursor-pointer _echo_$_items-center _echo_$_rounded-md _echo_$_border-0 _echo_$_bg-transparent _echo_$_px-2.5 _echo_$_py-0 _echo_$_font-sans _echo_$_text-[14px] _echo_$_font-semibold _echo_$_leading-5 _echo_$_text-accent hover:_echo_$_bg-sheen/10 focus-visible:_echo_$_outline focus-visible:_echo_$_outline-2 focus-visible:_echo_$_outline-focus"
+        >
+          {action.label}
+        </button>
+      ) : null}
+      <button
+        type="button"
+        aria-label="Dismiss"
+        onClick={onDismiss}
+        className="_echo_$_flex _echo_$_h-7 _echo_$_w-7 _echo_$_cursor-pointer _echo_$_items-center _echo_$_justify-center _echo_$_rounded-md _echo_$_border-0 _echo_$_bg-transparent _echo_$_p-0 _echo_$_text-fg-soft hover:_echo_$_bg-sheen/10 hover:_echo_$_text-fg"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+          <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+/** A one-line toast: accent bar and a ToastRow. For short confirmations ("Text replaced", Undo). */
+function SlimToast({ toast, viewport, onDismiss, onHover }: { toast: ToastState; viewport: { width: number; height: number }; onDismiss: () => void; onHover: (hovered: boolean) => void }) {
+  return (
+    <div
+      role="status"
+      style={{ ...toastPosition(toast.anchor, { width: viewport.width, height: viewport.height + 40 }), width: 'max-content', maxWidth: Math.min(CARD_WIDTH, viewport.width - 2 * GAP), contain: 'layout paint' }}
+      onMouseDown={(event) => event.preventDefault()}
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
+      className="_echo_$_pointer-events-auto _echo_$_fixed _echo_$_flex _echo_$_animate-echo-pop-in _echo_$_items-stretch _echo_$_overflow-hidden _echo_$_rounded-xl _echo_$_bg-surface _echo_$_text-fg _echo_$_shadow-float _echo_$_ring-1 _echo_$_ring-sheen/15 _echo_$_will-change-transform"
+    >
+      <span aria-hidden="true" className={`_echo_$_w-1.5 _echo_$_shrink-0 ${TONE_ACCENT[toast.tone]}`} />
+      <ToastRow toast={toast} onDismiss={onDismiss} />
     </div>
   );
 }

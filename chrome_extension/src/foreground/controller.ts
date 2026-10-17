@@ -25,19 +25,27 @@
  */
 import { describeError, EchoError, toErrorPayload, type ErrorPayload } from '../shared/errors';
 import { formatDuration } from '../shared/format';
-import { isJobEvent, type ForegroundMessage, type JobEvent, type JobRequest, type Point, type StartJobReply, type WokeFromRest } from '../shared/messages';
+import { isJobEvent, isSetupEvent, type AccessOfferReply, type AccessResult, type ForegroundMessage, type JobEvent, type JobRequest, type Point, type SetupEvent, type SetupNeed, type SetupRequest, type StartJobReply, type WokeFromRest } from '../shared/messages';
 import type { SettingsFocus } from '../shared/popupIntent';
 import { keepLoadedLabel } from '../shared/settings';
-import { STYLE_IDS, styleLabel, type StyleId } from '../shared/styles';
+import { isStyleId, STYLE_IDS, STYLES, styleLabel, type StyleId } from '../shared/styles';
 import { takeHeldSelection } from './heldSelection';
 import { applyRewrite, isUnchanged, reselect } from './target/apply';
 import { captureTarget, splitWhitespace, targetRect, type EditTarget } from './target/capture';
 import { setBusyCursor } from './ui/busyCursor';
 import { OVERLAY_TAG } from './ui/mountOverlay';
-import type { AnchorRect, OverlayStore, ToastAction, ToastNote, ToastState } from './ui/overlayStore';
+import type { AnchorRect, OverlayStore, SetupState, SetupView, ToastAction, ToastNote, ToastState } from './ui/overlayStore';
 
 export interface JobPortLike {
   postMessage(message: JobRequest): void;
+  disconnect(): void;
+  onMessage: { addListener(listener: (message: unknown) => void): void };
+  onDisconnect: { addListener(listener: () => void): void };
+}
+
+/** The page's end of the port to the service worker that carries the in-place download (see background/setupBroker.ts). */
+export interface SetupPortLike {
+  postMessage(message: SetupRequest): void;
   disconnect(): void;
   onMessage: { addListener(listener: (message: unknown) => void): void };
   onDisconnect: { addListener(listener: () => void): void };
@@ -54,6 +62,16 @@ export interface ForegroundDeps {
   readonly openSettings: (focus: SettingsFocus) => void;
   /** A style was picked from the style menu: ask for it, as its shortcut would. */
   readonly requestRewrite: (style: StyleId) => void;
+  /** Where the in-place model download is reached; without it the missing model is reported in a toast. */
+  readonly connectSetup?: () => SetupPortLike;
+  /**
+   * The offer to allow hold and shortcuts. `afterReplace` reports a Replace and
+   * hears whether to offer now; `request` shows Chrome's permission prompt.
+   */
+  readonly siteAccess?: {
+    readonly afterReplace: () => Promise<AccessOfferReply>;
+    readonly request: () => Promise<AccessResult>;
+  };
   /** Milliseconds on a monotonic clock; defaults to performance.now. */
   readonly now?: () => number;
 }
@@ -91,7 +109,7 @@ interface OpenMenu {
   readonly stopListening: () => void;
 }
 
-export const TOAST_MS = { success: 6000, info: 4000, error: 7000, withNote: 12000 } as const;
+export const TOAST_MS = { success: 6000, info: 4000, error: 7000, withNote: 12000, offer: 30_000 } as const;
 
 export const KEEP_AWAKE_LABEL = 'Keep it awake longer';
 
@@ -99,10 +117,41 @@ function toAnchor(rect: Pick<DOMRect, 'top' | 'left' | 'bottom' | 'right'>): Anc
   return { top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right };
 }
 
+let jobCount = 0;
+
+/** A job id for a rewrite the page starts itself; unique among this page's jobs, which is all a port needs. */
+function newJobId(): string {
+  jobCount += 1;
+  return `page-${Date.now().toString(36)}-${jobCount}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** What a missing model or style needs, from the error that reported it; null for any other error. */
+function setupNeed(error: ErrorPayload): { need: SetupNeed; subject: SetupState['subject'] } | null {
+  if (error.code === 'MODEL_NOT_DOWNLOADED') return { need: { kind: 'model' }, subject: { kind: 'model' } };
+  if (error.code !== 'STYLE_NOT_DOWNLOADED') return null;
+  // The error names the style it needs by its label.
+  const style = STYLES.find((candidate) => candidate.label === error.details?.adapter);
+  return style ? { need: { kind: 'style', style: style.id }, subject: { kind: 'style', name: style.label } } : null;
+}
+
+function setupView(event: SetupEvent): SetupView {
+  switch (event.kind) {
+    case 'setup/offer':
+      return event.styles ? { phase: 'offer', totalBytes: event.totalBytes, styles: event.styles } : { phase: 'offer', totalBytes: event.totalBytes };
+    case 'setup/progress':
+      return { phase: 'downloading', verifying: event.verifying, receivedBytes: event.receivedBytes, totalBytes: event.totalBytes, bytesPerSecond: event.bytesPerSecond };
+    case 'setup/done':
+      return { phase: 'done' };
+    case 'setup/failed':
+      return { phase: 'failed', error: event.error };
+  }
+}
+
 export class ForegroundController {
   private active: ActiveJob | null = null;
   private menu: OpenMenu | null = null;
   private review: PendingReview | null = null;
+  private setupPort: SetupPortLike | null = null;
 
   constructor(private readonly deps: ForegroundDeps) {}
 
@@ -112,7 +161,7 @@ export class ForegroundController {
 
   handleMessage(message: ForegroundMessage): StartJobReply {
     if (message.kind === 'echo/notice') {
-      this.toastError(message.error, null);
+      if (!this.offerSetup(message.error, this.selectionAnchor(), isStyleId(message.style) ? message.style : null)) this.toastError(message.error, null);
       return { ok: true };
     }
     if (message.kind === 'echo/style-menu') return this.openMenu(message.point);
@@ -214,6 +263,7 @@ export class ForegroundController {
     this.closeMenu();
     this.dropReview();
     if (this.active) return this.refuse(new EchoError('BUSY'), this.active.anchor);
+    this.closeSetupPort();
 
     let target: EditTarget;
     try {
@@ -392,8 +442,30 @@ export class ForegroundController {
     if (this.review !== review) return;
     this.review = null;
     review.stopListening();
-    const outcome = this.replace(review.job, review.text, { title: `Replaced · ${styleLabel(review.job.style)}` });
-    this.deps.overlay().endReview(this.timed(outcome));
+    const outcome = this.replace(review.job, review.text, { title: 'Text replaced', compact: true });
+    const store = this.deps.overlay();
+    store.endReview(this.timed(outcome));
+    if (outcome.tone === 'success') this.offerSiteAccess(store, outcome);
+  }
+
+  /**
+   * After a Replace, the service worker may ask for the toast to grow into the
+   * offer to allow hold and shortcuts. The toast is already up, so the answer
+   * costs the user nothing; it is dropped if the toast has gone meanwhile
+   * (Undo, another rewrite, closed).
+   */
+  private offerSiteAccess(store: OverlayStore, outcome: ToastDraft): void {
+    const { siteAccess } = this.deps;
+    const shown = store.getSnapshot().toast;
+    if (!siteAccess || !shown) return;
+    siteAccess
+      .afterReplace()
+      .then((reply) => {
+        if (!reply.offer || store.getSnapshot().toast?.id !== shown.id) return;
+        const { hold, shortcuts, platform } = reply;
+        store.showToast({ ...this.timed(outcome), durationMs: TOAST_MS.offer, offer: { hold, shortcuts, platform, allow: () => siteAccess.request() } });
+      })
+      .catch(() => undefined);
   }
 
   /** Discard the rewrite waiting for a decision, if any; the text stays as it is. */
@@ -406,7 +478,7 @@ export class ForegroundController {
   }
 
   /** Put the rewrite in place; the toast saying so, with Undo (or why it couldn't, with the rewrite to copy). */
-  private replace(job: ActiveJob, text: string, report: Pick<ToastDraft, 'title' | 'message' | 'note'>): ToastDraft {
+  private replace(job: ActiveJob, text: string, report: Pick<ToastDraft, 'title' | 'message' | 'note' | 'compact'>): ToastDraft {
     try {
       const edit = applyRewrite(job.target, `${job.lead}${text}${job.trail}`);
       return {
@@ -417,12 +489,12 @@ export class ForegroundController {
             label: 'Undo',
             run: () => {
               if (edit.undo()) {
-                this.toast({ tone: 'info', title: 'Original text restored', actions: [], anchor: job.anchor });
+                this.toast({ tone: 'info', title: 'Original text restored', compact: true, actions: [], anchor: job.anchor });
               } else {
                 this.toast({
                   tone: 'error',
-                  title: "Couldn't undo",
-                  message: 'The text has been edited since. Use Ctrl/⌘+Z in the field instead.',
+                  title: 'Undo unavailable',
+                  message: 'The text was edited after it was replaced. Press Ctrl+Z (⌘Z on Mac) in the field to undo.',
                   actions: [],
                   anchor: job.anchor,
                 });
@@ -447,7 +519,94 @@ export class ForegroundController {
   private fail(error: ErrorPayload): void {
     const job = this.active;
     if (!job) return;
+    if (setupNeed(error) && this.deps.connectSetup) {
+      this.end();
+      if (this.offerSetup(error, job.anchor, job.style)) return;
+    }
     this.end(error.code === 'CANCELLED' ? undefined : this.errorToast(error, job.anchor));
+  }
+
+  /** Where the selected text is, for a card to sit beside it; null where there is no selection to point at. */
+  private selectionAnchor(): AnchorRect | null {
+    try {
+      return toAnchor(targetRect(captureTarget(this.deps.doc)));
+    } catch {
+      const active = this.deps.doc.activeElement;
+      return active && active !== this.deps.doc.body ? toAnchor(active.getBoundingClientRect()) : null;
+    }
+  }
+
+  /**
+   * The rewrite needs the writing model, or a style, that isn't on this
+   * device: instead of sending the user to the popup, offer the download in
+   * a card right here, and follow it to the end. False where this isn't that
+   * case (or the card can't be offered), and the caller shows the toast.
+   */
+  private offerSetup(error: ErrorPayload, anchor: AnchorRect | null, style: StyleId | null): boolean {
+    const found = setupNeed(error);
+    const { connectSetup } = this.deps;
+    if (!found || !connectSetup) return false;
+    this.closeSetup();
+    let port: SetupPortLike;
+    try {
+      port = connectSetup();
+    } catch {
+      return false; // the extension was reloaded under this page
+    }
+    const store = this.deps.overlay();
+    this.setupPort = port;
+    const current = () => this.setupPort === port;
+    const close = () => {
+      if (current()) this.closeSetup();
+    };
+    const state: Omit<SetupState, 'view'> = {
+      subject: found.subject,
+      style,
+      anchor,
+      download: () => {
+        try {
+          port.postMessage({ kind: 'setup/download' });
+        } catch {
+          // The service worker restarted since the card opened: start over from the top.
+          this.offerSetup(error, anchor, style);
+        }
+      },
+      rewrite: () => {
+        close();
+        if (style) this.start(newJobId(), style);
+      },
+      openSettings: () => {
+        this.deps.openSettings('performance');
+        close();
+      },
+      close,
+    };
+    store.showSetup({ ...state, view: { phase: 'checking' } });
+    port.onMessage.addListener((message) => {
+      if (current() && isSetupEvent(message)) store.updateSetup(setupView(message));
+    });
+    port.onDisconnect.addListener(() => {
+      if (!current()) return;
+      this.setupPort = null;
+      store.updateSetup({ phase: 'failed', error: { code: 'DISCONNECTED' } });
+    });
+    port.postMessage({ kind: 'setup/open', need: found.need.kind === 'model' && style ? { kind: 'model', style } : found.need });
+    return true;
+  }
+
+  private closeSetupPort(): void {
+    const port = this.setupPort;
+    this.setupPort = null;
+    try {
+      port?.disconnect();
+    } catch {
+      // Already disconnected.
+    }
+  }
+
+  private closeSetup(): void {
+    this.closeSetupPort();
+    this.deps.overlay().closeSetup();
   }
 
   /** The job is over: its card turns into `outcome` (or goes, with none). */
