@@ -115,6 +115,15 @@ export function stylesUsing(catalog: ModelCatalog, adapter: StyleId): StyleId[] 
   return STYLE_IDS.filter((style) => adapterForStyle(catalog, style) === adapter);
 }
 
+/** The style the writing model always comes with, so the first download is enough to rewrite. */
+export const STARTER_STYLE: StyleId = 'professional';
+
+/** The adapter downloaded with the base: the starter style's, else the first one offered. */
+export function starterAdapter(catalog: ModelCatalog): AdapterSummary | null {
+  const id = adapterForStyle(catalog, STARTER_STYLE);
+  return catalog.adapters.find((adapter) => adapter.style === id) ?? catalog.adapters[0] ?? null;
+}
+
 /** Why `style` cannot be used right now, or null when it can. */
 export function styleProblem(style: StyleId, installed: InstalledModelRecord | null): ErrorPayload | null {
   if (!installed) return { code: 'MODEL_NOT_DOWNLOADED' };
@@ -122,6 +131,17 @@ export function styleProblem(style: StyleId, installed: InstalledModelRecord | n
   if (!adapter) return { code: 'STYLE_UNAVAILABLE', details: { style: styleLabel(style) } };
   if (!installed.adapters.includes(adapter)) return { code: 'STYLE_NOT_DOWNLOADED', details: { style: styleLabel(style), adapter: styleLabel(adapter) } };
   return null;
+}
+
+/**
+ * Whether `style` would only run on another style's adapter here while the server (`remote`, for the
+ * installed base) now offers one of its own: then that adapter is what to download, not a stand-in to use.
+ */
+export function newerStyleProblem(style: StyleId, installed: InstalledModelRecord | null, remote: ModelCatalog | null): ErrorPayload | null {
+  if (!installed || !remote || remote.base !== installed.catalog.base) return null;
+  if (adapterForStyle(installed.catalog, style) === style || installed.adapters.includes(style)) return null;
+  if (!remote.adapters.some((adapter) => adapter.style === style)) return null;
+  return { code: 'STYLE_NOT_DOWNLOADED', details: { style: styleLabel(style), adapter: styleLabel(style) } };
 }
 
 /** Whether any style can be used: the base and at least one adapter are on this device. */

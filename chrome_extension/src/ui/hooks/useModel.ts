@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { catalogOf, parseModelManifest } from '../../engine/manifest';
 import type { UiReply, UiRequest } from '../../shared/messages';
 import {
   IDLE_DOWNLOAD,
@@ -15,6 +14,7 @@ import {
   type StyleReadiness,
 } from '../../shared/modelInstall';
 import { MODEL_SOURCE_URL } from '../../shared/modelSource';
+import { fetchCatalog } from '../../shared/fetchCatalog';
 import { STYLE_IDS, type StyleId } from '../../shared/styles';
 
 export interface ModelAvailability {
@@ -49,12 +49,6 @@ export function useModelAvailability(): ModelAvailability {
 
 /** What the download server offers right now. */
 export type CatalogState = { readonly status: 'loading' } | { readonly status: 'ready'; readonly catalog: ModelCatalog } | { readonly status: 'failed' };
-
-async function fetchCatalog(fetchImpl: typeof fetch = fetch): Promise<ModelCatalog> {
-  const response = await fetchImpl(new URL('model.json', MODEL_SOURCE_URL), { cache: 'no-store' });
-  if (!response.ok) throw new Error(`model.json: HTTP ${response.status}`);
-  return catalogOf(parseModelManifest(await response.json()));
-}
 
 /** The server's catalog, read when the page opens; `retry` reads it again. */
 export function useCatalog(): [CatalogState, () => void] {
