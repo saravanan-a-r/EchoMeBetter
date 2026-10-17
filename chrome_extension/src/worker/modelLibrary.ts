@@ -145,11 +145,15 @@ export class ModelLibrary {
     this.download?.abort();
   }
 
-  /** Delete one adapter; the base and the other adapters stay. */
+  /**
+   * Delete one adapter; the base and the other adapters stay. The base is of no use without an adapter,
+   * so removing the last one removes the base with it.
+   */
   async removeAdapter(style: StyleId): Promise<void> {
     if (this.download || this.removing) return;
     await this.inspection.catch(() => undefined);
     const installed = await this.current();
+    if (installed?.adapters.includes(style) && installed.adapters.length === 1) return this.remove();
     if (installed?.adapters.includes(style)) {
       const next: StoredModel = { ...installed, adapters: installed.adapters.filter((adapter) => adapter !== style) };
       const store = await this.openStore();

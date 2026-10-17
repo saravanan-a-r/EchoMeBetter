@@ -191,6 +191,15 @@ describe('ModelLibrary', () => {
     expect(installedEvents().at(-1)).toMatchObject({ adapters: ['professional'] });
   });
 
+  test('removing the last adapter removes the base with it: the base is of no use alone', async () => {
+    const { library, engine, folder, installedEvents } = setup();
+    await library.startDownload(['professional']);
+    await library.removeAdapter('professional');
+    expect(engine.unload).toHaveBeenCalledTimes(1);
+    expect((await folder()).names()).toEqual([]);
+    expect(installedEvents().at(-1)).toBeNull();
+  });
+
   test('removing the model unloads the engine first, deletes every file and reports nothing installed', async () => {
     const { library, engine, folder, installedEvents } = setup();
     await library.startDownload(['professional']);
