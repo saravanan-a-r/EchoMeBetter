@@ -10,7 +10,7 @@
  */
 
 /** A setting the popup scrolls to and highlights. */
-export const SETTINGS_FOCUSES = ['keep-awake'] as const;
+export const SETTINGS_FOCUSES = ['keep-awake', 'site-access', 'performance'] as const;
 
 export type SettingsFocus = (typeof SETTINGS_FOCUSES)[number];
 

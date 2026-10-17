@@ -9,9 +9,10 @@
  * the page ever talks to the model directly.
  */
 import type { ComputeSettings, GpuProblem } from './compute';
-import type { ErrorPayload } from './errors';
+import { isErrorPayload, type ErrorPayload } from './errors';
 import { isSettingsFocus, type SettingsFocus } from './popupIntent';
 import type { KeepLoadedMinutes } from './settings';
+import type { KeyPlatform } from './shortcuts';
 import type { DownloadState, InstalledModelRecord } from './modelInstall';
 import { isStyleId, type StyleId } from './styles';
 import type { EngineStatus } from './status';
@@ -32,6 +33,8 @@ export interface StartJobMessage {
 export interface NoticeMessage {
   readonly kind: 'echo/notice';
   readonly error: ErrorPayload;
+  /** The style the user asked for, when that is what the notice is about (a missing model offers to carry on with it). */
+  readonly style?: StyleId;
 }
 
 /** Open the style menu at `point` (the frame's viewport coordinates), for the selection a press and hold was made on. */
@@ -108,6 +111,95 @@ export function isOpenSettingsRequest(value: unknown): value is OpenSettingsRequ
   if (typeof value !== 'object' || value === null) return false;
   const message = value as { kind?: unknown; focus?: unknown };
   return message.kind === 'page/open-settings' && isSettingsFocus(message.focus);
+}
+
+/**
+ * A rewrite was just put in place. The service worker counts it and says
+ * whether to offer the user the site access that hold and shortcuts need.
+ */
+export interface ReplacedNotice {
+  readonly kind: 'access/replaced';
+}
+
+export function isReplacedNotice(value: unknown): value is ReplacedNotice {
+  return typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'access/replaced';
+}
+
+/** What the offer is for: the features that wait for the access, and the keys to show. */
+export interface AccessOffer {
+  readonly hold: boolean;
+  readonly shortcuts: boolean;
+  readonly platform: KeyPlatform;
+}
+
+export type AccessOfferReply = { readonly offer: false } | ({ readonly offer: true } & AccessOffer);
+
+/** The user pressed Allow on the offer: show Chrome's permission prompt. */
+export interface AccessRequest {
+  readonly kind: 'access/request';
+}
+
+export function isAccessRequest(value: unknown): value is AccessRequest {
+  return typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'access/request';
+}
+
+/**
+ *   granted   the user allowed websites
+ *   denied    the user said no in Chrome's prompt
+ *   opened    Chrome would not show the prompt from here, so the popup opened on the button that does
+ */
+export type AccessResult = 'granted' | 'denied' | 'opened';
+
+// ---------------------------------------------------------------------------
+// foreground ⇄ service worker, over a Port named SETUP_PORT_NAME (the model download, in place)
+// ---------------------------------------------------------------------------
+
+export const SETUP_PORT_NAME = 'echo/setup';
+
+/** What a rewrite is missing: the writing model (with its first style), or one style on top of it. */
+export type SetupNeed = { readonly kind: 'model'; readonly style?: StyleId } | { readonly kind: 'style'; readonly style: StyleId };
+
+export type SetupRequest =
+  /** The card opened: report what the download would be, or how it is going. */
+  | { readonly kind: 'setup/open'; readonly need: SetupNeed }
+  /** Start the download (also the retry of one that failed). */
+  | { readonly kind: 'setup/download' };
+
+/** Where the download stands, for the card to show. */
+export type SetupEvent =
+  /** Nothing is downloading: this is what a download would fetch. */
+  | { readonly kind: 'setup/offer'; readonly totalBytes: number; /** The styles the download brings, the one asked for first. */ readonly styles?: readonly StyleId[] }
+  | { readonly kind: 'setup/progress'; readonly verifying: boolean; readonly receivedBytes: number; readonly totalBytes: number; readonly bytesPerSecond: number }
+  | { readonly kind: 'setup/done' }
+  | { readonly kind: 'setup/failed'; readonly error: ErrorPayload };
+
+function isSetupNeed(value: unknown): value is SetupNeed {
+  if (typeof value !== 'object' || value === null) return false;
+  const need = value as { kind?: unknown; style?: unknown };
+  return (need.kind === 'model' && (need.style === undefined || isStyleId(need.style))) || (need.kind === 'style' && isStyleId(need.style));
+}
+
+export function isSetupRequest(value: unknown): value is SetupRequest {
+  if (typeof value !== 'object' || value === null) return false;
+  const message = value as { kind?: unknown; need?: unknown };
+  return message.kind === 'setup/download' || (message.kind === 'setup/open' && isSetupNeed(message.need));
+}
+
+export function isSetupEvent(value: unknown): value is SetupEvent {
+  if (typeof value !== 'object' || value === null) return false;
+  const event = value as { kind?: unknown; styles?: unknown; totalBytes?: unknown; receivedBytes?: unknown; error?: unknown; verifying?: unknown; bytesPerSecond?: unknown };
+  switch (event.kind) {
+    case 'setup/offer':
+      return typeof event.totalBytes === 'number' && (event.styles === undefined || (Array.isArray(event.styles) && event.styles.every(isStyleId)));
+    case 'setup/progress':
+      return typeof event.verifying === 'boolean' && typeof event.receivedBytes === 'number' && typeof event.totalBytes === 'number' && typeof event.bytesPerSecond === 'number';
+    case 'setup/done':
+      return true;
+    case 'setup/failed':
+      return isErrorPayload(event.error);
+    default:
+      return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
